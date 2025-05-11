@@ -186,6 +186,14 @@ endif
 chainboot: $(KERNEL_BIN)
 	@$(DOCKER_CHAINBOOT) $(EXEC_MINIPUSH) $(DEV_SERIAL) $(KERNEL_BIN)
 
+toggle: 
+	sleep 1
+	curl -X POST http://69.0.0.15:5000/toggle -d state=on
+	sleep 60
+	curl -X POST http://69.0.0.15:5000/toggle -d state=off
+
+chainboottoggle: chainboot toggle
+
 ##------------------------------------------------------------------------------
 ## Run clippy
 ##------------------------------------------------------------------------------
