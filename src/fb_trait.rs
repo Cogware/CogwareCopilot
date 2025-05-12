@@ -1,5 +1,5 @@
 use crate::mailbox::{SCREEN_HEIGHT, SCREEN_WIDTH};
-use embedded_graphics::{pixelcolor::Rgb666, prelude::PixelColor};
+use embedded_graphics::{pixelcolor::{Rgb666, Rgb888}, prelude::{PixelColor, RgbColor}};
 use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight};
 
 const LETTER_FONT_WEIGHT: FontWeight = FontWeight::Regular;
@@ -68,6 +68,8 @@ pub trait FrameBufferInterface {
     fn use_pixel(&mut self, x_usize: usize, y_usize: usize, color: Color) {
         let width = self.width();
         self.raw_buffer()[width * y_usize + x_usize] = color.rgb();
+    }
+    fn use_pixel_embgraphics(&mut self, x_usize: usize, y_usize: usize, color: Rgb888) {
     }
 
     fn display_boot_image(&mut self) {

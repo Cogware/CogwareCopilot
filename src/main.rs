@@ -184,14 +184,22 @@ fn kernel_main(mut screen: FrameBuffer) -> ! {
     let mut bingus:u8 = 0;
 
     loop {
+        let starttime = time::time_manager().uptime();
+
         let image = Image::new(&bmp, Point::new(bingus as i32,0));
         //info!("Frame");
         //time::time_manager().spin_for(Duration::from_secs(1));
         screen.clear_screen();
         //screen.draw_rect_fill(&Coordinates::new(0, 0), 480, 480, WHITE_COLOR);
+
+        let drawtime1 = time::time_manager().uptime();
         image.draw(&mut screen).unwrap();
+        info!("drawtime: {:?}", time::time_manager().uptime() - drawtime1);
+
         screen.update();
         bingus = bingus.wrapping_add(1);
+
+        info!("frametime: {:?}", time::time_manager().uptime() - starttime);
 
     }
 }

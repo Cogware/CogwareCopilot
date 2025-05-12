@@ -37,6 +37,14 @@ impl FrameBufferInterface for FrameBuffer {
         }
     }
 
+    fn use_pixel_embgraphics(&mut self, x_usize: usize, y_usize: usize, color: Rgb888) {
+        let width = self.width();
+        let slice_ptr = (&mut self.raw_buffer()[width * y_usize + x_usize..]).as_mut_ptr();
+        unsafe {
+            core::ptr::write_volatile(slice_ptr, (255 << 28 | (color.b() as u32) << 16) | ((color.g() as u32) << 8) | (color.r() as u32));
+        }
+    }
+
     fn clear_screen(&mut self) {
         let slice_ptr = (&mut self.raw_buffer()).as_mut_ptr();
         for i in 0..self.single_screen_len() {
@@ -67,7 +75,7 @@ impl DrawTarget for FrameBuffer{
         I: IntoIterator<Item = Pixel<Self::Color>>, {
         for Pixel(coord, color) in pixels.into_iter() {
             if let Ok((x @ 0..=479, y @ 0..479)) = coord.try_into(){
-                self.use_pixel(x as usize, y as usize, Color::new(color.b(), color.g(), color.r()));
+                self.use_pixel_embgraphics(x as usize, y as usize, color);
         }
     }
     Ok(())
