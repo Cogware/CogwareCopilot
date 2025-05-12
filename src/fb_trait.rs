@@ -1,4 +1,5 @@
 use crate::mailbox::{SCREEN_HEIGHT, SCREEN_WIDTH};
+use embedded_graphics::{pixelcolor::Rgb666, prelude::PixelColor};
 use noto_sans_mono_bitmap::{get_raster, get_raster_width, FontWeight, RasterHeight};
 
 const LETTER_FONT_WEIGHT: FontWeight = FontWeight::Regular;
@@ -180,3 +181,5 @@ impl Coordinates {
         self.virtual_y += speed * delta as f64;
     }
 }
+
+

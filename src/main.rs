@@ -32,7 +32,7 @@ use crate::mailbox::{max_clock_speed, set_clock_speed};
 use alloc::{format, vec::Vec};
 use bcm2837_hal::*;
 use bsp::memory::initialize_heap;
-use core::time::Duration;
+use core::{num::Wrapping, time::Duration};
 use delay::Timer;
 use embedded_hal::spi::*;
 use embedded_sdmmc::{sdcard::EMMCController, time::DummyTimesource, Mode, VolumeManager};
@@ -178,30 +178,20 @@ fn kernel_main(mut screen: FrameBuffer) -> ! {
     info!("loading BMP");
     let bmp = Bmp::from_slice(BOOT_IMAGE_BMP).unwrap();
     info!("building image");
-    let image = Image::new(&bmp, Point::new(0,0));
-    screen.clear_screen();
-    let mut fb = embedded_graphics::framebuffer::Framebuffer::<Rgb666, _, LittleEndian, 480, 480, {buffer_size::<Rgb666>(480, 480)}>::new();
     
-
+    screen.clear_screen();
+    
+    let mut bingus:u8 = 0;
 
     loop {
-        
-        info!("Spinning for 1 second");
-        time::time_manager().spin_for(Duration::from_secs(1));
+        let image = Image::new(&bmp, Point::new(bingus as i32,0));
+        //info!("Frame");
+        //time::time_manager().spin_for(Duration::from_secs(1));
         screen.clear_screen();
         //screen.draw_rect_fill(&Coordinates::new(0, 0), 480, 480, WHITE_COLOR);
-        image.draw(&mut fb).unwrap();
-        fb.data();
-        write_to_screen(&mut screen, &mut fb);
+        image.draw(&mut screen).unwrap();
         screen.update();
+        bingus = bingus.wrapping_add(1);
 
     }
-}
-
-fn write_to_screen(screen: &mut FrameBuffer, fb: &mut Framebuffer<Rgb666, RawU24, LittleEndian, 480, 480, {buffer_size::<Rgb666>(480, 480)}>){
-    info!("write to screen");
-    fb.data().chunks(3)
-    .map(|p| u32::from_le_bytes([255, p[2], p[1], p[0]]))
-    .enumerate()
-    .for_each(|(i, p)| screen.raw_buffer()[i] = p);
 }

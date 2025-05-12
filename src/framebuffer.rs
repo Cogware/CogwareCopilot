@@ -2,6 +2,7 @@ use crate::{
     fb_trait::{Color, FrameBufferInterface},
     mailbox::set_virtual_framebuffer_offset,
 };
+use embedded_graphics::{framebuffer::{buffer_size, Framebuffer}, pixelcolor::{raw::{LittleEndian, RawU24}, Rgb666, Rgb888}, prelude::*};
 pub struct FrameBuffer {
     // this could be an array.
     pub framebuff: &'static mut [u32],
@@ -49,6 +50,29 @@ impl FrameBufferInterface for FrameBuffer {
         set_virtual_framebuffer_offset(self.current_index as u32 * self.height);
         self.current_index = Self::inverse(self.current_index);
     }
+}
+
+impl OriginDimensions for FrameBuffer {
+    fn size(&self) -> Size {
+        Size::new(480, 480)
+    }
+}
+
+impl DrawTarget for FrameBuffer{
+    type Color = Rgb888;
+    type Error = core::convert::Infallible;
+    
+    fn draw_iter<I>(&mut self, pixels: I) -> Result<(), Self::Error>
+    where
+        I: IntoIterator<Item = Pixel<Self::Color>>, {
+        for Pixel(coord, color) in pixels.into_iter() {
+            if let Ok((x @ 0..=479, y @ 0..479)) = coord.try_into(){
+                self.use_pixel(x as usize, y as usize, Color::new(color.b(), color.g(), color.r()));
+        }
+    }
+    Ok(())
+    
+}
 }
 
 impl FrameBuffer {
