@@ -16,13 +16,6 @@ BSP ?= rpi3
 # Default to a serial device name that is common in Linux.
 DEV_SERIAL ?= /dev/ttyUSB0
 
-# Optional integration test name.
-ifdef TEST
-    TEST_ARG = --test $(TEST)
-else
-    TEST_ARG = --test '*'
-endif
-
 
 
 ##--------------------------------------------------------------------------------------------------
@@ -68,7 +61,7 @@ export LD_SCRIPT_PATH
 ##--------------------------------------------------------------------------------------------------
 ## Targets and Prerequisites
 ##--------------------------------------------------------------------------------------------------
-KERNEL_MANIFEST      = kernel/Cargo.toml
+KERNEL_MANIFEST      = Cargo.toml
 KERNEL_LINKER_SCRIPT = kernel.ld
 LAST_BUILD_CONFIG    = target/$(BSP).build_config
 

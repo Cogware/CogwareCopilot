@@ -2,10 +2,6 @@
 //
 // Copyright (c) 2018-2023 Andre Richter <andre.o.richter@gmail.com>
 
-// Rust embedded logo for `make doc`.
-#![doc(
-    html_logo_url = "https://raw.githubusercontent.com/rust-embedded/wg/master/assets/logo/ewg-logo-blue-white-on-transparent.png"
-)]
 
 //! The `kernel` binary.
 
@@ -13,7 +9,7 @@
 #![no_main]
 #![no_std]
 
-use libkernel::{bsp, cpu, driver, exception, info, memory, state, time};
+use crate::{bsp, cpu, driver, exception, info, memory, state, time};
 
 /// Early init code.
 ///
@@ -24,28 +20,28 @@ use libkernel::{bsp, cpu, driver, exception, info, memory, state, time};
 ///     - MMU + Data caching must be activated at the earliest. Without it, any atomic operations,
 ///       e.g. the yet-to-be-introduced spinlocks in the device drivers (which currently employ
 ///       IRQSafeNullLocks instead of spinlocks), will fail to work (properly) on the RPi SoCs.
-#[no_mangle]
-unsafe fn kernel_init() -> ! {
-    exception::handling_init();
+#[unsafe(no_mangle)]
+pub unsafe fn kernel_init() -> ! {
+    unsafe { exception::handling_init() };
 
-    let phys_kernel_tables_base_addr = match memory::mmu::kernel_map_binary() {
+    let phys_kernel_tables_base_addr = match unsafe { memory::mmu::kernel_map_binary() } {
         Err(string) => panic!("Error mapping kernel binary: {}", string),
         Ok(addr) => addr,
     };
 
-    if let Err(e) = memory::mmu::enable_mmu_and_caching(phys_kernel_tables_base_addr) {
+    if let Err(e) = unsafe { memory::mmu::enable_mmu_and_caching(phys_kernel_tables_base_addr) } {
         panic!("Enabling MMU failed: {}", e);
     }
 
     memory::mmu::post_enable_init();
 
     // Initialize the BSP driver subsystem.
-    if let Err(x) = bsp::driver::init() {
+    if let Err(x) = unsafe { bsp::driver::init() } {
         panic!("Error initializing BSP driver subsystem: {}", x);
     }
 
     // Initialize all device drivers.
-    driver::driver_manager().init_drivers_and_irqs();
+    unsafe { driver::driver_manager().init_drivers_and_irqs() };
 
     // Unmask interrupts on the boot CPU core.
     exception::asynchronous::local_irq_unmask();
@@ -59,7 +55,7 @@ unsafe fn kernel_init() -> ! {
 
 /// The main function running after the early init.
 fn kernel_main() -> ! {
-    info!("{}", libkernel::version());
+    info!("{}", crate::version());
     info!("Booting on: {}", bsp::board_name());
 
     info!("MMU online:");
@@ -83,5 +79,5 @@ fn kernel_main() -> ! {
     exception::asynchronous::irq_manager().print_handler();
 
     info!("Echoing input now");
-    cpu::wait_forever();
+    cpu::wait_forever()
 }

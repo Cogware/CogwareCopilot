@@ -17,14 +17,8 @@ use core::panic::PanicInfo;
 #[linkage = "weak"]
 #[unsafe(no_mangle)]
 fn _panic_exit() -> ! {
-    #[cfg(not(feature = "test_build"))]
     {
         cpu::wait_forever()
-    }
-
-    #[cfg(feature = "test_build")]
-    {
-        cpu::qemu_exit_failure()
     }
 }
 

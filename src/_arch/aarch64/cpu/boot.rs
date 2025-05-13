@@ -56,7 +56,7 @@ unsafe fn prepare_el2_to_el1_transition(phys_boot_core_stack_end_exclusive_addr:
     );
 
     // Second, let the link register point to kernel_init().
-    ELR_EL2.set(crate::kernel_init as *const () as u64);
+    ELR_EL2.set(crate::main::kernel_init as *const () as u64);
 
     // Set up SP_EL1 (stack pointer), which will be used by EL1 once we "return" to it. Since there
     // are no plans to ever return to EL2, just re-use the same stack.
@@ -76,7 +76,7 @@ unsafe fn prepare_el2_to_el1_transition(phys_boot_core_stack_end_exclusive_addr:
 /// - Exception return from EL2 must must continue execution in EL1 with `kernel_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn _start_rust(phys_boot_core_stack_end_exclusive_addr: u64) -> ! {
-    prepare_el2_to_el1_transition(phys_boot_core_stack_end_exclusive_addr);
+    unsafe{prepare_el2_to_el1_transition(phys_boot_core_stack_end_exclusive_addr)};
 
     // Use `eret` to "return" to EL1. This results in execution of kernel_init() in EL1.
     asm::eret()

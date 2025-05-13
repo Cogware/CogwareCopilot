@@ -3,7 +3,6 @@
 // Copyright (c) 2020-2023 Andre Richter <andre.o.richter@gmail.com>
 
 //! Memory Management Unit types.
-
 use crate::{
     bsp, common,
     memory::{Address, AddressType, Physical},
@@ -117,17 +116,16 @@ impl<ATYPE: AddressType> From<Address<ATYPE>> for PageAddress<ATYPE> {
     }
 }
 
+//WTF is even going on here this is aweful why did they change it to be redundent on usize in core::iter
 impl<ATYPE: AddressType> Step for PageAddress<ATYPE> {
-    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
+    fn steps_between(start: &Self, end: &Self) -> (usize, Option<usize>) {
         if start > end {
-            return None;
+            return (usize::MAX, None)
         }
 
         // Since start <= end, do unchecked arithmetic.
-        Some(
-            (end.inner.as_usize() - start.inner.as_usize())
-                >> bsp::memory::mmu::KernelGranule::SHIFT,
-        )
+        return ((end.inner.as_usize() - start.inner.as_usize()) >> bsp::memory::mmu::KernelGranule::SHIFT, Some(
+            (end.inner.as_usize() - start.inner.as_usize()) >> bsp::memory::mmu::KernelGranule::SHIFT,)) 
     }
 
     fn forward_checked(start: Self, count: usize) -> Option<Self> {
@@ -193,7 +191,9 @@ impl<ATYPE: AddressType> MemoryRegion<ATYPE> {
 
     /// Returns the number of pages contained in this region.
     pub fn num_pages(&self) -> usize {
-        PageAddress::steps_between(&self.start, &self.end_exclusive).unwrap()
+        let pages = PageAddress::steps_between(&self.start, &self.end_exclusive);
+        pages.0 //hate this just completely discarded any error proccessing and will probably 
+                //break shit also litterally just thowing that other usize away for fun
     }
 
     /// Returns the size in bytes of this region.
@@ -292,3 +292,5 @@ impl MMIODescriptor {
         self.end_addr_exclusive
     }
 }
+
+

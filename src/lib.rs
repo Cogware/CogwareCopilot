@@ -118,10 +118,6 @@
 #![feature(step_trait)]
 #![feature(trait_alias)]
 #![no_std]
-// Testing
-#![cfg_attr(test, no_main)]
-#![feature(custom_test_frameworks)]
-#![reexport_test_harness_main = "test_main"]
 
 mod panic_wait;
 mod synchronization;
@@ -136,6 +132,7 @@ pub mod memory;
 pub mod print;
 pub mod state;
 pub mod time;
+pub mod main;
 
 //--------------------------------------------------------------------------------------------------
 // Public Code
@@ -148,28 +145,4 @@ pub fn version() -> &'static str {
         " version ",
         env!("CARGO_PKG_VERSION")
     )
-}
-
-
-
-/// The `kernel_init()` for unit tests.
-#[unsafe(no_mangle)]
-unsafe fn kernel_init() -> ! {
-    exception::handling_init();
-
-    let phys_kernel_tables_base_addr = match memory::mmu::kernel_map_binary() {
-        Err(string) => panic!("Error mapping kernel binary: {}", string),
-        Ok(addr) => addr,
-    };
-
-    if let Err(e) = memory::mmu::enable_mmu_and_caching(phys_kernel_tables_base_addr) {
-        panic!("Enabling MMU failed: {}", e);
-    }
-
-    memory::mmu::post_enable_init();
-    bsp::driver::qemu_bring_up_console();
-
-    test_main();
-
-    cpu::qemu_exit_success()
 }

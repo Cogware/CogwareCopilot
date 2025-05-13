@@ -247,7 +247,7 @@ impl PL011UartInner {
     /// - The user must ensure to provide a correct MMIO start address.
     pub const unsafe fn new(mmio_start_addr: Address<Virtual>) -> Self {
         Self {
-            registers: Registers::new(mmio_start_addr),
+            registers: unsafe{Registers::new(mmio_start_addr)},
             chars_written: 0,
             chars_read: 0,
         }
@@ -398,7 +398,7 @@ impl PL011Uart {
     /// - The user must ensure to provide a correct MMIO start address.
     pub const unsafe fn new(mmio_start_addr: Address<Virtual>) -> Self {
         Self {
-            inner: IRQSafeNullLock::new(PL011UartInner::new(mmio_start_addr)),
+            inner: IRQSafeNullLock::new(unsafe{PL011UartInner::new(mmio_start_addr)}),
         }
     }
 }
