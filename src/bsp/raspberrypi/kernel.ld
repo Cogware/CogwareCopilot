@@ -3,13 +3,14 @@
  * Copyright (c) 2018-2022 Andre Richter <andre.o.richter@gmail.com>
  */
 
+PAGE_SIZE = 64K;
+PAGE_MASK = PAGE_SIZE - 1;
+
 __rpi_phys_dram_start_addr = 0;
 
 /* The physical address at which the the kernel binary will be loaded by the Raspberry's firmware */
 __rpi_phys_binary_load_addr = 0x80000;
 
-PAGE_SIZE = 64K;
-PAGE_MASK = PAGE_SIZE - 1;
 
 ENTRY(__rpi_phys_binary_load_addr)
 
@@ -26,7 +27,6 @@ PHDRS
     segment_boot_core_stack PT_LOAD FLAGS(6);
     segment_code            PT_LOAD FLAGS(5);
     segment_data            PT_LOAD FLAGS(6);
-    segment_heap            PT_LOAD FLAGS(6);
 }
 
 SECTIONS
@@ -38,20 +38,22 @@ SECTIONS
     ***********************************************************************************************/
     .boot_core_stack (NOLOAD) :
     {
-                                             /*   ^             */
+        __boot_core_stack_start = .;         /*   ^             */
                                              /*   | stack       */
         . += __rpi_phys_binary_load_addr;    /*   | growth      */
                                              /*   | direction   */
         __boot_core_stack_end_exclusive = .; /*   |             */
     } :segment_boot_core_stack
 
+    ASSERT((. & PAGE_MASK) == 0, "End of boot core stack is not page aligned")
+
     /***********************************************************************************************
     * Code + RO Data + Global Offset Table
     ***********************************************************************************************/
+    __code_start = .;
     .text :
     {
         KEEP(*(.text._start))
-
         *(.text._start_arguments) /* Constants (or statics in Rust speak) read by _start(). */
         *(.text._start_rust)      /* The Rust entry point */
         *(.text*)                 /* Everything else */
@@ -60,10 +62,12 @@ SECTIONS
     .rodata : ALIGN(8) { *(.rodata*) } :segment_code
 
     . = ALIGN(PAGE_SIZE);
+    __code_end_exclusive = .;
 
     /***********************************************************************************************
     * Data + BSS
     ***********************************************************************************************/
+    __data_start = .;
     .data : { *(.data*) } :segment_data
 
     /* Section is zeroed in pairs of u64. Align start and end to 16 bytes */
@@ -76,18 +80,16 @@ SECTIONS
     } :segment_data
 
     . = ALIGN(PAGE_SIZE);
+    __data_end_exclusive = .;
 
     /***********************************************************************************************
-    * Heap
+    * MMIO Remap Reserved
     ***********************************************************************************************/
-    __heap_start = .;
-    .heap (NOLOAD) :
-    {
-        . += 384 * 1024 * 1024;
-    } :segment_heap
-    __heap_end_exclusive = .;
+    __mmio_remap_start = .;
+    . += 8 * 1024 * 1024;
+    __mmio_remap_end_exclusive = .;
 
-    ASSERT((. & PAGE_MASK) == 0, "Heap is not page aligned")
+    ASSERT((. & PAGE_MASK) == 0, "MMIO remap reservation is not page aligned")
 
     /***********************************************************************************************
     * Misc

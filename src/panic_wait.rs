@@ -4,12 +4,29 @@
 
 //! A panic handler that infinitely waits.
 
-use crate::{cpu, println};
+use crate::{cpu, exception, println};
 use core::panic::PanicInfo;
 
 //--------------------------------------------------------------------------------------------------
 // Private Code
 //--------------------------------------------------------------------------------------------------
+
+/// The point of exit for `libkernel`.
+///
+/// It is linked weakly, so that the integration tests can overload its standard behavior.
+#[linkage = "weak"]
+#[unsafe(no_mangle)]
+fn _panic_exit() -> ! {
+    #[cfg(not(feature = "test_build"))]
+    {
+        cpu::wait_forever()
+    }
+
+    #[cfg(feature = "test_build")]
+    {
+        cpu::qemu_exit_failure()
+    }
+}
 
 /// Stop immediately if called a second time.
 ///
@@ -37,11 +54,13 @@ fn panic_prevent_reenter() {
         return;
     }
 
-    cpu::wait_forever()
+    _panic_exit()
 }
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    exception::asynchronous::local_irq_mask();
+
     // Protect against panic infinite loops if any of the following code panics itself.
     panic_prevent_reenter();
 
@@ -64,5 +83,5 @@ fn panic(info: &PanicInfo) -> ! {
         column,
     );
 
-    cpu::wait_forever()
+    _panic_exit()
 }

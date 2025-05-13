@@ -16,6 +16,13 @@ BSP ?= rpi3
 # Default to a serial device name that is common in Linux.
 DEV_SERIAL ?= /dev/ttyUSB0
 
+# Optional integration test name.
+ifdef TEST
+    TEST_ARG = --test $(TEST)
+else
+    TEST_ARG = --test '*'
+endif
+
 
 
 ##--------------------------------------------------------------------------------------------------
@@ -29,12 +36,13 @@ ifeq ($(BSP),rpi3)
     QEMU_BINARY       = qemu-system-aarch64
     QEMU_MACHINE_TYPE = raspi3
     QEMU_RELEASE_ARGS = -serial stdio -display none
+    QEMU_TEST_ARGS    = $(QEMU_RELEASE_ARGS) -semihosting
     OBJDUMP_BINARY    = aarch64-none-elf-objdump
     NM_BINARY         = aarch64-none-elf-nm
     READELF_BINARY    = aarch64-none-elf-readelf
-    OPENOCD_ARG	      = -f /openocd/tcl/interface/ftdi/olimex-arm-usb-tiny-h.cfg -f /openocd/rpi3.cfg
-    JTAG_BOOT_IMAGE   = X1_JTAG_boot/jtag_boot_rpi3.img
-    LD_SCRIPT_PATH    = $(shell pwd)/src/bsp/raspberrypi
+    OPENOCD_ARG       = -f /openocd/tcl/interface/ftdi/olimex-arm-usb-tiny-h.cfg -f /openocd/rpi3.cfg
+    JTAG_BOOT_IMAGE   = ../X1_JTAG_boot/jtag_boot_rpi3.img
+    LD_SCRIPT_PATH    = $(shell pwd)/kernel/src/bsp/raspberrypi
     RUSTC_MISC_ARGS   = -C target-cpu=cortex-a53
 else ifeq ($(BSP),rpi4)
     TARGET            = aarch64-unknown-none-softfloat
@@ -42,10 +50,13 @@ else ifeq ($(BSP),rpi4)
     QEMU_BINARY       = qemu-system-aarch64
     QEMU_MACHINE_TYPE =
     QEMU_RELEASE_ARGS = -serial stdio -display none
+    QEMU_TEST_ARGS    = $(QEMU_RELEASE_ARGS) -semihosting
     OBJDUMP_BINARY    = aarch64-none-elf-objdump
     NM_BINARY         = aarch64-none-elf-nm
     READELF_BINARY    = aarch64-none-elf-readelf
-    LD_SCRIPT_PATH    = $(shell pwd)/src/bsp/raspberrypi
+    OPENOCD_ARG       = -f /openocd/tcl/interface/ftdi/olimex-arm-usb-tiny-h.cfg -f /openocd/rpi4.cfg
+    JTAG_BOOT_IMAGE   = ../X1_JTAG_boot/jtag_boot_rpi4.img
+    LD_SCRIPT_PATH    = $(shell pwd)/kernel/src/bsp/raspberrypi
     RUSTC_MISC_ARGS   = -C target-cpu=cortex-a72
 endif
 
@@ -57,7 +68,7 @@ export LD_SCRIPT_PATH
 ##--------------------------------------------------------------------------------------------------
 ## Targets and Prerequisites
 ##--------------------------------------------------------------------------------------------------
-KERNEL_MANIFEST      = Cargo.toml
+KERNEL_MANIFEST      = kernel/Cargo.toml
 KERNEL_LINKER_SCRIPT = kernel.ld
 LAST_BUILD_CONFIG    = target/$(BSP).build_config
 
@@ -76,31 +87,32 @@ RUSTFLAGS = $(RUSTC_MISC_ARGS)                   \
     -C link-arg=--script=$(KERNEL_LINKER_SCRIPT)
 
 RUSTFLAGS_PEDANTIC = $(RUSTFLAGS) \
-    ##-D warnings                   \
-    ##-D missing_docs
+    -D warnings                   \
+    -D missing_docs
 
 FEATURES      = --features bsp_$(BSP)
 COMPILER_ARGS = --target=$(TARGET) \
     $(FEATURES)                    \
     --release
 
-RUSTC_CMD   = cargo rustc $(COMPILER_ARGS)
+RUSTC_CMD   = cargo rustc $(COMPILER_ARGS) --manifest-path $(KERNEL_MANIFEST)
 DOC_CMD     = cargo doc $(COMPILER_ARGS)
 CLIPPY_CMD  = cargo clippy $(COMPILER_ARGS)
+TEST_CMD    = cargo test $(COMPILER_ARGS) --manifest-path $(KERNEL_MANIFEST)
 OBJCOPY_CMD = rust-objcopy \
     --strip-all            \
     -O binary
 
 EXEC_QEMU          = $(QEMU_BINARY) -M $(QEMU_MACHINE_TYPE)
-EXEC_TEST_DISPATCH = ruby common/tests/dispatch.rb
-EXEC_MINIPUSH      = ruby common/serial/minipush.rb
+EXEC_TEST_DISPATCH = ruby ../common/tests/dispatch.rb
+EXEC_MINIPUSH      = ruby ../common/serial/minipush.rb
 
 ##------------------------------------------------------------------------------
 ## Dockerization
 ##------------------------------------------------------------------------------
 DOCKER_CMD            = docker run -t --rm -v $(shell pwd):/work/tutorial -w /work/tutorial
 DOCKER_CMD_INTERACT   = $(DOCKER_CMD) -i
-DOCKER_ARG_DIR_COMMON = -v $(shell pwd)/common:/work/common
+DOCKER_ARG_DIR_COMMON = -v $(shell pwd)/../common:/work/common
 DOCKER_ARG_DIR_JTAG   = -v $(shell pwd)/../X1_JTAG_boot:/work/X1_JTAG_boot
 DOCKER_ARG_DEV        = --privileged -v /dev:/dev
 DOCKER_ARG_NET        = --network host
@@ -186,19 +198,13 @@ endif
 chainboot: $(KERNEL_BIN)
 	@$(DOCKER_CHAINBOOT) $(EXEC_MINIPUSH) $(DEV_SERIAL) $(KERNEL_BIN)
 
-toggle: 
-	sleep 1
-	curl -X POST http://69.0.0.15:5000/toggle -d state=on
-	sleep 60
-	curl -X POST http://69.0.0.15:5000/toggle -d state=off
-
-chainboottoggle: chainboot toggle
-
 ##------------------------------------------------------------------------------
 ## Run clippy
 ##------------------------------------------------------------------------------
 clippy:
 	@RUSTFLAGS="$(RUSTFLAGS_PEDANTIC)" $(CLIPPY_CMD)
+	@RUSTFLAGS="$(RUSTFLAGS_PEDANTIC)" $(CLIPPY_CMD) --features test_build --tests \
+                --manifest-path $(KERNEL_MANIFEST)
 
 ##------------------------------------------------------------------------------
 ## Clean
@@ -231,6 +237,7 @@ nm: $(KERNEL_ELF)
 	@$(DOCKER_TOOLS) $(NM_BINARY) --demangle --print-size $(KERNEL_ELF) | sort | rustfilt
 
 
+
 ##--------------------------------------------------------------------------------------------------
 ## Debugging targets
 ##--------------------------------------------------------------------------------------------------
@@ -258,14 +265,18 @@ gdb gdb-opt0: $(KERNEL_ELF)
 	$(call color_header, "Launching GDB")
 	@$(DOCKER_GDB) gdb-multiarch -q $(KERNEL_ELF)
 
+
+
 ##--------------------------------------------------------------------------------------------------
 ## Testing targets
 ##--------------------------------------------------------------------------------------------------
-.PHONY: test test_boot
+.PHONY: test test_boot test_unit test_integration
+
+test_unit test_integration: FEATURES += --features test_build
 
 ifeq ($(QEMU_MACHINE_TYPE),) # QEMU is not supported for the board.
 
-test_boot test:
+test_boot test_unit test_integration test:
 	$(call color_header, "$(QEMU_MISSING_STRING)")
 
 else # QEMU is supported.
@@ -277,6 +288,47 @@ test_boot: $(KERNEL_BIN)
 	$(call color_header, "Boot test - $(BSP)")
 	@$(DOCKER_TEST) $(EXEC_TEST_DISPATCH) $(EXEC_QEMU) $(QEMU_RELEASE_ARGS) -kernel $(KERNEL_BIN)
 
-test: test_boot
+##------------------------------------------------------------------------------
+## Helpers for unit and integration test targets
+##------------------------------------------------------------------------------
+define KERNEL_TEST_RUNNER
+#!/usr/bin/env bash
+
+    # The cargo test runner seems to change into the crate under test's directory. Therefore, ensure
+    # this script executes from the root.
+    cd $(shell pwd)
+
+    TEST_ELF=$$(echo $$1 | sed -e 's/.*target/target/g')
+    TEST_BINARY=$$(echo $$1.img | sed -e 's/.*target/target/g')
+
+    $(OBJCOPY_CMD) $$TEST_ELF $$TEST_BINARY
+    $(DOCKER_TEST) $(EXEC_TEST_DISPATCH) $(EXEC_QEMU) $(QEMU_TEST_ARGS) -kernel $$TEST_BINARY
+endef
+
+export KERNEL_TEST_RUNNER
+
+define test_prepare
+    @mkdir -p target
+    @echo "$$KERNEL_TEST_RUNNER" > target/kernel_test_runner.sh
+    @chmod +x target/kernel_test_runner.sh
+endef
+
+##------------------------------------------------------------------------------
+## Run unit test(s)
+##------------------------------------------------------------------------------
+test_unit:
+	$(call color_header, "Compiling unit test(s) - $(BSP)")
+	$(call test_prepare)
+	@RUSTFLAGS="$(RUSTFLAGS_PEDANTIC)" $(TEST_CMD) --lib
+
+##------------------------------------------------------------------------------
+## Run integration test(s)
+##------------------------------------------------------------------------------
+test_integration:
+	$(call color_header, "Compiling integration test(s) - $(BSP)")
+	$(call test_prepare)
+	@RUSTFLAGS="$(RUSTFLAGS_PEDANTIC)" $(TEST_CMD) $(TEST_ARG)
+
+test: test_boot test_unit test_integration
 
 endif

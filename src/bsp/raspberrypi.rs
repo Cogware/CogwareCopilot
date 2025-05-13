@@ -6,6 +6,7 @@
 
 pub mod cpu;
 pub mod driver;
+pub mod exception;
 pub mod memory;
 
 //--------------------------------------------------------------------------------------------------
@@ -16,7 +17,7 @@ pub mod memory;
 pub fn board_name() -> &'static str {
     #[cfg(feature = "bsp_rpi3")]
     {
-        "Raspberry Pi 69"
+        "Raspberry Pi 3"
     }
 
     #[cfg(feature = "bsp_rpi4")]

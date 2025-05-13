@@ -5,8 +5,12 @@
 //! GPIO Driver.
 
 use crate::{
-    bsp::device_driver::common::MMIODerefWrapper, driver, synchronization,
-    synchronization::NullLock,
+    bsp::device_driver::common::MMIODerefWrapper,
+    driver,
+    exception::asynchronous::IRQNumber,
+    memory::{Address, Virtual},
+    synchronization,
+    synchronization::IRQSafeNullLock,
 };
 use tock_registers::{
     interfaces::{ReadWriteable, Writeable},
@@ -118,7 +122,7 @@ struct GPIOInner {
 
 /// Representation of the GPIO HW.
 pub struct GPIO {
-    inner: NullLock<GPIOInner>,
+    inner: IRQSafeNullLock<GPIOInner>,
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -131,7 +135,7 @@ impl GPIOInner {
     /// # Safety
     ///
     /// - The user must ensure to provide a correct MMIO start address.
-    pub const unsafe fn new(mmio_start_addr: usize) -> Self {
+    pub const unsafe fn new(mmio_start_addr: Address<Virtual>) -> Self {
         Self {
             registers: Registers::new(mmio_start_addr),
         }
@@ -198,9 +202,9 @@ impl GPIO {
     /// # Safety
     ///
     /// - The user must ensure to provide a correct MMIO start address.
-    pub const unsafe fn new(mmio_start_addr: usize) -> Self {
+    pub const unsafe fn new(mmio_start_addr: Address<Virtual>) -> Self {
         Self {
-            inner: NullLock::new(GPIOInner::new(mmio_start_addr)),
+            inner: IRQSafeNullLock::new(GPIOInner::new(mmio_start_addr)),
         }
     }
 
@@ -216,6 +220,8 @@ impl GPIO {
 use synchronization::interface::Mutex;
 
 impl driver::interface::DeviceDriver for GPIO {
+    type IRQNumberType = IRQNumber;
+
     fn compatible(&self) -> &'static str {
         Self::COMPATIBLE
     }

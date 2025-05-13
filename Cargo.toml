@@ -1,8 +1,8 @@
 [package]
-name = "mingo"
-version = "0.7.0"
-authors = ["Andre Richter <andre.o.richter@gmail.com>"]
-edition = "2021"
+name = "cogwarecopilot"
+version = "0.1.0"
+authors = ["Leah Rosenfeld <lynndoxxy@gmail.com>", "Justin Copenhaver <ninjagecko5000@gmail.com>"]
+edition = "2024"
 
 [profile.release]
 lto = true

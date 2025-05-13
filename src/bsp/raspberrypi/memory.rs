@@ -3,34 +3,111 @@
 // Copyright (c) 2018-2023 Andre Richter <andre.o.richter@gmail.com>
 
 //! BSP Memory Management.
+//!
+//! The physical memory layout.
+//!
+//! The Raspberry's firmware copies the kernel binary to 0x8_0000. The preceding region will be used
+//! as the boot core's stack.
+//!
+//! +---------------------------------------+
+//! |                                       | boot_core_stack_start @ 0x0
+//! |                                       |                                ^
+//! | Boot-core Stack                       |                                | stack
+//! |                                       |                                | growth
+//! |                                       |                                | direction
+//! +---------------------------------------+
+//! |                                       | code_start @ 0x8_0000 == boot_core_stack_end_exclusive
+//! | .text                                 |
+//! | .rodata                               |
+//! | .got                                  |
+//! |                                       |
+//! +---------------------------------------+
+//! |                                       | data_start == code_end_exclusive
+//! | .data                                 |
+//! | .bss                                  |
+//! |                                       |
+//! +---------------------------------------+
+//! |                                       | data_end_exclusive
+//! |                                       |
+//!
+//!
+//!
+//!
+//!
+//! The virtual memory layout is as follows:
+//!
+//! +---------------------------------------+
+//! |                                       | boot_core_stack_start @ 0x0
+//! |                                       |                                ^
+//! | Boot-core Stack                       |                                | stack
+//! |                                       |                                | growth
+//! |                                       |                                | direction
+//! +---------------------------------------+
+//! |                                       | code_start @ 0x8_0000 == boot_core_stack_end_exclusive
+//! | .text                                 |
+//! | .rodata                               |
+//! | .got                                  |
+//! |                                       |
+//! +---------------------------------------+
+//! |                                       | data_start == code_end_exclusive
+//! | .data                                 |
+//! | .bss                                  |
+//! |                                       |
+//! +---------------------------------------+
+//! |                                       |  mmio_remap_start == data_end_exclusive
+//! | VA region for MMIO remapping          |
+//! |                                       |
+//! +---------------------------------------+
+//! |                                       |  mmio_remap_end_exclusive
+//! |                                       |
+pub mod mmu;
+
+use crate::memory::{mmu::PageAddress, Address, Physical, Virtual};
+use core::cell::UnsafeCell;
+
+//--------------------------------------------------------------------------------------------------
+// Private Definitions
+//--------------------------------------------------------------------------------------------------
+
+// Symbols from the linker script.
+extern "Rust" {
+    static __code_start: UnsafeCell<()>;
+    static __code_end_exclusive: UnsafeCell<()>;
+
+    static __data_start: UnsafeCell<()>;
+    static __data_end_exclusive: UnsafeCell<()>;
+
+    static __mmio_remap_start: UnsafeCell<()>;
+    static __mmio_remap_end_exclusive: UnsafeCell<()>;
+
+    static __boot_core_stack_start: UnsafeCell<()>;
+    static __boot_core_stack_end_exclusive: UnsafeCell<()>;
+}
 
 //--------------------------------------------------------------------------------------------------
 // Public Definitions
 //--------------------------------------------------------------------------------------------------
 
-use core::{
-    alloc::{GlobalAlloc, Layout},
-    cell::UnsafeCell,
-    mem, ptr,
-};
-
-use crate::info;
-
 /// The board's physical memory map.
 #[rustfmt::skip]
 pub(super) mod map {
-
-    pub const GPIO_OFFSET:         usize = 0x0020_0000;
-    pub const UART_OFFSET:         usize = 0x0020_1000;
+    use super::*;
 
     /// Physical devices.
     #[cfg(feature = "bsp_rpi3")]
     pub mod mmio {
         use super::*;
 
-        pub const START:            usize =         0x3F00_0000;
-        pub const GPIO_START:       usize = START + GPIO_OFFSET;
-        pub const PL011_UART_START: usize = START + UART_OFFSET;
+        pub const PERIPHERAL_IC_START: Address<Physical> = Address::new(0x3F00_B200);
+        pub const PERIPHERAL_IC_SIZE:  usize             =              0x24;
+
+        pub const GPIO_START:          Address<Physical> = Address::new(0x3F20_0000);
+        pub const GPIO_SIZE:           usize             =              0xA0;
+
+        pub const PL011_UART_START:    Address<Physical> = Address::new(0x3F20_1000);
+        pub const PL011_UART_SIZE:     usize             =              0x48;
+
+        pub const END:                 Address<Physical> = Address::new(0x4001_0000);
     }
 
     /// Physical devices.
@@ -38,164 +115,104 @@ pub(super) mod map {
     pub mod mmio {
         use super::*;
 
-        pub const START:            usize =         0xFE00_0000;
-        pub const GPIO_START:       usize = START + GPIO_OFFSET;
-        pub const PL011_UART_START: usize = START + UART_OFFSET;
+        pub const GPIO_START:       Address<Physical> = Address::new(0xFE20_0000);
+        pub const GPIO_SIZE:        usize             =              0xA0;
+
+        pub const PL011_UART_START: Address<Physical> = Address::new(0xFE20_1000);
+        pub const PL011_UART_SIZE:  usize             =              0x48;
+
+        pub const GICD_START:       Address<Physical> = Address::new(0xFF84_1000);
+        pub const GICD_SIZE:        usize             =              0x824;
+
+        pub const GICC_START:       Address<Physical> = Address::new(0xFF84_2000);
+        pub const GICC_SIZE:        usize             =              0x14;
+
+        pub const END:              Address<Physical> = Address::new(0xFF85_0000);
     }
+
+    pub const END: Address<Physical> = mmio::END;
 }
 
-extern "Rust" {
-    static __heap_start: UnsafeCell<()>;
-    static __heap_end_exclusive: UnsafeCell<()>;
+//--------------------------------------------------------------------------------------------------
+// Private Code
+//--------------------------------------------------------------------------------------------------
+
+/// Start page address of the code segment.
+///
+/// # Safety
+///
+/// - Value is provided by the linker script and must be trusted as-is.
+#[inline(always)]
+fn virt_code_start() -> PageAddress<Virtual> {
+    PageAddress::from(unsafe { __code_start.get() as usize })
 }
 
-struct Block {
-    size: usize,
-    next: *mut Block,
+/// Size of the code segment.
+///
+/// # Safety
+///
+/// - Value is provided by the linker script and must be trusted as-is.
+#[inline(always)]
+fn code_size() -> usize {
+    unsafe { (__code_end_exclusive.get() as usize) - (__code_start.get() as usize) }
 }
 
-struct Heap {
-    free_blocks: *mut Block,
+/// Start page address of the data segment.
+#[inline(always)]
+fn virt_data_start() -> PageAddress<Virtual> {
+    PageAddress::from(unsafe { __data_start.get() as usize })
 }
 
-#[global_allocator]
-static mut MAIN_HEAP: Heap = Heap {
-    free_blocks: ptr::null_mut(),
-};
-
-#[alloc_error_handler]
-fn out_of_memory(layout: Layout) -> ! {
-    panic!("kmalloc: out of memory while allocating {}", layout.size());
+/// Size of the data segment.
+///
+/// # Safety
+///
+/// - Value is provided by the linker script and must be trusted as-is.
+#[inline(always)]
+fn data_size() -> usize {
+    unsafe { (__data_end_exclusive.get() as usize) - (__data_start.get() as usize) }
 }
 
-pub fn initialize_heap() {
+/// Start page address of the MMIO remap reservation.
+///
+/// # Safety
+///
+/// - Value is provided by the linker script and must be trusted as-is.
+#[inline(always)]
+fn virt_mmio_remap_start() -> PageAddress<Virtual> {
+    PageAddress::from(unsafe { __mmio_remap_start.get() as usize })
+}
+
+/// Size of the MMIO remap reservation.
+///
+/// # Safety
+///
+/// - Value is provided by the linker script and must be trusted as-is.
+#[inline(always)]
+fn mmio_remap_size() -> usize {
+    unsafe { (__mmio_remap_end_exclusive.get() as usize) - (__mmio_remap_start.get() as usize) }
+}
+
+/// Start page address of the boot core's stack.
+#[inline(always)]
+fn virt_boot_core_stack_start() -> PageAddress<Virtual> {
+    PageAddress::from(unsafe { __boot_core_stack_start.get() as usize })
+}
+
+/// Size of the boot core's stack.
+#[inline(always)]
+fn boot_core_stack_size() -> usize {
     unsafe {
-        MAIN_HEAP.init(
-            __heap_start.get() as usize,
-            __heap_end_exclusive.get() as usize,
-        );
+        (__boot_core_stack_end_exclusive.get() as usize) - (__boot_core_stack_start.get() as usize)
     }
 }
 
-pub unsafe fn kmalloc(size: usize) -> *mut u8 {
-    MAIN_HEAP.malloc(size)
-}
+//--------------------------------------------------------------------------------------------------
+// Public Code
+//--------------------------------------------------------------------------------------------------
 
-pub unsafe fn kmfree(ptr: *mut u8) {
-    MAIN_HEAP.free(ptr);
-}
-
-unsafe impl GlobalAlloc for Heap {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // TODO add mutex??
-        kmalloc(layout.size())
-        //self.malloc(layout.size())
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
-        // TODO add mutex??
-        kmfree(ptr);
-        //self.free(ptr);
-    }
-}
-
-impl Heap {
-    pub unsafe fn init(&mut self, start: usize, end: usize) {
-        let space = start as *mut Block;
-
-        let size = end - start;
-        info!(
-            "kernel heap: using {:#x}, size {}MiB",
-            start,
-            size / 1024 / 1024
-        );
-
-        (*space).size = size;
-        (*space).next = ptr::null_mut();
-
-        self.free_blocks = space;
-    }
-
-    pub unsafe fn malloc(&mut self, mut size: usize) -> *mut u8 {
-        let nextfree: *mut Block;
-        let mut prev: *mut Block = ptr::null_mut();
-        let mut cur: *mut Block = self.free_blocks;
-
-        // Align the size to 8 bytes
-        size += (8 - (size & 0x7)) & 0x7;
-        let block_size = size + mem::size_of::<Block>();
-
-        while !cur.is_null() {
-            if (*cur).size >= block_size {
-                // If the block can be split with enough room for another block struct and more than 8 bytes left over, then split it
-                if (*cur).size >= block_size + mem::size_of::<Block>() + 8 {
-                    nextfree = cur.cast::<u8>().add(block_size).cast();
-                    (*nextfree).size = (*cur).size - block_size;
-                    (*cur).size = block_size;
-
-                    (*nextfree).next = (*cur).next;
-                } else {
-                    nextfree = (*cur).next;
-                }
-                (*cur).next = ptr::null_mut();
-
-                if !prev.is_null() {
-                    (*prev).next = nextfree;
-                } else {
-                    self.free_blocks = nextfree;
-                }
-
-                return cur.offset(1).cast();
-            }
-
-            prev = cur;
-            cur = (*cur).next;
-        }
-        // Out Of Memory
-        panic!("Kernel out of memory!  Halting...\n");
-    }
-
-    pub unsafe fn free(&mut self, ptr: *mut u8) {
-        let mut prev: *mut Block = ptr::null_mut();
-        let block: *mut Block = ptr.cast::<Block>().offset(-1);
-        let mut cur: *mut Block = self.free_blocks;
-
-        while !cur.is_null() {
-            if (*cur).next == block {
-                panic!("Double free detected at {:x}! Halting...\n", cur as usize);
-            }
-
-            if cur.cast::<u8>().add((*cur).size).cast() == block {
-                // Merge the free'd block with the previous block
-                (*cur).size += (*block).size;
-
-                // If this block is adjacent to the next free block, then merge them
-                if cur.cast::<u8>().add((*cur).size).cast() == (*cur).next {
-                    (*cur).size += (*(*cur).next).size;
-                    (*cur).next = (*(*cur).next).next;
-                }
-                return;
-            }
-
-            if cur >= block {
-                // Insert the free'd block into the list
-                if !prev.is_null() {
-                    (*prev).next = block;
-                } else {
-                    self.free_blocks = block;
-                }
-                (*block).next = cur;
-
-                // If this block is adjacent to the next free block, then merge them
-                if block.cast::<u8>().add((*block).size).cast() == cur {
-                    (*block).size += (*cur).size;
-                    (*block).next = (*cur).next;
-                }
-                return;
-            }
-
-            prev = cur;
-            cur = (*cur).next;
-        }
-    }
+/// Exclusive end address of the physical address space.
+#[inline(always)]
+pub fn phys_addr_space_end_exclusive_addr() -> PageAddress<Physical> {
+    PageAddress::from(map::END)
 }
