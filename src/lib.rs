@@ -132,7 +132,6 @@ pub mod memory;
 pub mod print;
 pub mod state;
 pub mod time;
-pub mod main;
 
 //--------------------------------------------------------------------------------------------------
 // Public Code

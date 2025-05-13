@@ -5,7 +5,6 @@ fn main() {
         Ok(var) => var,
         _ => process::exit(0),
     };
-
     let files = fs::read_dir(ld_script_path).unwrap();
     files
         .filter_map(Result::ok)

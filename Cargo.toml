@@ -2,7 +2,7 @@
 name = "cogwarecopilot"
 version = "0.1.0"
 authors = ["Leah Rosenfeld <lynndoxxy@gmail.com>", "Justin Copenhaver <ninjagecko5000@gmail.com>"]
-edition = "2024"
+edition = "2021"
 
 [profile.release]
 lto = true
@@ -12,11 +12,19 @@ default = ["bsp_rpi3"]
 bsp_rpi3 = ["tock-registers"]
 bsp_rpi4 = ["tock-registers"]
 
+[lib]
+name = "cogware_kernel"
+path = "src/lib.rs"
+test = false
+bench = false
+
 [[bin]]
 name = "kernel"
 path = "src/main.rs"
 test = false
 bench = false
+
+
 
 ##--------------------------------------------------------------------------------------------------
 ## Dependencies

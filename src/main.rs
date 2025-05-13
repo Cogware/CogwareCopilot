@@ -21,7 +21,7 @@ use crate::{bsp, cpu, driver, exception, info, memory, state, time};
 ///       e.g. the yet-to-be-introduced spinlocks in the device drivers (which currently employ
 ///       IRQSafeNullLocks instead of spinlocks), will fail to work (properly) on the RPi SoCs.
 #[unsafe(no_mangle)]
-pub unsafe fn kernel_init() -> ! {
+unsafe fn kernel_init() -> ! {
     unsafe { exception::handling_init() };
 
     let phys_kernel_tables_base_addr = match unsafe { memory::mmu::kernel_map_binary() } {
