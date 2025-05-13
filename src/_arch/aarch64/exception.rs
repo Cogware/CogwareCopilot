@@ -302,11 +302,11 @@ pub fn current_privilege_level() -> (PrivilegeLevel, &'static str) {
 ///   Manual.
 pub unsafe fn handling_init() {
     // Provided by exception.S.
-    extern "Rust" {
+    unsafe extern "Rust" {
         static __exception_vector_start: UnsafeCell<()>;
     }
 
-    VBAR_EL1.set(__exception_vector_start.get() as u64);
+    VBAR_EL1.set(unsafe{ __exception_vector_start.get() as u64});
 
     // Force VBAR update to complete before next instruction.
     barrier::isb(barrier::SY);
