@@ -23,6 +23,7 @@ bench = false
 ##--------------------------------------------------------------------------------------------------
 
 [dependencies]
+quiche-gl = { git = "https://github.com/Lynndox/quiche-gl", branch = "wip" }
 
 # Optional dependencies
 tock-registers = { version = "0.8.x", default-features = false, features = ["register_types"], optional = true }
