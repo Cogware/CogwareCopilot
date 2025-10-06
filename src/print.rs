@@ -14,7 +14,7 @@ static GLOBAL_LOGGER: SimpleLogger = SimpleLogger;
 
 impl SimpleLogger {
     pub fn init(max_level: LevelFilter) -> Result<(), log::SetLoggerError> {
-        log::set_logger(&GLOBAL_LOGGER).map(|()| log::set_max_level(max_level))
+        unsafe { log::set_logger_racy(&GLOBAL_LOGGER).map(|()| log::set_max_level_racy(max_level)) }
     }
 }
 
@@ -26,9 +26,10 @@ impl log::Log for SimpleLogger {
     fn log(&self, record: &log::Record) {
         let timestamp = crate::time::time_manager().uptime();
         _print(format_args!(
-            "[  {:>3}.{:06}] [ {:^5} ] {}",
+            "\x1b[2;37m[  {:>3}.{:06}]\x1b[0m {}{:<5}\x1b[0m {}\n",
             timestamp.as_secs(),
             timestamp.subsec_micros(),
+            level_color(record.level()),
             record.level(),
             record.args()
         ));
@@ -36,6 +37,16 @@ impl log::Log for SimpleLogger {
 
     fn flush(&self) {
         console::console().flush();
+    }
+}
+
+fn level_color(level: log::Level) -> &'static str {
+    match level {
+        log::Level::Error => "\x1b[31m",
+        log::Level::Warn => "\x1b[33m",
+        log::Level::Info => "\x1b[32m",
+        log::Level::Debug => "\x1b[36m",
+        log::Level::Trace => "\x1b[2;37m",
     }
 }
 
