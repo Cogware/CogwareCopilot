@@ -4,10 +4,8 @@
 
 //! Driver support.
 
-use crate::{
-    info,
-    synchronization::{interface::Mutex, NullLock},
-};
+use crate::synchronization::{interface::Mutex, NullLock};
+use log::info;
 
 //--------------------------------------------------------------------------------------------------
 // Private Definitions

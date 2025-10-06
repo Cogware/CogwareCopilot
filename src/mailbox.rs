@@ -1,6 +1,7 @@
 use crate::framebuffer::FrameBuffer; // videocoremboxbase: 3F00B880 resp-successful: 0
-use crate::{info, mailbox::ReqResp::ResponseSuccessful};
+use crate::mailbox::ReqResp::ResponseSuccessful;
 use core::{arch::aarch64::float32x2_t, mem, ops::BitAnd};
+use log::info;
 // use log::info;
 // use space_invaders::{SCREEN_HEIGHT, SCREEN_WIDTH}; // we hard set these here for now, should
 // really ask the HVS for the screen H and W
@@ -35,7 +36,6 @@ pub const TOTAL_FB_BUFFER_LEN: usize = FB_VIRTUAL_HEIGHT as usize * FB_VIRTUAL_W
 const FB_VIRTUAL_OFFSET_TAG: u32 = 0x48009;
 const FB_VIRTUAL_OFFSET_X: u32 = 0;
 const FB_VIRTUAL_OFFSET_Y: u32 = 0;
-
 
 // TODO: wrap into registers map lib
 #[repr(C)]

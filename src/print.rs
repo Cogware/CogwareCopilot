@@ -4,8 +4,40 @@
 
 //! Printing.
 
+use log::LevelFilter;
+
 use crate::console;
 use core::fmt;
+
+pub struct SimpleLogger;
+static GLOBAL_LOGGER: SimpleLogger = SimpleLogger;
+
+impl SimpleLogger {
+    pub fn init(max_level: LevelFilter) -> Result<(), log::SetLoggerError> {
+        log::set_logger(&GLOBAL_LOGGER).map(|()| log::set_max_level(max_level))
+    }
+}
+
+impl log::Log for SimpleLogger {
+    fn enabled(&self, _metadata: &log::Metadata) -> bool {
+        true
+    }
+
+    fn log(&self, record: &log::Record) {
+        let timestamp = crate::time::time_manager().uptime();
+        _print(format_args!(
+            "[  {:>3}.{:06}] [ {:^5} ] {}",
+            timestamp.as_secs(),
+            timestamp.subsec_micros(),
+            record.level(),
+            record.args()
+        ));
+    }
+
+    fn flush(&self) {
+        console::console().flush();
+    }
+}
 
 //--------------------------------------------------------------------------------------------------
 // Public Code
@@ -35,50 +67,50 @@ macro_rules! println {
     })
 }
 
-/// Prints an info, with a newline.
-#[macro_export]
-macro_rules! info {
-    ($string:expr) => ({
-        let timestamp = $crate::time::time_manager().uptime();
-
-        $crate::print::_print(format_args_nl!(
-            concat!("[  {:>3}.{:06}] ", $string),
-            timestamp.as_secs(),
-            timestamp.subsec_micros(),
-        ));
-    });
-    ($format_string:expr, $($arg:tt)*) => ({
-        let timestamp = $crate::time::time_manager().uptime();
-
-        $crate::print::_print(format_args_nl!(
-            concat!("[  {:>3}.{:06}] ", $format_string),
-            timestamp.as_secs(),
-            timestamp.subsec_micros(),
-            $($arg)*
-        ));
-    })
-}
-
-/// Prints a warning, with a newline.
-#[macro_export]
-macro_rules! warn {
-    ($string:expr) => ({
-        let timestamp = $crate::time::time_manager().uptime();
-
-        $crate::print::_print(format_args_nl!(
-            concat!("[W {:>3}.{:06}] ", $string),
-            timestamp.as_secs(),
-            timestamp.subsec_micros(),
-        ));
-    });
-    ($format_string:expr, $($arg:tt)*) => ({
-        let timestamp = $crate::time::time_manager().uptime();
-
-        $crate::print::_print(format_args_nl!(
-            concat!("[W {:>3}.{:06}] ", $format_string),
-            timestamp.as_secs(),
-            timestamp.subsec_micros(),
-            $($arg)*
-        ));
-    })
-}
+// /// Prints an info, with a newline.
+// #[macro_export]
+// macro_rules! info {
+//     ($string:expr) => ({
+//         let timestamp = $crate::time::time_manager().uptime();
+//
+//         $crate::print::_print(format_args_nl!(
+//             concat!("[  {:>3}.{:06}] ", $string),
+//             timestamp.as_secs(),
+//             timestamp.subsec_micros(),
+//         ));
+//     });
+//     ($format_string:expr, $($arg:tt)*) => ({
+//         let timestamp = $crate::time::time_manager().uptime();
+//
+//         $crate::print::_print(format_args_nl!(
+//             concat!("[  {:>3}.{:06}] ", $format_string),
+//             timestamp.as_secs(),
+//             timestamp.subsec_micros(),
+//             $($arg)*
+//         ));
+//     })
+// }
+//
+// /// Prints a warning, with a newline.
+// #[macro_export]
+// macro_rules! warn {
+//     ($string:expr) => ({
+//         let timestamp = $crate::time::time_manager().uptime();
+//
+//         $crate::print::_print(format_args_nl!(
+//             concat!("[W {:>3}.{:06}] ", $string),
+//             timestamp.as_secs(),
+//             timestamp.subsec_micros(),
+//         ));
+//     });
+//     ($format_string:expr, $($arg:tt)*) => ({
+//         let timestamp = $crate::time::time_manager().uptime();
+//
+//         $crate::print::_print(format_args_nl!(
+//             concat!("[W {:>3}.{:06}] ", $format_string),
+//             timestamp.as_secs(),
+//             timestamp.subsec_micros(),
+//             $($arg)*
+//         ));
+//     })
+// }

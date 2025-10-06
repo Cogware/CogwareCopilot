@@ -318,6 +318,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-sdmmc",
  "fugit",
+ "log",
  "mcp2515",
  "noto-sans-mono-bitmap",
  "qoi",

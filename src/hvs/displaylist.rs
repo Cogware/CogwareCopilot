@@ -2,7 +2,7 @@ use core::ptr::addr_of;
 
 use alloc::vec::Vec;
 
-use crate::info;
+use log::info;
 
 use super::Plane;
 

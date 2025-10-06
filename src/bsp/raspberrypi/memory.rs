@@ -14,7 +14,7 @@ use core::{
     mem, ptr,
 };
 
-use crate::info;
+use log::info;
 
 /// The board's physical memory map.
 #[rustfmt::skip]

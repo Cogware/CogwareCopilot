@@ -1,6 +1,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
-use crate::info;
+use log::info;
 #[repr(C)]
 #[derive(Clone)]
 pub struct Plane {
@@ -40,7 +40,6 @@ impl Plane {
             pitch: img_pitch as u16,
             framebuffer,
         }
-        
     }
 
     pub fn white() -> Plane {
