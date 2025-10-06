@@ -8,6 +8,8 @@
 
 extern crate alloc;
 
+extern crate quiche_gl as gl;
+
 mod bsp;
 mod console;
 mod cpu;
@@ -91,6 +93,13 @@ fn kernel_main() -> ! {
         "Architectural timer resolution: {} ns",
         time::time_manager().resolution().as_nanos()
     );
+    // QuicheGL initialization
+    info!("Initializing QuicheGL context");
+    let gl_ctx: gl::Context<_, gl::mem::mapper::IdentityMapper> = gl::Context::new(640, 480, 32)
+        .initialize(true)
+        .expect("failed to initialize QuicheGL context!");
+    info!("QuicheGL context initialized!");
+    info!("Context: {:#?}", gl_ctx);
 
     let mut timer = Timer::new();
 
