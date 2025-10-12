@@ -1,6 +1,6 @@
-#![no_std]
-#![feature(pointer_byte_offsets)]
+#![cfg_attr(not(test), no_std)]
 #![allow(missing_docs)]
+#![allow(unused)]
 pub use bcm2837_lpa as pac;
 #[cfg(feature = "critical-section-impl")]
 mod critical_section;

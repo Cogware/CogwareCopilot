@@ -5,6 +5,7 @@
 #![no_main]
 #![no_std]
 #![allow(unused)]
+#![allow(static_mut_refs)]
 
 extern crate alloc;
 
@@ -24,13 +25,23 @@ mod print;
 mod synchronization;
 mod time;
 use alloc::{string::String, vec};
+use gl::{
+    align16,
+    mailbox::{
+        messages::{InitFramebuffer, InitQpu},
+        tag::{Clock, SetClockRate},
+        MailboxMessage, MessageBatch,
+    },
+    mem::{ArmAddress, Physical, Virtual},
+    volatile::VolatileRead,
+};
 
-use crate::mailbox::{max_clock_speed, set_clock_speed};
+use crate::mailbox::{max_clock_speed, send_message_sync_raw, set_clock_speed};
 use alloc::{format, vec::Vec};
 use bcm2837_hal::*;
 use bsp::memory::initialize_heap;
 use cogware_can::{cli_wri, Gauge, *};
-use core::time::Duration;
+use core::{ops::Deref, time::Duration};
 use delay::Timer;
 use embedded_hal::spi::*;
 use embedded_hal_0_2::{
@@ -68,12 +79,22 @@ unsafe fn kernel_init() -> ! {
         panic!("Error initializing BSP driver subsystem: {}", x);
     }
     {
+        info!("getting max clock speed");
+        let max_clock_speed = max_clock_speed();
+        info!("got max clock speed: {max_clock_speed:?}");
+        let max_clock_speed_msg = align16!(MessageBatch::new(SetClockRate::new(
+            Clock::ARM,
+            max_clock_speed.unwrap(),
+            false,
+        )));
+        info!("setting max clock speed");
+        send_message_sync_raw(&max_clock_speed_msg);
+        // set_clock_speed(max_clock_speed.unwrap());
+        info!("sent max clock speed message");
         // let mut u: MaybeUninit<FrameBuffer> = MaybeUninit::uninit();
         driver::driver_manager().init_drivers();
         initialize_heap();
         info!("kernel_init");
-        let max_clock_speed = max_clock_speed();
-        set_clock_speed(max_clock_speed.unwrap());
     }
 
     // Transition from unsafe to safe.
@@ -93,9 +114,10 @@ fn kernel_main() -> ! {
         "Architectural timer resolution: {} ns",
         time::time_manager().resolution().as_nanos()
     );
+
     // QuicheGL initialization
     info!("Initializing QuicheGL context");
-    let gl_ctx: gl::Context<_, gl::mem::mapper::IdentityMapper> = gl::Context::new(640, 480, 32)
+    let gl_ctx = gl::Context::new(640, 480, 32)
         .initialize(true)
         .expect("failed to initialize QuicheGL context!");
     info!("QuicheGL context initialized!");

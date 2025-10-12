@@ -54,6 +54,8 @@
 //! You cannot enable both the `log` feature and the `defmt-log` feature.
 
 #![cfg_attr(not(test), no_std)]
+#![allow(unused)]
+#![allow(mismatched_lifetime_syntaxes)]
 
 // ****************************************************************************
 //

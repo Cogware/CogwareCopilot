@@ -432,7 +432,7 @@ dependencies = [
 [[package]]
 name = "quiche-gl"
 version = "0.0.1"
-source = "git+https://github.com/Lynndox/quiche-gl?branch=wip#e9aebe0e7e7c90bb72583ec05c491bb2050ec100"
+source = "git+https://github.com/Lynndox/quiche-gl#acceaebdc7019b7659e5029ec5652d4327776349"
 dependencies = [
  "aarch64-cpu 10.0.0",
  "bitflags 2.9.4",

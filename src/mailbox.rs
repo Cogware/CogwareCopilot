@@ -1,7 +1,8 @@
 use crate::framebuffer::FrameBuffer; // videocoremboxbase: 3F00B880 resp-successful: 0
 use crate::mailbox::ReqResp::ResponseSuccessful;
 use core::{arch::aarch64::float32x2_t, mem, ops::BitAnd};
-use log::info;
+use gl::mailbox::{MailboxMessage, MessageBatch};
+use log::{debug, error, info, trace};
 // use log::info;
 // use space_invaders::{SCREEN_HEIGHT, SCREEN_WIDTH}; // we hard set these here for now, should
 // really ask the HVS for the screen H and W
@@ -51,6 +52,48 @@ struct RawMailbox {
     write: WriteOnly<u32>,
 }
 
+impl core::fmt::Debug for RawMailbox {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        unsafe {
+            f.debug_struct("RawMailbox")
+                .field("read", &format_args!("0x{:08x}", &self.read.get()))
+                .field(
+                    "_unused",
+                    &format_args!("0x{:08x}", core::ptr::read_volatile(&self._unused)),
+                )
+                .field(
+                    "_unused1",
+                    &format_args!("0x{:08x}", core::ptr::read_volatile(&self._unused2)),
+                )
+                .field(
+                    "_unused2",
+                    &format_args!("0x{:08x}", core::ptr::read_volatile(&self._unused3)),
+                )
+                .field(
+                    "poll",
+                    &format_args!("0x{:08x}", core::ptr::read_volatile(&self.poll)),
+                )
+                .field(
+                    "sender",
+                    &format_args!("0x{:08x}", core::ptr::read_volatile(&self.sender)),
+                )
+                .field("status", &format_args!("0x{:08x}", &self.status.get()))
+                .field(
+                    "config",
+                    &format_args!("0x{:08x}", core::ptr::read_volatile(&self.config)),
+                )
+                .field(
+                    "write",
+                    &format_args!(
+                        "0x{:08x}",
+                        core::ptr::read_volatile(&*(&raw const self.config).offset(1))
+                    ),
+                )
+                .finish()
+        }
+    }
+}
+
 impl RawMailbox {
     pub(crate) fn is_empty(&self) -> bool {
         let status = self.get_status();
@@ -81,7 +124,7 @@ const STATUS_EMPTY: u32 = 0x40000000;
 impl RawMailbox {}
 
 #[derive(Debug, Copy, Clone)]
-enum ReqResp {
+pub enum ReqResp {
     ResponseSuccessful,
     ResponseError,
     Request,
@@ -126,8 +169,22 @@ const TEST_SET_VIRTUAL_BUFFER_OFFSET_TAG: u32 = 0x00044009;
 const LAST_TAG: u32 = 0;
 
 #[repr(align(16))]
-#[derive(Debug, Copy, Clone)]
-struct Message<const T: usize>([u32; T]);
+#[derive(Copy, Clone)]
+pub struct Message<const T: usize>([u32; T]);
+
+impl<const T: usize> core::fmt::Debug for Message<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Message([")?;
+        let mut it = self.0.iter();
+        if let Some(val) = it.next() {
+            f.write_fmt(format_args!("{val:#010x}"))?;
+        }
+        for val in self.0.iter() {
+            f.write_fmt(format_args!(", {val:#010x?}"))?;
+        }
+        f.write_str("])")
+    }
+}
 
 impl<const T: usize> Message<T> {
     pub fn response_status(&self) -> ReqResp {
@@ -273,8 +330,10 @@ pub fn set_clock_speed(new_clock: u32) {
     //    message
     //);
 
+    debug!("[SET CLOCK] sending set clock speed message");
+    debug!("[SET CLOCK] message pre-send:  {:?}", message);
     if send_message_sync(Channel::PROP, &message) {
-        //  info!("message: {:?}", message);
+        info!("[SET CLOCK] message post-send: {:?}", message);
         let rate = message.0[6];
         let ratecalc: f64 = rate.into();
         info!(
@@ -282,15 +341,12 @@ pub fn set_clock_speed(new_clock: u32) {
             ratecalc / 1_000_000_000.0
         );
     } else {
-        info!("Failed to sending message to set clock speed.");
+        error!("Failed to sending message to set clock speed.");
     }
     let message2 = get_current_clock_rate_message();
-    // info!(
-    //   "Sending message to channel PROP to read clock speed: {:?}",
-    //   message2
-    //);
+    debug!("[SET CLOCK] Read clock speed msg:  {:?}", message2);
     if send_message_sync(Channel::PROP, &message2) {
-        info!("message: {:?}", message2);
+        info!("[SET CLOCK] Read clock speed resp: {:?}", message2);
         let rate = message2.0[6];
         let ratecalc: f64 = rate.into();
 
@@ -468,18 +524,29 @@ fn board_serial_message() -> Message<SERIAL_MESSAGE_SIZE> {
 }
 
 fn send_message_sync<const T: usize>(channel: Channel, message: &Message<T>) -> bool {
-    let raw_ptr = message.0.as_ptr();
+    // debug!("[SEND MESSAGE] Raw message: {:?}", message);
+    let message_ptr = &raw const message.0;
+    debug!("[SEND MESSAGE] raw_ptr addr: {:p}", message_ptr);
+    let message_addr = message_ptr.addr();
     // This is needed because slices are fat pointers and I need to convert it to a thin pointer
     // first.
-    let raw_ptr_addr = raw_ptr.cast::<usize>();
-    let raw_ptr_addr = raw_ptr_addr as usize;
+    // let raw_ptr_addr = raw_ptr.cast::<usize>();
+    // let raw_ptr_addr = raw_ptr_addr as usize;
+    debug!("[SEND MESSAGE] raw_ptr slice: {:#010x?}", unsafe {
+        core::slice::from_raw_parts(
+            message_addr as *const u32,
+            (message.0[0] as usize) / core::mem::size_of::<u32>(),
+        )
+    });
     // !0x0F is 1...10000
-    let addr_clear_last_4_bits = raw_ptr_addr.bitand(!0x0F);
+    let addr_clear_last_4_bits = message_addr.bitand(!0x0F);
     let ch_clear_everything_but_last_4_vits = channel as usize & 0xF;
     let final_addr = addr_clear_last_4_bits | ch_clear_everything_but_last_4_vits;
+    debug!("[SEND MESSAGE] final addr:   0x{:#0x}", final_addr);
 
     let raw_mailbox_ptr = VIDEOCORE_MBOX_BASE as *mut RawMailbox;
     let raw_mailbox = unsafe { &mut *raw_mailbox_ptr };
+    // trace!("Mailbox status: {:?}", raw_mailbox);
 
     // wait until we can write to the mailbox
     while raw_mailbox.is_full() {
@@ -510,6 +577,88 @@ fn send_message_sync<const T: usize>(channel: Channel, message: &Message<T>) -> 
         }
     }
 }
+
+pub unsafe fn send_message_sync_raw<T: gl::mailbox::MailboxChannel>(
+    // channel: Channel,
+    message_ptr: *const gl::Align16<MessageBatch<T>>,
+) -> bool {
+    // debug!("[SEND MESSAGE] Raw message: {:?}", message);
+    // This is needed because slices are fat pointers and I need to convert it to a thin pointer
+    // first.
+    // let raw_ptr_addr = raw_ptr.cast::<usize>();
+    // let raw_ptr_addr = raw_ptr_addr as usize;
+    let message_addr = message_ptr.addr();
+    let message_addr_us = message_ptr as usize;
+    let message = message_ptr.as_ref().unwrap_unchecked();
+
+    let slice_ptr = message.as_bytes().as_ptr();
+    let slice_addr = slice_ptr.addr();
+    let slice_addr_us = slice_ptr as usize;
+
+    debug!("[SEND MESSAGE] raw_ptr:       {:p}", message_ptr);
+    debug!("[SEND MESSAGE] raw_ptr addr:  {:#0x}", message_addr);
+    debug!("[SEND MESSAGE] raw_ptr usize: {:#0x}", message_addr_us);
+
+    debug!("[SEND MESSAGE] slice_ptr:       {:p}", slice_ptr);
+    debug!("[SEND MESSAGE] slice_ptr addr:  {:#0x}", slice_addr);
+    debug!("[SEND MESSAGE] slice_ptr usize: {:#0x}", slice_addr_us);
+
+    debug!("[SEND MESSAGE] raw_ptr slice: {:#010x?}", unsafe {
+        message.as_bytes()
+    });
+    // !0x0F is 1...10000
+    // let addr_clear_last_4_bits = message_addr.bitand(!0x0F);
+    // let ch_clear_everything_but_last_4_vits = channel as usize & 0xF;
+    // let final_addr = addr_clear_last_4_bits | ch_clear_everything_but_last_4_vits;
+    let final_addr = (message_addr & !0xF) | message.channel() as u32 as usize;
+    debug!("[SEND MESSAGE] final addr:   0x{:#0x}", final_addr);
+
+    let raw_mailbox_ptr = VIDEOCORE_MBOX_BASE as *mut RawMailbox;
+    let raw_mailbox = unsafe { &mut *raw_mailbox_ptr };
+    // trace!("Mailbox status: {:?}", raw_mailbox);
+
+    // wait until we can write to the mailbox
+    while raw_mailbox.is_full() {
+        core::hint::spin_loop();
+    }
+
+    raw_mailbox.write_address(final_addr);
+
+    // now wait for the response
+    loop {
+        // is there a response?
+        while raw_mailbox.is_empty() {
+            core::hint::spin_loop();
+        }
+
+        debug!("[SEND MESSAGE] slice post-send: {:#010x?}", unsafe {
+            message.as_bytes()
+        });
+
+        if raw_mailbox.get_read() == final_addr as u32 {
+            debug!("[SEND MESSAGE] finished slice:  {:#010x?}", unsafe {
+                message.as_bytes()
+            });
+
+            debug!(
+                "[SEND MESSAGE] message status:  {:#010x}",
+                message.status() as u32
+            );
+            return match (message.status() as u32).into() {
+                ReqResp::Request => {
+                    info!("message stll contains a request ?!");
+                    false
+                }
+                ReqResp::ResponseError => {
+                    info!("Something failed, the response is an error");
+                    false
+                }
+                ReqResp::ResponseSuccessful => true,
+            };
+        }
+    }
+}
+
 #[derive(Copy, Clone)]
 pub enum Channel {
     POWER = 0,
