@@ -55,7 +55,6 @@
 
 #![cfg_attr(not(test), no_std)]
 #![allow(unused)]
-#![allow(mismatched_lifetime_syntaxes)]
 
 // ****************************************************************************
 //
