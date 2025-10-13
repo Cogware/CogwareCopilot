@@ -117,21 +117,22 @@ fn kernel_main() -> ! {
 
     // QuicheGL initialization
     info!("Initializing QuicheGL context");
-    let gl_ctx = gl::Context::new(480, 480, 32)
-        .initialize(true)
+    let mut gl_ctx = gl::Context::new_identity_mapped(480, 480, 32)
+        .initialize(2)
         .expect("failed to initialize QuicheGL context!");
     info!("QuicheGL context initialized!");
     info!("Context: {:#?}", gl_ctx);
 
-    let fb: &mut [u32] = gl_ctx.state.framebuffer;
+    unsafe {
+        let raw_framebuf = unsafe { gl_ctx.curr_screen_buffer_mut() };
+        let (_header, decoded) = qoi::decode_to_vec(BOOT_IMAGE_QOI).unwrap();
 
-    let (_header, decoded) = qoi::decode_to_vec(BOOT_IMAGE_QOI).unwrap();
-
-    decoded
-        .chunks(4)
-        .map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]]))
-        .enumerate()
-        .for_each(|(i, p)| fb[i] = p);
+        decoded
+            .chunks(4)
+            .map(|p| u32::from_be_bytes([p[3], p[0], p[1], p[2]]))
+            .enumerate()
+            .for_each(|(i, p)| raw_framebuf[i] = p);
+    }
 
     let mut timer = Timer::new();
 
