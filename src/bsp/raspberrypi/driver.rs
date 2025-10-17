@@ -14,7 +14,7 @@ use crate::{
 };
 use core::{
     mem::MaybeUninit,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
 //--------------------------------------------------------------------------------------------------
@@ -44,6 +44,14 @@ unsafe fn instantiate_uart() -> Result<(), &'static str> {
     PL011_UART.write(device_driver::PL011Uart::new(virt_addr));
 
     Ok(())
+}
+
+unsafe fn remap_vc_mbox() -> Result<(AtomicU32), &'static str> {
+    let mmio_descriptor =
+        MMIODescriptor::new(mmio::VIDEOCORE_MBOX_START, mmio::VIDEOCORE_MBOX_SIZE);
+    let virt_addr = memory::mmu::kernel_map_mmio("VC Mailbox", &mmio_descriptor)?;
+    let mut vcmail = AtomicU32::new(virt_addr.as_usize() as u32);
+    Ok((vcmail))
 }
 
 /// This must be called only after successful init of the UART driver.
@@ -157,16 +165,17 @@ unsafe fn driver_interrupt_controller() -> Result<(), &'static str> {
 /// # Safety
 ///
 /// See child function calls.
-pub unsafe fn init() -> Result<(), &'static str> {
+pub unsafe fn init() -> Result<(AtomicU32), &'static str> {
     static INIT_DONE: AtomicBool = AtomicBool::new(false);
     if INIT_DONE.load(Ordering::Relaxed) {
         return Err("Init already done");
     }
 
-    driver_uart()?;
+    let vcmail = remap_vc_mbox().unwrap();
     driver_gpio()?;
     driver_interrupt_controller()?;
+    driver_uart()?;
 
     INIT_DONE.store(true, Ordering::Relaxed);
-    Ok(())
+    Ok((vcmail))
 }

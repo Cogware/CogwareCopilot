@@ -130,6 +130,7 @@ pub mod console;
 pub mod cpu;
 pub mod driver;
 pub mod exception;
+pub mod mailbox;
 pub mod memory;
 pub mod print;
 pub mod state;
