@@ -111,6 +111,7 @@
 #![allow(clippy::upper_case_acronyms)]
 #![allow(incomplete_features)]
 #![feature(core_intrinsics)]
+#![allow(static_mut_refs)]
 #![feature(format_args_nl)]
 #![feature(generic_const_exprs)]
 #![feature(int_roundings)]
