@@ -28,7 +28,6 @@ aarch64-cpu = { version = "9.x.x" }
 ##--------------------------------------------------------------------------------------------------
 
 [dev-dependencies]
-test-macros = { path = "libraries/test-macros" }
 
 # Unit tests are done in the library part of the kernel.
 [lib]
