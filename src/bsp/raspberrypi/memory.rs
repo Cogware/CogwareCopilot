@@ -106,6 +106,9 @@ pub(super) mod map {
         pub const PL011_UART_START:    Address<Physical> = Address::new(0x3F20_1000);
         pub const PL011_UART_SIZE:     usize             =              0x48;
 
+        pub const VIDEOCORE_MBOX_START: Address<Physical> = Address::new(0x3F00_B880);
+        pub const VIDEOCORE_MBOX_SIZE: usize            = 0x40;
+
         pub const END:                 Address<Physical> = Address::new(0x4001_0000);
     }
 

@@ -13,7 +13,11 @@
 #![no_main]
 #![no_std]
 
-use libkernel::{bsp, cpu, driver, exception, info, memory, state, time};
+use libkernel::{
+    bsp, cpu, driver, exception, info,
+    mailbox::{max_clock_speed, set_clock_speed, Mailboxaddr},
+    memory, state, time,
+};
 
 /// Early init code.
 ///
@@ -40,18 +44,21 @@ unsafe fn kernel_init() -> ! {
     memory::mmu::post_enable_init();
 
     // Initialize the BSP driver subsystem.
-    if let Err(x) = bsp::driver::init() {
-        panic!("Error initializing BSP driver subsystem: {}", x);
-    }
+    let vcmail = bsp::driver::init().unwrap();
 
     // Initialize all device drivers.
     driver::driver_manager().init_drivers_and_irqs();
+
+    //set_clock_speed(newmailbox, max_clock_speed.unwrap());
 
     // Unmask interrupts on the boot CPU core.
     exception::asynchronous::local_irq_unmask();
 
     // Announce conclusion of the kernel_init() phase.
     state::state_manager().transition_to_single_core_main();
+
+    let newmailbox = Mailboxaddr::new(vcmail);
+    let max_clock_speed = max_clock_speed(newmailbox);
 
     // Transition from unsafe to safe.
     kernel_main()
