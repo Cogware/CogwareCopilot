@@ -18,7 +18,6 @@ dependencies = [
  "aarch64-cpu",
  "qemu-exit",
  "test-macros",
- "test-types",
  "tock-registers",
 ]
 

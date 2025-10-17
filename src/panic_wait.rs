@@ -17,15 +17,7 @@ use core::panic::PanicInfo;
 #[linkage = "weak"]
 #[no_mangle]
 fn _panic_exit() -> ! {
-    #[cfg(not(feature = "test_build"))]
-    {
-        cpu::wait_forever()
-    }
-
-    #[cfg(feature = "test_build")]
-    {
-        cpu::qemu_exit_failure()
-    }
+    cpu::wait_forever()
 }
 
 /// Stop immediately if called a second time.
@@ -79,7 +71,7 @@ fn panic(info: &PanicInfo) -> ! {
         location,
         line,
         column,
-        info.message().unwrap_or(&format_args!("")),
+        info.message(),
     );
 
     _panic_exit()
