@@ -70,7 +70,7 @@ use core::cell::UnsafeCell;
 //--------------------------------------------------------------------------------------------------
 
 // Symbols from the linker script.
-unsafe extern "Rust" {
+extern "Rust" {
     static __code_start: UnsafeCell<()>;
     static __code_end_exclusive: UnsafeCell<()>;
 
@@ -94,7 +94,6 @@ pub(super) mod map {
     use super::*;
 
     /// Physical devices.
-    #[cfg(feature = "bsp_rpi3")]
     pub mod mmio {
         use super::*;
 

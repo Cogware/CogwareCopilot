@@ -15,10 +15,16 @@ use core::panic::PanicInfo;
 ///
 /// It is linked weakly, so that the integration tests can overload its standard behavior.
 #[linkage = "weak"]
-#[unsafe(no_mangle)]
+#[no_mangle]
 fn _panic_exit() -> ! {
+    #[cfg(not(feature = "test_build"))]
     {
         cpu::wait_forever()
+    }
+
+    #[cfg(feature = "test_build")]
+    {
+        cpu::qemu_exit_failure()
     }
 }
 
@@ -66,15 +72,14 @@ fn panic(info: &PanicInfo) -> ! {
 
     println!(
         "[  {:>3}.{:06}] Kernel panic!\n\n\
-        Message:\n      {}\n\
         Panic location:\n      File '{}', line {}, column {}\n\n\
-        ",
+        {}",
         timestamp.as_secs(),
         timestamp.subsec_micros(),
-        info.message(),
         location,
         line,
         column,
+        info.message().unwrap_or(&format_args!("")),
     );
 
     _panic_exit()

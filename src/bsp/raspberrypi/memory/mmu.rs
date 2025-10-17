@@ -127,7 +127,7 @@ pub fn virt_mmio_remap_region() -> MemoryRegion<Virtual> {
 ///
 /// - Any miscalculation or attribute error will likely be fatal. Needs careful manual checking.
 pub unsafe fn kernel_map_binary() -> Result<(), &'static str> {
-    unsafe{generic_mmu::kernel_map_at(
+    generic_mmu::kernel_map_at(
         "Kernel boot-core stack",
         &virt_boot_core_stack_region(),
         &kernel_virt_to_phys_region(virt_boot_core_stack_region()),
@@ -136,9 +136,9 @@ pub unsafe fn kernel_map_binary() -> Result<(), &'static str> {
             acc_perms: AccessPermissions::ReadWrite,
             execute_never: true,
         },
-    )?};
+    )?;
 
-    unsafe{generic_mmu::kernel_map_at(
+    generic_mmu::kernel_map_at(
         "Kernel code and RO data",
         &virt_code_region(),
         &kernel_virt_to_phys_region(virt_code_region()),
@@ -147,9 +147,9 @@ pub unsafe fn kernel_map_binary() -> Result<(), &'static str> {
             acc_perms: AccessPermissions::ReadOnly,
             execute_never: false,
         },
-    )?};
+    )?;
 
-    unsafe{generic_mmu::kernel_map_at(
+    generic_mmu::kernel_map_at(
         "Kernel data and bss",
         &virt_data_region(),
         &kernel_virt_to_phys_region(virt_data_region()),
@@ -158,7 +158,7 @@ pub unsafe fn kernel_map_binary() -> Result<(), &'static str> {
             acc_perms: AccessPermissions::ReadWrite,
             execute_never: true,
         },
-    )?};
+    )?;
 
     Ok(())
 }
@@ -166,3 +166,64 @@ pub unsafe fn kernel_map_binary() -> Result<(), &'static str> {
 //--------------------------------------------------------------------------------------------------
 // Testing
 //--------------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::{cell::UnsafeCell, ops::Range};
+    use test_macros::kernel_test;
+
+    /// Check alignment of the kernel's virtual memory layout sections.
+    #[kernel_test]
+    fn virt_mem_layout_sections_are_64KiB_aligned() {
+        for i in [
+            virt_boot_core_stack_region,
+            virt_code_region,
+            virt_data_region,
+        ]
+        .iter()
+        {
+            let start = i().start_page_addr().into_inner();
+            let end_exclusive = i().end_exclusive_page_addr().into_inner();
+
+            assert!(start.is_page_aligned());
+            assert!(end_exclusive.is_page_aligned());
+            assert!(end_exclusive >= start);
+        }
+    }
+
+    /// Ensure the kernel's virtual memory layout is free of overlaps.
+    #[kernel_test]
+    fn virt_mem_layout_has_no_overlaps() {
+        let layout = [
+            virt_boot_core_stack_region(),
+            virt_code_region(),
+            virt_data_region(),
+        ];
+
+        for (i, first_range) in layout.iter().enumerate() {
+            for second_range in layout.iter().skip(i + 1) {
+                assert!(!first_range.overlaps(second_range))
+            }
+        }
+    }
+
+    /// Check if KERNEL_TABLES is in .bss.
+    #[kernel_test]
+    fn kernel_tables_in_bss() {
+        extern "Rust" {
+            static __bss_start: UnsafeCell<u64>;
+            static __bss_end_exclusive: UnsafeCell<u64>;
+        }
+
+        let bss_range = unsafe {
+            Range {
+                start: __bss_start.get(),
+                end: __bss_end_exclusive.get(),
+            }
+        };
+        let kernel_tables_addr = &KERNEL_TABLES as *const _ as usize as *mut u64;
+
+        assert!(bss_range.contains(&kernel_tables_addr));
+    }
+}

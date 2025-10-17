@@ -99,7 +99,7 @@ unsafe fn kernel_map_at_unchecked(
     attr: &AttributeFields,
 ) -> Result<(), &'static str> {
     bsp::memory::mmu::kernel_translation_tables()
-        .write(|tables| unsafe{tables.map_at(virt_region, phys_region, attr)})?;
+        .write(|tables| tables.map_at(virt_region, phys_region, attr))?;
 
     if let Err(x) = mapping_record::kernel_add(name, virt_region, phys_region, attr) {
         warn!("{}", x);
@@ -173,7 +173,7 @@ pub unsafe fn kernel_map_at(
         return Err("Attempt to manually map into MMIO region");
     }
 
-    unsafe{kernel_map_at_unchecked(name, virt_region, phys_region, attr)?};
+    kernel_map_at_unchecked(name, virt_region, phys_region, attr)?;
 
     Ok(())
 }
@@ -207,7 +207,7 @@ pub unsafe fn kernel_map_mmio(
         let virt_region =
             page_alloc::kernel_mmio_va_allocator().lock(|allocator| allocator.alloc(num_pages))?;
 
-            unsafe{kernel_map_at_unchecked(
+        kernel_map_at_unchecked(
             name,
             &virt_region,
             &phys_region,
@@ -216,7 +216,7 @@ pub unsafe fn kernel_map_mmio(
                 acc_perms: AccessPermissions::ReadWrite,
                 execute_never: true,
             },
-        )}?;
+        )?;
 
         virt_region.start_addr()
     };
@@ -236,7 +236,7 @@ pub unsafe fn kernel_map_binary() -> Result<Address<Physical>, &'static str> {
             tables.phys_base_address()
         });
 
-        unsafe{bsp::memory::mmu::kernel_map_binary()}?;
+    bsp::memory::mmu::kernel_map_binary()?;
 
     Ok(phys_kernel_tables_base_addr)
 }
@@ -249,7 +249,7 @@ pub unsafe fn kernel_map_binary() -> Result<Address<Physical>, &'static str> {
 pub unsafe fn enable_mmu_and_caching(
     phys_tables_base_addr: Address<Physical>,
 ) -> Result<(), MMUEnableError> {
-    unsafe{arch_mmu::mmu().enable_mmu_and_caching(phys_tables_base_addr)}
+    arch_mmu::mmu().enable_mmu_and_caching(phys_tables_base_addr)
 }
 
 /// Finish initialization of the MMU subsystem.
@@ -260,4 +260,42 @@ pub fn post_enable_init() {
 /// Human-readable print of all recorded kernel mappings.
 pub fn kernel_print_mappings() {
     mapping_record::kernel_print()
+}
+
+//--------------------------------------------------------------------------------------------------
+// Testing
+//--------------------------------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::mmu::{AccessPermissions, MemAttributes, PageAddress};
+    use test_macros::kernel_test;
+
+    /// Check that you cannot map into the MMIO VA range from kernel_map_at().
+    #[kernel_test]
+    fn no_manual_mmio_map() {
+        let phys_start_page_addr: PageAddress<Physical> = PageAddress::from(0);
+        let phys_end_exclusive_page_addr: PageAddress<Physical> =
+            phys_start_page_addr.checked_offset(5).unwrap();
+        let phys_region = MemoryRegion::new(phys_start_page_addr, phys_end_exclusive_page_addr);
+
+        let num_pages = NonZeroUsize::new(phys_region.num_pages()).unwrap();
+        let virt_region = page_alloc::kernel_mmio_va_allocator()
+            .lock(|allocator| allocator.alloc(num_pages))
+            .unwrap();
+
+        let attr = AttributeFields {
+            mem_attributes: MemAttributes::CacheableDRAM,
+            acc_perms: AccessPermissions::ReadWrite,
+            execute_never: true,
+        };
+
+        unsafe {
+            assert_eq!(
+                kernel_map_at("test", &virt_region, &phys_region, &attr),
+                Err("Attempt to manually map into MMIO region")
+            )
+        };
+    }
 }

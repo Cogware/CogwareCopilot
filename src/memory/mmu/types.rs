@@ -3,6 +3,7 @@
 // Copyright (c) 2020-2023 Andre Richter <andre.o.richter@gmail.com>
 
 //! Memory Management Unit types.
+
 use crate::{
     bsp, common,
     memory::{Address, AddressType, Physical},
@@ -116,16 +117,17 @@ impl<ATYPE: AddressType> From<Address<ATYPE>> for PageAddress<ATYPE> {
     }
 }
 
-//WTF is even going on here this is aweful why did they change it to be redundent on usize in core::iter
 impl<ATYPE: AddressType> Step for PageAddress<ATYPE> {
-    fn steps_between(start: &Self, end: &Self) -> (usize, Option<usize>) {
+    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
         if start > end {
-            return (usize::MAX, None)
+            return None;
         }
 
         // Since start <= end, do unchecked arithmetic.
-        return ((end.inner.as_usize() - start.inner.as_usize()) >> bsp::memory::mmu::KernelGranule::SHIFT, Some(
-            (end.inner.as_usize() - start.inner.as_usize()) >> bsp::memory::mmu::KernelGranule::SHIFT,)) 
+        Some(
+            (end.inner.as_usize() - start.inner.as_usize())
+                >> bsp::memory::mmu::KernelGranule::SHIFT,
+        )
     }
 
     fn forward_checked(start: Self, count: usize) -> Option<Self> {
@@ -191,9 +193,7 @@ impl<ATYPE: AddressType> MemoryRegion<ATYPE> {
 
     /// Returns the number of pages contained in this region.
     pub fn num_pages(&self) -> usize {
-        let pages = PageAddress::steps_between(&self.start, &self.end_exclusive);
-        pages.0 //hate this just completely discarded any error proccessing and will probably 
-                //break shit also litterally just thowing that other usize away for fun
+        PageAddress::steps_between(&self.start, &self.end_exclusive).unwrap()
     }
 
     /// Returns the size in bytes of this region.
@@ -293,4 +293,81 @@ impl MMIODescriptor {
     }
 }
 
+//--------------------------------------------------------------------------------------------------
+// Testing
+//--------------------------------------------------------------------------------------------------
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::Virtual;
+    use test_macros::kernel_test;
+
+    /// Sanity of [PageAddress] methods.
+    #[kernel_test]
+    fn pageaddress_type_method_sanity() {
+        let page_addr: PageAddress<Virtual> =
+            PageAddress::from(bsp::memory::mmu::KernelGranule::SIZE * 2);
+
+        assert_eq!(
+            page_addr.checked_offset(-2),
+            Some(PageAddress::<Virtual>::from(0))
+        );
+
+        assert_eq!(
+            page_addr.checked_offset(2),
+            Some(PageAddress::<Virtual>::from(
+                bsp::memory::mmu::KernelGranule::SIZE * 4
+            ))
+        );
+
+        assert_eq!(
+            PageAddress::<Virtual>::from(0).checked_offset(0),
+            Some(PageAddress::<Virtual>::from(0))
+        );
+        assert_eq!(PageAddress::<Virtual>::from(0).checked_offset(-1), None);
+
+        let max_page_addr = Address::<Virtual>::new(usize::MAX).align_down_page();
+        assert_eq!(
+            PageAddress::<Virtual>::from(max_page_addr).checked_offset(1),
+            None
+        );
+
+        let zero = PageAddress::<Virtual>::from(0);
+        let three = PageAddress::<Virtual>::from(bsp::memory::mmu::KernelGranule::SIZE * 3);
+        assert_eq!(PageAddress::steps_between(&zero, &three), Some(3));
+    }
+
+    /// Sanity of [MemoryRegion] methods.
+    #[kernel_test]
+    fn memoryregion_type_method_sanity() {
+        let zero = PageAddress::<Virtual>::from(0);
+        let zero_region = MemoryRegion::new(zero, zero);
+        assert_eq!(zero_region.num_pages(), 0);
+        assert_eq!(zero_region.size(), 0);
+
+        let one = PageAddress::<Virtual>::from(bsp::memory::mmu::KernelGranule::SIZE);
+        let one_region = MemoryRegion::new(zero, one);
+        assert_eq!(one_region.num_pages(), 1);
+        assert_eq!(one_region.size(), bsp::memory::mmu::KernelGranule::SIZE);
+
+        let three = PageAddress::<Virtual>::from(bsp::memory::mmu::KernelGranule::SIZE * 3);
+        let mut three_region = MemoryRegion::new(zero, three);
+        assert!(three_region.contains(zero.into_inner()));
+        assert!(!three_region.contains(three.into_inner()));
+        assert!(three_region.overlaps(&one_region));
+
+        let allocation = three_region
+            .take_first_n_pages(NonZeroUsize::new(2).unwrap())
+            .unwrap();
+        assert_eq!(allocation.num_pages(), 2);
+        assert_eq!(three_region.num_pages(), 1);
+
+        for (i, alloc) in allocation.into_iter().enumerate() {
+            assert_eq!(
+                alloc.into_inner().as_usize(),
+                i * bsp::memory::mmu::KernelGranule::SIZE
+            );
+        }
+    }
+}
