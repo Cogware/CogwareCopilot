@@ -71,6 +71,7 @@ __vector_\handler:
 .align 11
 
 // Export a symbol for the Rust code to use.
+.globl __exception_vector_start
 __exception_vector_start:
 
 // Current exception level with SP_EL0.

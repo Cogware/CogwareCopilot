@@ -86,9 +86,7 @@ RUSTFLAGS = $(RUSTC_MISC_ARGS)                   \
     -C link-arg=--library-path=$(LD_SCRIPT_PATH) \
     -C link-arg=--script=$(KERNEL_LINKER_SCRIPT)
 
-RUSTFLAGS_PEDANTIC = $(RUSTFLAGS) \
-    -D warnings                   \
-    -D missing_docs
+RUSTFLAGS_PEDANTIC = $(RUSTFLAGS) 
 
 FEATURES      = --features bsp_$(BSP)
 COMPILER_ARGS = --target=$(TARGET) \
