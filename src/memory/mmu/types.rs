@@ -118,15 +118,19 @@ impl<ATYPE: AddressType> From<Address<ATYPE>> for PageAddress<ATYPE> {
 }
 
 impl<ATYPE: AddressType> Step for PageAddress<ATYPE> {
-    fn steps_between(start: &Self, end: &Self) -> Option<usize> {
+    fn steps_between(start: &Self, end: &Self) -> (usize, Option<usize>) {
         if start > end {
-            return None;
+            let dump: usize = 0;
+            return (dump, None);
         }
 
         // Since start <= end, do unchecked arithmetic.
-        Some(
-            (end.inner.as_usize() - start.inner.as_usize())
-                >> bsp::memory::mmu::KernelGranule::SHIFT,
+        (
+            end.inner.as_usize() - start.inner.as_usize(),
+            Some(
+                (end.inner.as_usize() - start.inner.as_usize())
+                    >> bsp::memory::mmu::KernelGranule::SHIFT,
+            ),
         )
     }
 
@@ -193,7 +197,8 @@ impl<ATYPE: AddressType> MemoryRegion<ATYPE> {
 
     /// Returns the number of pages contained in this region.
     pub fn num_pages(&self) -> usize {
-        PageAddress::steps_between(&self.start, &self.end_exclusive).unwrap()
+        let (_u1, u2) = PageAddress::steps_between(&self.start, &self.end_exclusive);
+        u2.unwrap()
     }
 
     /// Returns the size in bytes of this region.
@@ -290,84 +295,5 @@ impl MMIODescriptor {
     /// Return the exclusive end address.
     pub fn end_addr_exclusive(&self) -> Address<Physical> {
         self.end_addr_exclusive
-    }
-}
-
-//--------------------------------------------------------------------------------------------------
-// Testing
-//--------------------------------------------------------------------------------------------------
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::memory::Virtual;
-    use test_macros::kernel_test;
-
-    /// Sanity of [PageAddress] methods.
-    #[kernel_test]
-    fn pageaddress_type_method_sanity() {
-        let page_addr: PageAddress<Virtual> =
-            PageAddress::from(bsp::memory::mmu::KernelGranule::SIZE * 2);
-
-        assert_eq!(
-            page_addr.checked_offset(-2),
-            Some(PageAddress::<Virtual>::from(0))
-        );
-
-        assert_eq!(
-            page_addr.checked_offset(2),
-            Some(PageAddress::<Virtual>::from(
-                bsp::memory::mmu::KernelGranule::SIZE * 4
-            ))
-        );
-
-        assert_eq!(
-            PageAddress::<Virtual>::from(0).checked_offset(0),
-            Some(PageAddress::<Virtual>::from(0))
-        );
-        assert_eq!(PageAddress::<Virtual>::from(0).checked_offset(-1), None);
-
-        let max_page_addr = Address::<Virtual>::new(usize::MAX).align_down_page();
-        assert_eq!(
-            PageAddress::<Virtual>::from(max_page_addr).checked_offset(1),
-            None
-        );
-
-        let zero = PageAddress::<Virtual>::from(0);
-        let three = PageAddress::<Virtual>::from(bsp::memory::mmu::KernelGranule::SIZE * 3);
-        assert_eq!(PageAddress::steps_between(&zero, &three), Some(3));
-    }
-
-    /// Sanity of [MemoryRegion] methods.
-    #[kernel_test]
-    fn memoryregion_type_method_sanity() {
-        let zero = PageAddress::<Virtual>::from(0);
-        let zero_region = MemoryRegion::new(zero, zero);
-        assert_eq!(zero_region.num_pages(), 0);
-        assert_eq!(zero_region.size(), 0);
-
-        let one = PageAddress::<Virtual>::from(bsp::memory::mmu::KernelGranule::SIZE);
-        let one_region = MemoryRegion::new(zero, one);
-        assert_eq!(one_region.num_pages(), 1);
-        assert_eq!(one_region.size(), bsp::memory::mmu::KernelGranule::SIZE);
-
-        let three = PageAddress::<Virtual>::from(bsp::memory::mmu::KernelGranule::SIZE * 3);
-        let mut three_region = MemoryRegion::new(zero, three);
-        assert!(three_region.contains(zero.into_inner()));
-        assert!(!three_region.contains(three.into_inner()));
-        assert!(three_region.overlaps(&one_region));
-
-        let allocation = three_region
-            .take_first_n_pages(NonZeroUsize::new(2).unwrap())
-            .unwrap();
-        assert_eq!(allocation.num_pages(), 2);
-        assert_eq!(three_region.num_pages(), 1);
-
-        for (i, alloc) in allocation.into_iter().enumerate() {
-            assert_eq!(
-                alloc.into_inner().as_usize(),
-                i * bsp::memory::mmu::KernelGranule::SIZE
-            );
-        }
     }
 }

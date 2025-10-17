@@ -24,6 +24,7 @@ use core::{
 static mut PL011_UART: MaybeUninit<device_driver::PL011Uart> = MaybeUninit::uninit();
 static mut GPIO: MaybeUninit<device_driver::GPIO> = MaybeUninit::uninit();
 
+#[cfg(feature = "bsp_rpi3")]
 static mut INTERRUPT_CONTROLLER: MaybeUninit<device_driver::InterruptController> =
     MaybeUninit::uninit();
 
@@ -168,16 +169,4 @@ pub unsafe fn init() -> Result<(), &'static str> {
 
     INIT_DONE.store(true, Ordering::Relaxed);
     Ok(())
-}
-
-/// Minimal code needed to bring up the console in QEMU (for testing only). This is often less steps
-/// than on real hardware due to QEMU's abstractions.
-#[cfg(feature = "test_build")]
-pub fn qemu_bring_up_console() {
-    use crate::cpu;
-
-    unsafe {
-        instantiate_uart().unwrap_or_else(|_| cpu::qemu_exit_failure());
-        console::register_console(PL011_UART.assume_init_ref());
-    };
 }
