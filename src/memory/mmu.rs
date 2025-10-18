@@ -15,7 +15,7 @@ mod types;
 
 use crate::{
     bsp,
-    memory::{Address, Physical, Virtual},
+    memory::{Address, AddressType, Physical, Virtual},
     synchronization, warn,
 };
 use core::{fmt, num::NonZeroUsize};
@@ -185,6 +185,14 @@ pub unsafe fn kernel_map_at(
 /// # Safety
 ///
 /// - Same as `kernel_map_at_unchecked()`, minus the aliasing part.
+///
+#[inline(always)]
+fn reinterpret_region<From: AddressType, To: AddressType>(
+    a: MemoryRegion<From>,
+) -> MemoryRegion<To> {
+    unsafe { core::mem::transmute::<MemoryRegion<From>, MemoryRegion<To>>(a) }
+}
+
 pub unsafe fn kernel_map_mmio(
     name: &'static str,
     mmio_descriptor: &MMIODescriptor,
@@ -197,15 +205,9 @@ pub unsafe fn kernel_map_mmio(
         mapping_record::kernel_find_and_insert_mmio_duplicate(mmio_descriptor, name)
     {
         addr
-    // Otherwise, allocate a new region and map it.
+    // Otherwise, pretend we are gonna do something and pull a fast one on the MMU
     } else {
-        let num_pages = match NonZeroUsize::new(phys_region.num_pages()) {
-            None => return Err("Requested 0 pages"),
-            Some(x) => x,
-        };
-
-        let virt_region =
-            page_alloc::kernel_mmio_va_allocator().lock(|allocator| allocator.alloc(num_pages))?;
+        let virt_region = reinterpret_region(phys_region);
 
         kernel_map_at_unchecked(
             name,
