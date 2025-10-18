@@ -2,8 +2,6 @@ use crate::{info, mailbox::ReqResp::ResponseSuccessful};
 use core::sync::atomic::Ordering::Relaxed;
 use core::{arch::aarch64::float32x2_t, mem, ops::BitAnd, sync::atomic::AtomicU32};
 
-const VIDEOCORE_MBOX_BASE: u32 = 0x000f_0000;
-
 use tock_registers::{
     interfaces::{Readable, Writeable},
     registers::{ReadOnly, WriteOnly},
@@ -24,12 +22,11 @@ struct RawMailbox {
 }
 
 pub struct Mailboxaddr {
-    pub address: u32,
+    pub address: usize,
 }
 impl Mailboxaddr {
-    pub fn new(address: AtomicU32) -> Self {
-        let newaddr = address.load(Relaxed);
-        Mailboxaddr { address: newaddr }
+    pub fn new(address: usize) -> Self {
+        Mailboxaddr { address }
     }
 }
 
@@ -284,7 +281,11 @@ fn board_serial_message() -> Message<SERIAL_MESSAGE_SIZE> {
     Message(ret)
 }
 
-fn send_message_sync<const T: usize>(mailbox: u32, channel: Channel, message: &Message<T>) -> bool {
+fn send_message_sync<const T: usize>(
+    mailbox: usize,
+    channel: Channel,
+    message: &Message<T>,
+) -> bool {
     let raw_ptr = message.0.as_ptr();
     // This is needed because slices are fat pointers and I need to convert it to a thin pointer
     // first.

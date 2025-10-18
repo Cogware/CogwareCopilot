@@ -57,20 +57,21 @@ unsafe fn kernel_init() -> ! {
     // Announce conclusion of the kernel_init() phase.
     state::state_manager().transition_to_single_core_main();
 
-    let newmailbox = Mailboxaddr::new(vcmail);
-    let max_clock_speed = max_clock_speed(newmailbox);
-
     // Transition from unsafe to safe.
-    kernel_main()
+    kernel_main(vcmail)
 }
 
 /// The main function running after the early init.
-fn kernel_main() -> ! {
+fn kernel_main(vcmail: usize) -> ! {
     info!("{}", libkernel::version());
     info!("Booting on: {}", bsp::board_name());
 
     info!("MMU online:");
     memory::mmu::kernel_print_mappings();
+    info!("VC Mailbox Addr: {:x}", vcmail);
+
+    let newmailbox = Mailboxaddr::new(vcmail);
+    let _max_clock_speed = max_clock_speed(newmailbox);
 
     let (_, privilege_level) = exception::current_privilege_level();
     info!("Current privilege level: {}", privilege_level);

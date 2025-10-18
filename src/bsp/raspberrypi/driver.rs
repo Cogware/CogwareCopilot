@@ -14,6 +14,7 @@ use crate::{
 };
 use core::{
     mem::MaybeUninit,
+    ptr,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
@@ -46,11 +47,11 @@ unsafe fn instantiate_uart() -> Result<(), &'static str> {
     Ok(())
 }
 
-unsafe fn remap_vc_mbox() -> Result<(AtomicU32), &'static str> {
+unsafe fn remap_vc_mbox() -> Result<(usize), &'static str> {
     let mmio_descriptor =
         MMIODescriptor::new(mmio::VIDEOCORE_MBOX_START, mmio::VIDEOCORE_MBOX_SIZE);
     let virt_addr = memory::mmu::kernel_map_mmio("VC Mailbox", &mmio_descriptor)?;
-    let mut vcmail = AtomicU32::new(virt_addr.as_usize() as u32);
+    let mut vcmail = virt_addr.as_usize();
     Ok((vcmail))
 }
 
@@ -165,7 +166,7 @@ unsafe fn driver_interrupt_controller() -> Result<(), &'static str> {
 /// # Safety
 ///
 /// See child function calls.
-pub unsafe fn init() -> Result<(AtomicU32), &'static str> {
+pub unsafe fn init() -> Result<(usize), &'static str> {
     static INIT_DONE: AtomicBool = AtomicBool::new(false);
     if INIT_DONE.load(Ordering::Relaxed) {
         return Err("Init already done");
