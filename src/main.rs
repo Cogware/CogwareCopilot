@@ -41,8 +41,6 @@ unsafe fn kernel_init() -> ! {
         panic!("Enabling MMU failed: {}", e);
     }
 
-    memory::mmu::post_enable_init();
-
     // Initialize the BSP driver subsystem.
     let vcmail = bsp::driver::init().unwrap();
 
