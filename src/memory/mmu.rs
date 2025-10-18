@@ -9,7 +9,6 @@
 mod arch_mmu;
 
 mod mapping_record;
-mod page_alloc;
 mod translation_table;
 mod types;
 
@@ -75,14 +74,6 @@ pub trait AssociatedTranslationTable {
 use interface::MMU;
 use synchronization::interface::*;
 use translation_table::interface::TranslationTable;
-
-/// Query the BSP for the reserved virtual addresses for MMIO remapping and initialize the kernel's
-/// MMIO VA allocator with it.
-fn kernel_init_mmio_va_allocator() {
-    let region = bsp::memory::mmu::virt_mmio_remap_region();
-
-    page_alloc::kernel_mmio_va_allocator().lock(|allocator| allocator.init(region));
-}
 
 /// Map a region in the kernel's translation tables.
 ///
@@ -252,11 +243,6 @@ pub unsafe fn enable_mmu_and_caching(
     phys_tables_base_addr: Address<Physical>,
 ) -> Result<(), MMUEnableError> {
     arch_mmu::mmu().enable_mmu_and_caching(phys_tables_base_addr)
-}
-
-/// Finish initialization of the MMU subsystem.
-pub fn post_enable_init() {
-    kernel_init_mmio_va_allocator();
 }
 
 /// Human-readable print of all recorded kernel mappings.
