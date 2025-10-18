@@ -132,7 +132,7 @@ pub unsafe fn kernel_map_binary() -> Result<(), &'static str> {
         &virt_boot_core_stack_region(),
         &kernel_virt_to_phys_region(virt_boot_core_stack_region()),
         &AttributeFields {
-            mem_attributes: MemAttributes::CacheableDRAM,
+            mem_attributes: MemAttributes::Device,
             acc_perms: AccessPermissions::ReadWrite,
             execute_never: true,
         },
