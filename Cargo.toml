@@ -1,7 +1,7 @@
 [package]
 name = "cogwarecopilot"
 version = "0.0.0"
-authors = ["Justin Copenhaver<ninjagecko5000@gmail.com>, Leah Rosenfeld<lynndoxxy@gmail.com>"]
+authors = ["Justin Copenhaver<ninjagecko5000@gmail.com>", "Leah Rosenfeld<lynndoxxy@gmail.com>"]
 edition = "2021"
 
 [features]
@@ -18,6 +18,9 @@ bsp_rpi4 = ["tock-registers"]
 # Optional dependencies
 tock-registers = { version = "0.8.x", default-features = false, features = ["register_types"], optional = true }
 qemu-exit = { version = "3.x.x", optional = true }
+quiche-gl = { git = "https://github.com/Lynndox/quiche-gl", branch = "feat/control-lists", default-features = false }
+log = { version = "0.4.28", features = ["max_level_debug"] }
+
 
 # Platform specific dependencies
 [target.'cfg(target_arch = "aarch64")'.dependencies]
@@ -33,10 +36,11 @@ aarch64-cpu = { version = "9.x.x" }
 [lib]
 name = "libkernel"
 test = false
+bench = false
 
 # Disable unit tests for the kernel binary.
 [[bin]]
 name = "kernel"
 path = "src/main.rs"
 test = false
-
+bench = false

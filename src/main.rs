@@ -13,11 +13,30 @@
 #![no_main]
 #![no_std]
 
+use core::num::NonZeroU32;
+
 use libkernel::{
-    bsp, cpu, driver, exception, info,
+    bsp, cpu, driver, exception,
     mailbox::{max_clock_speed, set_clock_speed, Mailboxaddr},
     memory, state, time,
 };
+
+use gl::{
+    control_list::{fixed::RenderControlList, *},
+    mem::{mapper::MemoryMapper, ArmAddress},
+    nv::shader::NvShaderFlags,
+};
+use gl::{mem::mapper::IdentityMapper, shader::*};
+use gl::{mem::BusAddress, nv::primitive::*};
+
+const SCREEN_WIDTH: u16 = 480;
+const SCREEN_HEIGHT: u16 = 480;
+const TILE_WIDTH: usize = (SCREEN_WIDTH / 64) as usize;
+const TILE_HEIGHT: usize = (SCREEN_HEIGHT / 64) as usize;
+
+extern crate quiche_gl as gl;
+
+use log::{debug, info};
 
 /// Early init code.
 ///
@@ -31,6 +50,8 @@ use libkernel::{
 #[no_mangle]
 unsafe fn kernel_init() -> ! {
     exception::handling_init();
+
+    _ = libkernel::print::SimpleLogger::init(log::LevelFilter::Trace);
 
     let phys_kernel_tables_base_addr = match memory::mmu::kernel_map_binary() {
         Err(string) => panic!("Error mapping kernel binary: {}", string),
@@ -66,10 +87,6 @@ fn kernel_main(vcmail: usize) -> ! {
 
     info!("MMU online:");
     memory::mmu::kernel_print_mappings();
-    info!("VC Mailbox Addr: {:x}", vcmail);
-
-    let newmailbox = Mailboxaddr::new(vcmail);
-    let _max_clock_speed = max_clock_speed(newmailbox);
 
     let (_, privilege_level) = exception::current_privilege_level();
     info!("Current privilege level: {}", privilege_level);
@@ -87,6 +104,138 @@ fn kernel_main(vcmail: usize) -> ! {
 
     info!("Registered IRQ handlers:");
     exception::asynchronous::irq_manager().print_handler();
+
+    // QuicheGL initialization
+    info!("Initializing QuicheGL context");
+    let mut gl_ctx = gl::Context::new_identity_mapped(SCREEN_WIDTH as _, SCREEN_HEIGHT as _, 32)
+        .initialize(NonZeroU32::new(2).unwrap())
+        .expect("failed to initialize QuicheGL context!");
+    info!("QuicheGL context initialized!");
+    info!("Context: {:#?}", gl_ctx);
+
+    let mut binning_buffer = [0u8; 0x4000];
+
+    debug!("Building binning mode config");
+    let bin_mode_config = gl::control_list::TileBinningModeConfig {
+        address: binning_buffer.as_mut_ptr().addr() as u32,
+        size: binning_buffer.len() as u32,
+        base_address: unsafe { binning_buffer.as_mut_ptr().byte_offset(0x1000).addr() as u32 },
+        tile_width: TILE_WIDTH as u8,
+        tile_height: TILE_HEIGHT as u8,
+        flags: TileBinningModeFlags::AutoInitialiseTileStateDataArray,
+    };
+
+    debug!("Building clip config");
+    let clip_config = gl::control_list::ClipWindowConfig {
+        left: 0,
+        bottom: 0,
+        width: SCREEN_WIDTH,
+        height: SCREEN_HEIGHT,
+    };
+
+    debug!("Building tile binning config");
+    let bin_config = TileBinningConfig {
+        data8: TileBinningFlags8::EnableForwardFacingPrimitive
+            | TileBinningFlags8::EnableReverseFacingPrimitive,
+        data16: TileBinningFlags16::EarlyZUpdatesEnable,
+    };
+
+    debug!("Building triangle");
+    let tri = gl::nv::extra::Triangle {
+        vertices: [
+            ShadedVertex::new(
+                FixedVec2::new(320, 32),
+                1.0,
+                1.0,
+                VertexColor {
+                    r: 1.0,
+                    g: 0.0,
+                    b: 0.0,
+                },
+            ),
+            ShadedVertex::new(
+                FixedVec2::new(32, 448),
+                1.0,
+                1.0,
+                VertexColor {
+                    r: 0.0,
+                    g: 1.0,
+                    b: 0.0,
+                },
+            ),
+            ShadedVertex::new(
+                FixedVec2::new(680, 448),
+                1.0,
+                1.0,
+                VertexColor {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 1.0,
+                },
+            ),
+        ],
+    };
+
+    debug!("Building NV shader state");
+    let nv_shader_state = unsafe {
+        gl::nv::shader::NvShaderState::new_aligned(
+            NvShaderFlags::empty(),
+            6 * 4,
+            0,
+            3,
+            BusAddress::from_ptr(&gl::shader::VERTEX_COLOR_FRAG_SHADER),
+            BusAddress::from_ptr(core::ptr::null::<()>()),
+            BusAddress::from_ptr(&tri),
+        )
+    };
+
+    let mapper = IdentityMapper;
+    debug!("Building binning list");
+    let bin_list: TileBinningControlList<'_, IndexedPrimitiveList> = TileBinningControlList::new(
+        bin_mode_config,
+        clip_config,
+        bin_config,
+        ViewportOffset { x: 0, y: 0 },
+        mapper
+            .virt_to_phys_addr(ArmAddress::from(&raw const nv_shader_state))
+            .unwrap(),
+        mapper
+            .virt_to_phys_addr(ArmAddress::from(&raw const tri))
+            .unwrap(),
+    );
+
+    debug!("Building render mode config");
+    let rend_mode_config = TileRenderingModeConfig {
+        address: gl_ctx.curr_screen_buffer_ptr().addr() as u32,
+        width: SCREEN_WIDTH,
+        height: SCREEN_HEIGHT,
+        flags: TileRenderingModeFlags::MultisampleMode4X
+            | TileRenderingModeFlags::FrameBufferColorFormatRGBA8888,
+    };
+    debug!("Building render list");
+
+    let render_list = RenderControlList::<TILE_WIDTH, TILE_HEIGHT>::new(
+        ClearColors {
+            color: Color::rgba8(0xFF, 0x00, 0xFF, 0xFF),
+            clear_zs_vg_mask: 0,
+            clear_stencil: 0,
+        },
+        rend_mode_config,
+    );
+
+    unsafe {
+        info!("Running control list...");
+        gl_ctx
+            .run_bin_control_list(core::pin::pin!(bin_list))
+            .expect("failed to run binning control list");
+
+        info!("Running rendering list...");
+        gl_ctx
+            .run_render_control_list(core::pin::pin!(render_list))
+            .expect("failed to run binning control list");
+    }
+
+    info!("Well, we got here. Is there anything on the screen?");
 
     info!("Echoing input now");
     cpu::wait_forever();
