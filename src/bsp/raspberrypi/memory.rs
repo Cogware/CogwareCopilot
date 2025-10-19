@@ -97,8 +97,12 @@ pub(super) mod map {
     pub mod mmio {
         use super::*;
 
+        pub const START: Address<Physical> = Address::new(0x3F00_0000);
         pub const PERIPHERAL_IC_START: Address<Physical> = Address::new(0x3F00_B200);
         pub const PERIPHERAL_IC_SIZE:  usize             =              0x24;
+
+        pub const V3D_REGISTERS_START: Address<Physical> = Address::new(0x3FC00110);
+        pub const V3D_REGISTERS_SIZE:  usize             =              0xF20;
 
         pub const GPIO_START:          Address<Physical> = Address::new(0x3F20_0000);
         pub const GPIO_SIZE:           usize             =              0xA0;

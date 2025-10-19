@@ -47,6 +47,15 @@ unsafe fn instantiate_uart() -> Result<(), &'static str> {
     Ok(())
 }
 
+unsafe fn remap_v3d_registers() -> Result<(), &'static str> {
+    let mmio_descriptor = MMIODescriptor::new(mmio::V3D_REGISTERS_START, mmio::V3D_REGISTERS_SIZE);
+    memory::mmu::kernel_map_mmio(
+        "V3Deez Nuts in your Mouth Idiot haha gotem",
+        &mmio_descriptor,
+    )?;
+    Ok(())
+}
+
 unsafe fn remap_vc_mbox() -> Result<(usize), &'static str> {
     let mmio_descriptor =
         MMIODescriptor::new(mmio::VIDEOCORE_MBOX_START, mmio::VIDEOCORE_MBOX_SIZE);
@@ -172,7 +181,8 @@ pub unsafe fn init() -> Result<(usize), &'static str> {
         return Err("Init already done");
     }
 
-    let vcmail = remap_vc_mbox().unwrap();
+    remap_v3d_registers()?;
+    let vcmail = remap_vc_mbox()?;
     driver_gpio()?;
     driver_interrupt_controller()?;
     driver_uart()?;
