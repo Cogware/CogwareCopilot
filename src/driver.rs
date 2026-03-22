@@ -5,10 +5,11 @@
 //! Driver support.
 
 use crate::{
-    exception, info,
+    exception,
     synchronization::{interface::ReadWriteEx, InitStateLock},
 };
 use core::fmt;
+use log::info;
 
 //--------------------------------------------------------------------------------------------------
 // Private Definitions

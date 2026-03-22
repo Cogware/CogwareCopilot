@@ -157,7 +157,7 @@ impl exception::asynchronous::interface::IRQManager for PeripheralIC {
     }
 
     fn print_handler(&self) {
-        use crate::info;
+        use log::info;
 
         info!("      Peripheral handler:");
 

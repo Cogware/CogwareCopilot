@@ -128,7 +128,7 @@ pub fn local_irq_restore(saved: u64) {
 /// Print the AArch64 exceptions status.
 #[rustfmt::skip]
 pub fn print_state() {
-    use crate::info;
+    use log::info;
 
     let to_mask_str = |x| -> _ {
         if x { "Masked" } else { "Unmasked" }

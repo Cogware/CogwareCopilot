@@ -15,9 +15,11 @@ mod types;
 use crate::{
     bsp,
     memory::{Address, AddressType, Physical, Virtual},
-    synchronization, warn,
+    synchronization,
 };
 use core::{fmt, num::NonZeroUsize};
+
+use log::warn;
 
 pub use types::*;
 

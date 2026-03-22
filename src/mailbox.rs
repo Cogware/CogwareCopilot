@@ -1,6 +1,9 @@
-use crate::{info, mailbox::ReqResp::ResponseSuccessful};
+use crate::mailbox::ReqResp::ResponseSuccessful;
+
 use core::sync::atomic::Ordering::Relaxed;
 use core::{arch::aarch64::float32x2_t, mem, ops::BitAnd, sync::atomic::AtomicU32};
+
+use log::info;
 
 use tock_registers::{
     interfaces::{Readable, Writeable},
