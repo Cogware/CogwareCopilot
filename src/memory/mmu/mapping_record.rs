@@ -8,7 +8,8 @@ use super::{
     AccessPermissions, Address, AttributeFields, MMIODescriptor, MemAttributes, MemoryRegion,
     Physical, Virtual,
 };
-use crate::{bsp, common, info, synchronization, synchronization::InitStateLock, warn};
+use crate::{bsp, common, synchronization, synchronization::InitStateLock};
+use log::{info, warn};
 
 //--------------------------------------------------------------------------------------------------
 // Private Definitions
