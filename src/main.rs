@@ -25,6 +25,7 @@ use gl::{
     control_list::{fixed::RenderControlList, *},
     mem::{mapper::MemoryMapper, ArmAddress},
     nv::shader::NvShaderFlags,
+    Align16,
 };
 use gl::{mem::mapper::IdentityMapper, shader::*};
 use gl::{mem::BusAddress, nv::primitive::*};
@@ -113,7 +114,7 @@ fn kernel_main(vcmail: usize) -> ! {
     info!("QuicheGL context initialized!");
     info!("Context: {:#?}", gl_ctx);
 
-    let mut binning_buffer = [0u8; 0x4000];
+    let mut binning_buffer = Align16::new([0u8; 0x4000]);
 
     debug!("Building binning mode config");
     let bin_mode_config = gl::control_list::TileBinningModeConfig {
@@ -164,7 +165,7 @@ fn kernel_main(vcmail: usize) -> ! {
                 },
             ),
             ShadedVertex::new(
-                FixedVec2::new(680, 448),
+                FixedVec2::new(608, 448),
                 1.0,
                 1.0,
                 VertexColor {
@@ -189,9 +190,16 @@ fn kernel_main(vcmail: usize) -> ! {
         )
     };
 
+    debug!("Building primitive command");
+    let primitives = VertArrPrimitives {
+        flags: VertArrPrimitiveListFlags::Triangles,
+        length: 3,
+        index: 0,
+    };
+
     let mapper = IdentityMapper;
     debug!("Building binning list");
-    let bin_list: TileBinningControlList<'_, IndexedPrimitiveList> = TileBinningControlList::new(
+    let bin_list = TileBinningControlList::new(
         bin_mode_config,
         clip_config,
         bin_config,
@@ -199,14 +207,13 @@ fn kernel_main(vcmail: usize) -> ! {
         mapper
             .virt_to_phys_addr(ArmAddress::from(&raw const nv_shader_state))
             .unwrap(),
-        mapper
-            .virt_to_phys_addr(ArmAddress::from(&raw const tri))
-            .unwrap(),
+        primitives,
     );
 
     debug!("Building render mode config");
+    let framebuf_bus_addr = unsafe { BusAddress::from_ptr(gl_ctx.curr_screen_buffer_ptr()) };
     let rend_mode_config = TileRenderingModeConfig {
-        address: gl_ctx.curr_screen_buffer_ptr().addr() as u32,
+        address: framebuf_bus_addr.addr(),
         width: SCREEN_WIDTH,
         height: SCREEN_HEIGHT,
         flags: TileRenderingModeFlags::MultisampleMode4X
@@ -223,17 +230,15 @@ fn kernel_main(vcmail: usize) -> ! {
         rend_mode_config,
     );
 
-    unsafe {
-        info!("Running control list...");
-        gl_ctx
-            .run_bin_control_list(core::pin::pin!(bin_list))
-            .expect("failed to run binning control list");
+    info!("Running control list...");
+    gl_ctx
+        .run_bin_control_list(core::pin::pin!(bin_list))
+        .expect("failed to run binning control list");
 
-        info!("Running rendering list...");
-        gl_ctx
-            .run_render_control_list(core::pin::pin!(render_list))
-            .expect("failed to run binning control list");
-    }
+    info!("Running rendering list...");
+    gl_ctx
+        .run_render_control_list(core::pin::pin!(render_list))
+        .expect("failed to run binning control list");
 
     info!("Well, we got here. Is there anything on the screen?");
 
