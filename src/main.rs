@@ -17,7 +17,6 @@ use core::num::NonZeroU32;
 
 use libkernel::{
     bsp, cpu, driver, exception,
-    mailbox::{max_clock_speed, set_clock_speed, Mailboxaddr},
     memory, state, time,
 };
 
@@ -27,7 +26,7 @@ use gl::{
     nv::shader::NvShaderFlags,
     Align16,
 };
-use gl::{mem::mapper::IdentityMapper, shader::*};
+use gl::mem::mapper::IdentityMapper;
 use gl::{mem::BusAddress, nv::primitive::*};
 
 const SCREEN_WIDTH: u16 = 480;
@@ -86,25 +85,22 @@ fn kernel_main(vcmail: usize) -> ! {
     info!("{}", libkernel::version());
     info!("Booting on: {}", bsp::board_name());
 
-    info!("MMU online:");
-    memory::mmu::kernel_print_mappings();
+    info!("MMU online!");
+    //memory::mmu::kernel_print_mappings();
 
-    let (_, privilege_level) = exception::current_privilege_level();
-    info!("Current privilege level: {}", privilege_level);
+    //let (_, privilege_level) = exception::current_privilege_level();
+    //info!("Current privilege level: {}", privilege_level);
 
-    info!("Exception handling state:");
-    exception::asynchronous::print_state();
+    //info!("Exception handling state:");
+    //exception::asynchronous::print_state();
 
     info!(
         "Architectural timer resolution: {} ns",
         time::time_manager().resolution().as_nanos()
     );
 
-    info!("Drivers loaded:");
-    driver::driver_manager().enumerate();
-
-    info!("Registered IRQ handlers:");
-    exception::asynchronous::irq_manager().print_handler();
+    //info!("Registered IRQ handlers:");
+    //exception::asynchronous::irq_manager().print_handler();
 
     // QuicheGL initialization
     info!("Initializing QuicheGL context");
@@ -112,15 +108,15 @@ fn kernel_main(vcmail: usize) -> ! {
         .initialize(NonZeroU32::new(2).unwrap())
         .expect("failed to initialize QuicheGL context!");
     info!("QuicheGL context initialized!");
-    info!("Context: {:#?}", gl_ctx);
+    //info!("Context: {:#?}", gl_ctx);
 
     let mut binning_buffer = Align16::new([0u8; 0x4000]);
 
     debug!("Building binning mode config");
     let bin_mode_config = gl::control_list::TileBinningModeConfig {
-        address: binning_buffer.as_mut_ptr().addr() as u32,
+        address: unsafe { BusAddress::from_ptr(binning_buffer.as_mut_ptr() as *const _) },
         size: binning_buffer.len() as u32,
-        base_address: unsafe { binning_buffer.as_mut_ptr().byte_offset(0x1000).addr() as u32 },
+        base_address: unsafe { BusAddress::from_ptr(binning_buffer.as_mut_ptr().byte_offset(0x1000)) },
         tile_width: TILE_WIDTH as u8,
         tile_height: TILE_HEIGHT as u8,
         flags: TileBinningModeFlags::AutoInitialiseTileStateDataArray,
@@ -206,14 +202,15 @@ fn kernel_main(vcmail: usize) -> ! {
         ViewportOffset { x: 0, y: 0 },
         mapper
             .virt_to_phys_addr(ArmAddress::from(&raw const nv_shader_state))
-            .unwrap(),
+            .unwrap()
+            .into(),
         primitives,
     );
 
     debug!("Building render mode config");
     let framebuf_bus_addr = unsafe { BusAddress::from_ptr(gl_ctx.curr_screen_buffer_ptr()) };
     let rend_mode_config = TileRenderingModeConfig {
-        address: framebuf_bus_addr.addr(),
+        address: framebuf_bus_addr,
         width: SCREEN_WIDTH,
         height: SCREEN_HEIGHT,
         flags: TileRenderingModeFlags::MultisampleMode4X
@@ -228,6 +225,7 @@ fn kernel_main(vcmail: usize) -> ! {
             clear_stencil: 0,
         },
         rend_mode_config,
+        unsafe { BusAddress::from_ptr(binning_buffer.as_mut_ptr().byte_offset(0x1000)) },
     );
 
     info!("Running control list...");

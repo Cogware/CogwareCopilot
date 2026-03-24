@@ -108,7 +108,7 @@ checksum = "8bb0fd6580eeed0103c054e3fba2c2618ff476943762f28a645b63b8692b21c9"
 [[package]]
 name = "quiche-gl"
 version = "0.0.1"
-source = "git+https://codeberg.org/Lynndox/quiche-gl?branch=feat%2Fcontrol-lists#7d00a14c455326cc8171eeb21ca6f9326d406537"
+source = "git+https://codeberg.org/Lynndox/quiche-gl?branch=feat%2Fcontrol-lists#7b185ae07edda18dbfe12f53107d3e6fa15ffabc"
 dependencies = [
  "aarch64-cpu 10.0.0",
  "bitflags",
