@@ -186,6 +186,11 @@ fn reinterpret_region<From: AddressType, To: AddressType>(
     unsafe { core::mem::transmute::<MemoryRegion<From>, MemoryRegion<To>>(a) }
 }
 
+/// Map an MMIO region.
+///
+/// # Safety
+///
+/// Don't fuck it up
 pub unsafe fn kernel_map_mmio(
     name: &'static str,
     mmio_descriptor: &MMIODescriptor,

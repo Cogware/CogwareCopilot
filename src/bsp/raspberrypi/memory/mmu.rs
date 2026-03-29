@@ -53,7 +53,7 @@ static KERNEL_TABLES: InitStateLock<KernelTranslationTable> =
 /// Helper function for calculating the number of pages the given parameter spans.
 const fn size_to_num_pages(size: usize) -> usize {
     assert!(size > 0);
-    assert!(size % KernelGranule::SIZE == 0);
+    assert!(size.is_multiple_of(KernelGranule::SIZE));
 
     size >> KernelGranule::SHIFT
 }

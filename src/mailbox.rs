@@ -78,10 +78,10 @@ impl PartialEq<Self> for ReqResp {
 
 impl Eq for ReqResp {}
 
-impl Into<u32> for ReqResp {
-    fn into(self) -> u32 {
+impl From<ReqResp> for u32 {
+    fn from(val: ReqResp) -> Self {
         use ReqResp::*;
-        match self {
+        match val {
             Request => 0x00000000,
             ResponseSuccessful => 0x80000000,
             ResponseError => 0x80000001,
@@ -125,7 +125,7 @@ pub fn query_board_serial(mailboxaddr: Mailboxaddr) -> Option<u64> {
     let message = board_serial_message();
     info!("Sending message to channel PROP: {:?}", message);
 
-    return if send_message_sync(mailboxaddr.address, Channel::PROP, &message) {
+    if send_message_sync(mailboxaddr.address, Channel::PROP, &message) {
         info!(
             "Serial number is: {:#04x}/{:#04x}",
             message.0[5], message.0[4]
@@ -138,7 +138,7 @@ pub fn query_board_serial(mailboxaddr: Mailboxaddr) -> Option<u64> {
     } else {
         info!("Failed to sending message to query the board serial.");
         None
-    };
+    }
 }
 
 pub fn set_clock_speed(mailboxaddr: Mailboxaddr, new_clock: u32) {

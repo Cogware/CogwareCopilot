@@ -18,7 +18,6 @@ use crate::{
     memory::{mmu::TranslationGranule, Address, Physical},
 };
 use aarch64_cpu::{asm::barrier, registers::*};
-use core::intrinsics::unlikely;
 use tock_registers::interfaces::{ReadWriteable, Readable, Writeable};
 
 //--------------------------------------------------------------------------------------------------
@@ -56,7 +55,7 @@ impl<const AS_SIZE: usize> memory::mmu::AddressSpace<AS_SIZE> {
     /// Checks for architectural restrictions.
     pub const fn arch_address_space_size_sanity_checks() {
         // Size must be at least one full 512 MiB table.
-        assert!((AS_SIZE % Granule512MiB::SIZE) == 0);
+        assert!(AS_SIZE.is_multiple_of(Granule512MiB::SIZE));
 
         // Check for 48 bit virtual address size as maximum, which is supported by any ARMv8
         // version.
@@ -116,12 +115,15 @@ impl memory::mmu::interface::MMU for MemoryManagementUnit {
         &self,
         phys_tables_base_addr: Address<Physical>,
     ) -> Result<(), MMUEnableError> {
-        if unlikely(self.is_enabled()) {
+        core::hint::cold_path();
+        if self.is_enabled() {
             return Err(MMUEnableError::AlreadyEnabled);
         }
 
         // Fail early if translation granule is not supported.
-        if unlikely(!ID_AA64MMFR0_EL1.matches_all(ID_AA64MMFR0_EL1::TGran64::Supported)) {
+        if !ID_AA64MMFR0_EL1.matches_all(ID_AA64MMFR0_EL1::TGran64::Supported) {
+            core::hint::cold_path();
+            // core::hint::unlikely(true);
             return Err(MMUEnableError::Other(
                 "Translation granule not supported in HW",
             ));

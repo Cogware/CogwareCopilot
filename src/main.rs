@@ -9,17 +9,14 @@
 
 //! The `kernel` binary.
 
-#![feature(format_args_nl)]
 #![no_main]
 #![no_std]
 
 use core::num::NonZeroU32;
 
-use libkernel::{
-    bsp, cpu, driver, exception,
-    memory, state, time,
-};
+use libkernel::{bsp, cpu, driver, exception, memory, state};
 
+use gl::mem::mapper::IdentityMapper;
 use gl::{
     control_list::{fixed::RenderControlList, *},
     mem::{mapper::MemoryMapper, ArmAddress},
@@ -27,17 +24,23 @@ use gl::{
     register::*,
     Align16,
 };
-use gl::mem::mapper::IdentityMapper;
 use gl::{mem::BusAddress, nv::primitive::*};
 
 const SCREEN_WIDTH: u16 = 480;
 const SCREEN_HEIGHT: u16 = 480;
-const TILE_WIDTH: usize = (SCREEN_WIDTH as usize + 63) / 64;
-const TILE_HEIGHT: usize = (SCREEN_HEIGHT as usize + 63) / 64;
+const TILE_WIDTH: usize = (SCREEN_WIDTH as usize).div_ceil(64);
+const TILE_HEIGHT: usize = (SCREEN_HEIGHT as usize).div_ceil(64);
+
+const BINNING_BUFFER_SIZE: usize = 0x100_000;
 
 /// Binning buffer in .bss — must NOT be on the stack because the V3D DMA
 /// writes to it via bus addresses and can corrupt adjacent stack frames.
-static mut BINNING_BUFFER: Align16<[u8; 0x4000]> = Align16::new([0u8; 0x4000]);
+static mut BINNING_BUFFER: Align16<[u8; BINNING_BUFFER_SIZE]> =
+    Align16::new([0u8; BINNING_BUFFER_SIZE]);
+
+const TILE_STATE_SIZE: usize = 48 * (TILE_WIDTH * TILE_HEIGHT);
+
+static mut TILE_STATE_BUFFER: Align16<[u8; TILE_STATE_SIZE]> = Align16::new([0u8; TILE_STATE_SIZE]);
 
 extern crate quiche_gl as gl;
 
@@ -86,7 +89,7 @@ unsafe fn kernel_init() -> ! {
 }
 
 /// The main function running after the early init.
-fn kernel_main(vcmail: usize) -> ! {
+fn kernel_main(_vcmail: usize) -> ! {
     info!("{}", libkernel::version());
     info!("Booting on: {}", bsp::board_name());
 
@@ -128,31 +131,40 @@ fn kernel_main(vcmail: usize) -> ! {
         // Clear all slice caches
         V3D_SLCACTL.write_volatile(0x0F0F_0F0F);
 
-        debug!("CT0CS: {:#010X}, CT1CS: {:#010X}",
-            V3D_CT0CS.read_volatile(), V3D_CT1CS.read_volatile());
+        debug!(
+            "CT0CS: {:#010X}, CT1CS: {:#010X}",
+            V3D_CT0CS.read_volatile(),
+            V3D_CT1CS.read_volatile()
+        );
     }
     //info!("Context: {:#?}", gl_ctx);
 
     info!(
         "Screen: {}x{}, tiles: {}x{} ({})",
-        SCREEN_WIDTH, SCREEN_HEIGHT, TILE_WIDTH, TILE_HEIGHT,
+        SCREEN_WIDTH,
+        SCREEN_HEIGHT,
+        TILE_WIDTH,
+        TILE_HEIGHT,
         TILE_WIDTH * TILE_HEIGHT
     );
 
-    let binning_buffer = unsafe { &mut BINNING_BUFFER };
+    let bin_buf_ptr = &raw mut BINNING_BUFFER;
 
     debug!("Building binning mode config");
-    let bin_buf_ptr = binning_buffer.as_mut_ptr() as *const _;
     let bin_buf_bus = unsafe { BusAddress::from_ptr(bin_buf_ptr) };
     // Tile state data array: 48 bytes per tile, at offset 0x1000 from allocation base
     // Tile allocation memory (sub-lists): starts at bin_buf_bus
     // These MUST NOT overlap or the binner corrupts memory
-    let tile_state_bus = BusAddress::from(bin_buf_bus.addr() + 0x1000);
-    debug!("Binning buffer @ {:p}, bus: {:#010X}, tile_state: {:#010X}",
-        bin_buf_ptr, bin_buf_bus.addr(), tile_state_bus.addr());
+    let tile_state_bus = unsafe { BusAddress::from_ptr(&raw mut TILE_STATE_BUFFER) };
+    debug!(
+        "Binning buffer @ {:p}, bus: {:#010X}, tile_state: {:#010X}",
+        bin_buf_ptr,
+        bin_buf_bus.addr(),
+        tile_state_bus.addr()
+    );
     let bin_mode_config = gl::control_list::TileBinningModeConfig {
         address: bin_buf_bus,
-        size: binning_buffer.len() as u32,
+        size: BINNING_BUFFER_SIZE as u32,
         base_address: tile_state_bus,
         tile_width: TILE_WIDTH as u8,
         tile_height: TILE_HEIGHT as u8,
@@ -178,7 +190,7 @@ fn kernel_main(vcmail: usize) -> ! {
     let tri = gl::nv::extra::Triangle {
         vertices: [
             ShadedVertex::new(
-                FixedVec2::new(120, 16),
+                FixedVec2::new(240, 96),
                 1.0,
                 1.0,
                 VertexColor {
@@ -188,7 +200,7 @@ fn kernel_main(vcmail: usize) -> ! {
                 },
             ),
             ShadedVertex::new(
-                FixedVec2::new(16, 224),
+                FixedVec2::new(96, 384),
                 1.0,
                 1.0,
                 VertexColor {
@@ -198,7 +210,7 @@ fn kernel_main(vcmail: usize) -> ! {
                 },
             ),
             ShadedVertex::new(
-                FixedVec2::new(224, 224),
+                FixedVec2::new(384, 384),
                 1.0,
                 1.0,
                 VertexColor {
@@ -212,7 +224,11 @@ fn kernel_main(vcmail: usize) -> ! {
 
     debug!("Building NV shader state");
     let shader_ptr = gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr();
-    debug!("Shader code ptr: {:p} (aligned: {})", shader_ptr, (shader_ptr as usize) % 8 == 0);
+    debug!(
+        "Shader code ptr: {:p} (aligned: {})",
+        shader_ptr,
+        (shader_ptr as usize).is_multiple_of(8)
+    );
     let nv_shader_state = unsafe {
         gl::nv::shader::NvShaderState::new_aligned(
             NvShaderFlags::empty(),
@@ -233,7 +249,10 @@ fn kernel_main(vcmail: usize) -> ! {
     };
 
     debug!("NV shader state @ {:p}", &nv_shader_state);
-    debug!("Shader code   @ {:p}", gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr());
+    debug!(
+        "Shader code   @ {:p}",
+        gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr()
+    );
     debug!("Vertex data   @ {:p}", &tri);
     debug!("Vertex stride = {}", 6 * 4);
 
@@ -252,7 +271,7 @@ fn kernel_main(vcmail: usize) -> ! {
     );
 
     debug!("Building render mode config");
-    let fb_ptr = unsafe { gl_ctx.curr_screen_buffer_ptr() };
+    let fb_ptr = gl_ctx.curr_screen_buffer_ptr();
     debug!("Framebuffer ptr: {:p}", fb_ptr);
     let framebuf_bus_addr = unsafe { BusAddress::from_ptr(fb_ptr) };
     debug!("Framebuffer bus addr: {:#010X}", framebuf_bus_addr.addr());
@@ -266,7 +285,7 @@ fn kernel_main(vcmail: usize) -> ! {
 
     let render_list = RenderControlList::<TILE_WIDTH, TILE_HEIGHT>::new(
         ClearColors {
-            color: Color::rgba8(0xFF, 0x00, 0xFF, 0xFF),
+            color: Color::rgba8(0xEE, 0x95, 0x63, 0xFF),
             clear_zs_vg_mask: 0,
             clear_stencil: 0,
         },

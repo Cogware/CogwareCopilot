@@ -8,6 +8,7 @@ edition = "2021"
 default = ["bsp_rpi3"]
 bsp_rpi3 = ["tock-registers"]
 bsp_rpi4 = ["tock-registers"]
+hyperpixel = []
 
 ##--------------------------------------------------------------------------------------------------
 ## Dependencies
@@ -16,15 +17,17 @@ bsp_rpi4 = ["tock-registers"]
 [dependencies]
 
 # Optional dependencies
-tock-registers = { version = "0.8.x", default-features = false, features = ["register_types"], optional = true }
-qemu-exit = { version = "3.x.x", optional = true }
+tock-registers = { version = "0.10", default-features = false, features = ["register_types"], optional = true }
+qemu-exit = { version = "3", optional = true }
 quiche-gl = { path = "../quiche-gl", default-features = false }
 log = { version = "0.4.28", features = ["max_level_debug"] }
+bcm2837-hal = { path = "./bcm2837-hal"}
+embedded-hal = "1.0.0"
 
 
 # Platform specific dependencies
 [target.'cfg(target_arch = "aarch64")'.dependencies]
-aarch64-cpu = { version = "9.x.x" }
+aarch64-cpu = { version = "11" }
 
 ##--------------------------------------------------------------------------------------------------
 ## Testing
@@ -44,3 +47,4 @@ name = "kernel"
 path = "src/main.rs"
 test = false
 bench = false
+

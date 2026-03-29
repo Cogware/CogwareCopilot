@@ -61,7 +61,7 @@ unsafe fn remap_vc_mbox() -> Result<(usize), &'static str> {
         MMIODescriptor::new(mmio::VIDEOCORE_MBOX_START, mmio::VIDEOCORE_MBOX_SIZE);
     let virt_addr = memory::mmu::kernel_map_mmio("VC Mailbox", &mmio_descriptor)?;
     let mut vcmail = virt_addr.as_usize();
-    Ok((vcmail))
+    Ok(vcmail)
 }
 
 /// This must be called only after successful init of the UART driver.
@@ -188,5 +188,5 @@ pub unsafe fn init() -> Result<(usize), &'static str> {
     driver_uart()?;
 
     INIT_DONE.store(true, Ordering::Relaxed);
-    Ok((vcmail))
+    Ok(vcmail)
 }
