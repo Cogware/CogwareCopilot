@@ -21,7 +21,7 @@ tock-registers = { version = "0.10", default-features = false, features = ["regi
 qemu-exit = { version = "3", optional = true }
 quiche-gl = { path = "../quiche-gl", default-features = false }
 log = { version = "0.4.28", features = ["max_level_debug"] }
-bcm2837-hal = { path = "./bcm2837-hal"}
+# bcm2837-hal = { path = "./bcm2837-hal"}
 embedded-hal = "1.0.0"
 
 

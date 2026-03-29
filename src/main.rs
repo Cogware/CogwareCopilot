@@ -26,8 +26,8 @@ use gl::{
 };
 use gl::{mem::BusAddress, nv::primitive::*};
 
-const SCREEN_WIDTH: u16 = 480;
-const SCREEN_HEIGHT: u16 = 480;
+const SCREEN_WIDTH: u16 = 1920;
+const SCREEN_HEIGHT: u16 = 1080;
 const TILE_WIDTH: usize = (SCREEN_WIDTH as usize).div_ceil(64);
 const TILE_HEIGHT: usize = (SCREEN_HEIGHT as usize).div_ceil(64);
 
@@ -183,44 +183,102 @@ fn kernel_main(_vcmail: usize) -> ! {
     let bin_config = TileBinningConfig {
         data8: TileBinningFlags8::EnableForwardFacingPrimitive
             | TileBinningFlags8::EnableReverseFacingPrimitive,
-        data16: TileBinningFlags16::DepthTestFunctionAlways,
+        data16: TileBinningFlags16::DepthTestFunctionAlways
+            | TileBinningFlags16::EarlyZUpdatesEnable,
     };
 
-    debug!("Building triangle");
-    let tri = gl::nv::extra::Triangle {
-        vertices: [
-            ShadedVertex::new(
-                FixedVec2::new(240, 96),
-                1.0,
-                1.0,
-                VertexColor {
-                    r: 1.0,
-                    g: 0.0,
-                    b: 0.0,
-                },
-            ),
-            ShadedVertex::new(
-                FixedVec2::new(96, 384),
-                1.0,
-                1.0,
-                VertexColor {
-                    r: 0.0,
-                    g: 1.0,
-                    b: 0.0,
-                },
-            ),
-            ShadedVertex::new(
-                FixedVec2::new(384, 384),
-                1.0,
-                1.0,
-                VertexColor {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 1.0,
-                },
-            ),
-        ],
-    };
+    debug!("Building quad");
+
+    const CENTER_H: i16 = (SCREEN_WIDTH / 2) as i16;
+    const CENTER_V: i16 = (SCREEN_HEIGHT / 2) as i16;
+    const H_OFFSET: i16 = CENTER_H / 2;
+    const PADDING: i16 = 105;
+
+    const LEFT: i16 = (CENTER_V / 2) + H_OFFSET - (PADDING * 2);
+    const RIGHT: i16 = CENTER_H - (CENTER_V / 2) + (PADDING * 2) + H_OFFSET;
+    const TOP: i16 = PADDING;
+    const BOTTOM: i16 = (SCREEN_HEIGHT as i16) - PADDING;
+
+    let quad = [
+        ShadedVertex::new(
+            FixedVec2::new(LEFT, TOP),
+            1.0,
+            1.0,
+            VertexColor {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+            },
+        ),
+        ShadedVertex::new(
+            FixedVec2::new(LEFT, BOTTOM),
+            1.0,
+            1.0,
+            VertexColor {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0,
+            },
+        ),
+        ShadedVertex::new(
+            FixedVec2::new(RIGHT, BOTTOM),
+            1.0,
+            1.0,
+            VertexColor {
+                r: 0.0,
+                g: 1.0,
+                b: 1.0,
+            },
+        ),
+        ShadedVertex::new(
+            FixedVec2::new(RIGHT, TOP),
+            1.0,
+            1.0,
+            VertexColor {
+                r: 0.0,
+                g: 1.0,
+                b: 0.0,
+            },
+        ),
+    ];
+
+    // debug!("Building triangle");
+    // let tri = gl::nv::extra::Triangle {
+    //     vertices: [
+    //         ShadedVertex::new(
+    //             FixedVec2::new((SCREEN_WIDTH / 2) as _, 216),
+    //             1.0,
+    //             1.0,
+    //             VertexColor {
+    //                 r: 1.0,
+    //                 g: 0.0,
+    //                 b: 0.0,
+    //             },
+    //         ),
+    //         ShadedVertex::new(
+    //             FixedVec2::new(620, (SCREEN_HEIGHT - 216) as _),
+    //             1.0,
+    //             1.0,
+    //             VertexColor {
+    //                 r: 0.0,
+    //                 g: 1.0,
+    //                 b: 0.0,
+    //             },
+    //         ),
+    //         ShadedVertex::new(
+    //             FixedVec2::new((SCREEN_WIDTH - 620) as _, (SCREEN_HEIGHT - 216) as _),
+    //             1.0,
+    //             1.0,
+    //             VertexColor {
+    //                 r: 0.0,
+    //                 g: 0.0,
+    //                 b: 1.0,
+    //             },
+    //         ),
+    //     ],
+    // };
+
+    let vert_list: [u8; 4] = [0, 1, 2, 3];
 
     debug!("Building NV shader state");
     let shader_ptr = gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr();
@@ -237,23 +295,38 @@ fn kernel_main(_vcmail: usize) -> ! {
             3,
             BusAddress::from_ptr(shader_ptr),
             BusAddress::from_ptr(core::ptr::null::<()>()),
-            BusAddress::from_ptr(&tri),
+            BusAddress::from_ptr(&quad),
         )
     };
 
     debug!("Building primitive command");
-    let primitives = VertArrPrimitives {
-        flags: VertArrPrimitiveListFlags::Triangles,
-        length: 3,
-        index: 0,
-    };
+    let vert_list_bus = unsafe { BusAddress::from_ptr(&vert_list) };
+    let primitives = IndexedPrimitiveList::new(
+        IndexedPrimitiveListFlags::TriangleFan | IndexedPrimitiveListFlags::IndexType8,
+        vert_list.len() as _,
+        vert_list_bus,
+        3,
+    );
+
+    // let primitives = IndexedPrimitiveList::new(
+    //     IndexedPrimitiveListFlags::Triangles | IndexedPrimitiveListFlags::IndexType8,
+    //     vert_list.len() as _,
+    //     vert_list_bus,
+    //     // &tri.vertices,
+    //     2,
+    // );
+    // let primitives = VertArrPrimitives {
+    //     flags: VertArrPrimitiveListFlags::Triangles,
+    //     length: 3,
+    //     index: 0,
+    // };
 
     debug!("NV shader state @ {:p}", &nv_shader_state);
     debug!(
         "Shader code   @ {:p}",
         gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr()
     );
-    debug!("Vertex data   @ {:p}", &tri);
+    debug!("Vertex data   @ {:p}", &quad);
     debug!("Vertex stride = {}", 6 * 4);
 
     let mapper = IdentityMapper;
@@ -285,7 +358,7 @@ fn kernel_main(_vcmail: usize) -> ! {
 
     let render_list = RenderControlList::<TILE_WIDTH, TILE_HEIGHT>::new(
         ClearColors {
-            color: Color::rgba8(0xEE, 0x95, 0x63, 0xFF),
+            color: Color::rgba8(0x64, 0x95, 0xED, 0xFF),
             clear_zs_vg_mask: 0,
             clear_stencil: 0,
         },
