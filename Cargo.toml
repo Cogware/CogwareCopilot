@@ -18,7 +18,7 @@ bsp_rpi4 = ["tock-registers"]
 # Optional dependencies
 tock-registers = { version = "0.8.x", default-features = false, features = ["register_types"], optional = true }
 qemu-exit = { version = "3.x.x", optional = true }
-quiche-gl = { git = "https://codeberg.org/Lynndox/quiche-gl", branch = "feat/control-lists", default-features = false }
+quiche-gl = { path = "../quiche-gl", default-features = false }
 log = { version = "0.4.28", features = ["max_level_debug"] }
 
 

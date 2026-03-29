@@ -24,6 +24,7 @@ use gl::{
     control_list::{fixed::RenderControlList, *},
     mem::{mapper::MemoryMapper, ArmAddress},
     nv::shader::NvShaderFlags,
+    register::*,
     Align16,
 };
 use gl::mem::mapper::IdentityMapper;
@@ -31,8 +32,12 @@ use gl::{mem::BusAddress, nv::primitive::*};
 
 const SCREEN_WIDTH: u16 = 480;
 const SCREEN_HEIGHT: u16 = 480;
-const TILE_WIDTH: usize = (SCREEN_WIDTH / 64) as usize;
-const TILE_HEIGHT: usize = (SCREEN_HEIGHT / 64) as usize;
+const TILE_WIDTH: usize = (SCREEN_WIDTH as usize + 63) / 64;
+const TILE_HEIGHT: usize = (SCREEN_HEIGHT as usize + 63) / 64;
+
+/// Binning buffer in .bss — must NOT be on the stack because the V3D DMA
+/// writes to it via bus addresses and can corrupt adjacent stack frames.
+static mut BINNING_BUFFER: Align16<[u8; 0x4000]> = Align16::new([0u8; 0x4000]);
 
 extern crate quiche_gl as gl;
 
@@ -94,10 +99,10 @@ fn kernel_main(vcmail: usize) -> ! {
     //info!("Exception handling state:");
     //exception::asynchronous::print_state();
 
-    info!(
-        "Architectural timer resolution: {} ns",
-        time::time_manager().resolution().as_nanos()
-    );
+    //info!(
+    //    "Architectural timer resolution: {} ns",
+    //    time::time_manager().resolution().as_nanos()
+    //);
 
     //info!("Registered IRQ handlers:");
     //exception::asynchronous::irq_manager().print_handler();
@@ -108,15 +113,47 @@ fn kernel_main(vcmail: usize) -> ! {
         .initialize(NonZeroU32::new(2).unwrap())
         .expect("failed to initialize QuicheGL context!");
     info!("QuicheGL context initialized!");
+
+    // V3D hardware init: verify access, reset threads, clear caches
+    unsafe {
+        let ident0 = V3D_IDENT0.read_volatile();
+        info!("V3D_IDENT0: {:#010X}", ident0);
+
+        // Reset CL executor threads to clear any stale state/semaphores
+        V3D_CT0CS.write_volatile(1 << 15);
+        V3D_CT1CS.write_volatile(1 << 15);
+
+        // Clear V3D L2 cache
+        V3D_L2CACTL.write_volatile(4);
+        // Clear all slice caches
+        V3D_SLCACTL.write_volatile(0x0F0F_0F0F);
+
+        debug!("CT0CS: {:#010X}, CT1CS: {:#010X}",
+            V3D_CT0CS.read_volatile(), V3D_CT1CS.read_volatile());
+    }
     //info!("Context: {:#?}", gl_ctx);
 
-    let mut binning_buffer = Align16::new([0u8; 0x4000]);
+    info!(
+        "Screen: {}x{}, tiles: {}x{} ({})",
+        SCREEN_WIDTH, SCREEN_HEIGHT, TILE_WIDTH, TILE_HEIGHT,
+        TILE_WIDTH * TILE_HEIGHT
+    );
+
+    let binning_buffer = unsafe { &mut BINNING_BUFFER };
 
     debug!("Building binning mode config");
+    let bin_buf_ptr = binning_buffer.as_mut_ptr() as *const _;
+    let bin_buf_bus = unsafe { BusAddress::from_ptr(bin_buf_ptr) };
+    // Tile state data array: 48 bytes per tile, at offset 0x1000 from allocation base
+    // Tile allocation memory (sub-lists): starts at bin_buf_bus
+    // These MUST NOT overlap or the binner corrupts memory
+    let tile_state_bus = BusAddress::from(bin_buf_bus.addr() + 0x1000);
+    debug!("Binning buffer @ {:p}, bus: {:#010X}, tile_state: {:#010X}",
+        bin_buf_ptr, bin_buf_bus.addr(), tile_state_bus.addr());
     let bin_mode_config = gl::control_list::TileBinningModeConfig {
-        address: unsafe { BusAddress::from_ptr(binning_buffer.as_mut_ptr() as *const _) },
+        address: bin_buf_bus,
         size: binning_buffer.len() as u32,
-        base_address: unsafe { BusAddress::from_ptr(binning_buffer.as_mut_ptr().byte_offset(0x1000)) },
+        base_address: tile_state_bus,
         tile_width: TILE_WIDTH as u8,
         tile_height: TILE_HEIGHT as u8,
         flags: TileBinningModeFlags::AutoInitialiseTileStateDataArray,
@@ -134,14 +171,14 @@ fn kernel_main(vcmail: usize) -> ! {
     let bin_config = TileBinningConfig {
         data8: TileBinningFlags8::EnableForwardFacingPrimitive
             | TileBinningFlags8::EnableReverseFacingPrimitive,
-        data16: TileBinningFlags16::EarlyZUpdatesEnable,
+        data16: TileBinningFlags16::DepthTestFunctionAlways,
     };
 
     debug!("Building triangle");
     let tri = gl::nv::extra::Triangle {
         vertices: [
             ShadedVertex::new(
-                FixedVec2::new(320, 32),
+                FixedVec2::new(120, 16),
                 1.0,
                 1.0,
                 VertexColor {
@@ -151,7 +188,7 @@ fn kernel_main(vcmail: usize) -> ! {
                 },
             ),
             ShadedVertex::new(
-                FixedVec2::new(32, 448),
+                FixedVec2::new(16, 224),
                 1.0,
                 1.0,
                 VertexColor {
@@ -161,7 +198,7 @@ fn kernel_main(vcmail: usize) -> ! {
                 },
             ),
             ShadedVertex::new(
-                FixedVec2::new(608, 448),
+                FixedVec2::new(224, 224),
                 1.0,
                 1.0,
                 VertexColor {
@@ -174,13 +211,15 @@ fn kernel_main(vcmail: usize) -> ! {
     };
 
     debug!("Building NV shader state");
+    let shader_ptr = gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr();
+    debug!("Shader code ptr: {:p} (aligned: {})", shader_ptr, (shader_ptr as usize) % 8 == 0);
     let nv_shader_state = unsafe {
         gl::nv::shader::NvShaderState::new_aligned(
             NvShaderFlags::empty(),
             6 * 4,
             0,
             3,
-            BusAddress::from_ptr(&gl::shader::VERTEX_COLOR_FRAG_SHADER),
+            BusAddress::from_ptr(shader_ptr),
             BusAddress::from_ptr(core::ptr::null::<()>()),
             BusAddress::from_ptr(&tri),
         )
@@ -192,6 +231,11 @@ fn kernel_main(vcmail: usize) -> ! {
         length: 3,
         index: 0,
     };
+
+    debug!("NV shader state @ {:p}", &nv_shader_state);
+    debug!("Shader code   @ {:p}", gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr());
+    debug!("Vertex data   @ {:p}", &tri);
+    debug!("Vertex stride = {}", 6 * 4);
 
     let mapper = IdentityMapper;
     debug!("Building binning list");
@@ -208,13 +252,15 @@ fn kernel_main(vcmail: usize) -> ! {
     );
 
     debug!("Building render mode config");
-    let framebuf_bus_addr = unsafe { BusAddress::from_ptr(gl_ctx.curr_screen_buffer_ptr()) };
+    let fb_ptr = unsafe { gl_ctx.curr_screen_buffer_ptr() };
+    debug!("Framebuffer ptr: {:p}", fb_ptr);
+    let framebuf_bus_addr = unsafe { BusAddress::from_ptr(fb_ptr) };
+    debug!("Framebuffer bus addr: {:#010X}", framebuf_bus_addr.addr());
     let rend_mode_config = TileRenderingModeConfig {
         address: framebuf_bus_addr,
         width: SCREEN_WIDTH,
         height: SCREEN_HEIGHT,
-        flags: TileRenderingModeFlags::MultisampleMode4X
-            | TileRenderingModeFlags::FrameBufferColorFormatRGBA8888,
+        flags: TileRenderingModeFlags::FrameBufferColorFormatRGBA8888,
     };
     debug!("Building render list");
 
@@ -225,7 +271,7 @@ fn kernel_main(vcmail: usize) -> ! {
             clear_stencil: 0,
         },
         rend_mode_config,
-        unsafe { BusAddress::from_ptr(binning_buffer.as_mut_ptr().byte_offset(0x1000)) },
+        bin_buf_bus,
     );
 
     info!("Running control list...");
