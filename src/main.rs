@@ -14,6 +14,7 @@
 
 use core::num::NonZeroU32;
 
+use gl::{i12f4, I12F4};
 use libkernel::{bsp, cpu, driver, exception, memory, state};
 
 use gl::mem::mapper::IdentityMapper;
@@ -187,98 +188,13 @@ fn kernel_main(_vcmail: usize) -> ! {
             | TileBinningFlags16::EarlyZUpdatesEnable,
     };
 
-    debug!("Building quad");
+    debug!("Rendering rainbow triangle");
+    let verts = RAINBOW_TRI;
+    let vert_list = RAINBOW_TRI_INDICES;
 
-    const CENTER_H: i16 = (SCREEN_WIDTH / 2) as i16;
-    const CENTER_V: i16 = (SCREEN_HEIGHT / 2) as i16;
-    const H_OFFSET: i16 = CENTER_H / 2;
-    const PADDING: i16 = 105;
-
-    const LEFT: i16 = (CENTER_V / 2) + H_OFFSET - (PADDING * 2);
-    const RIGHT: i16 = CENTER_H - (CENTER_V / 2) + (PADDING * 2) + H_OFFSET;
-    const TOP: i16 = PADDING;
-    const BOTTOM: i16 = (SCREEN_HEIGHT as i16) - PADDING;
-
-    let quad = [
-        ShadedVertex::new(
-            FixedVec2::new(LEFT, TOP),
-            1.0,
-            1.0,
-            VertexColor {
-                r: 1.0,
-                g: 0.0,
-                b: 0.0,
-            },
-        ),
-        ShadedVertex::new(
-            FixedVec2::new(LEFT, BOTTOM),
-            1.0,
-            1.0,
-            VertexColor {
-                r: 0.0,
-                g: 0.0,
-                b: 1.0,
-            },
-        ),
-        ShadedVertex::new(
-            FixedVec2::new(RIGHT, BOTTOM),
-            1.0,
-            1.0,
-            VertexColor {
-                r: 0.0,
-                g: 1.0,
-                b: 1.0,
-            },
-        ),
-        ShadedVertex::new(
-            FixedVec2::new(RIGHT, TOP),
-            1.0,
-            1.0,
-            VertexColor {
-                r: 0.0,
-                g: 1.0,
-                b: 0.0,
-            },
-        ),
-    ];
-
-    // debug!("Building triangle");
-    // let tri = gl::nv::extra::Triangle {
-    //     vertices: [
-    //         ShadedVertex::new(
-    //             FixedVec2::new((SCREEN_WIDTH / 2) as _, 216),
-    //             1.0,
-    //             1.0,
-    //             VertexColor {
-    //                 r: 1.0,
-    //                 g: 0.0,
-    //                 b: 0.0,
-    //             },
-    //         ),
-    //         ShadedVertex::new(
-    //             FixedVec2::new(620, (SCREEN_HEIGHT - 216) as _),
-    //             1.0,
-    //             1.0,
-    //             VertexColor {
-    //                 r: 0.0,
-    //                 g: 1.0,
-    //                 b: 0.0,
-    //             },
-    //         ),
-    //         ShadedVertex::new(
-    //             FixedVec2::new((SCREEN_WIDTH - 620) as _, (SCREEN_HEIGHT - 216) as _),
-    //             1.0,
-    //             1.0,
-    //             VertexColor {
-    //                 r: 0.0,
-    //                 g: 0.0,
-    //                 b: 1.0,
-    //             },
-    //         ),
-    //     ],
-    // };
-
-    let vert_list: [u8; 4] = [0, 1, 2, 3];
+    // debug!("Rendering rainbow quad");
+    // let verts = RAINBOW_QUAD;
+    // let vert_list = RAINBOW_QUAD_INDICES;
 
     debug!("Building NV shader state");
     let shader_ptr = gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr();
@@ -295,7 +211,7 @@ fn kernel_main(_vcmail: usize) -> ! {
             3,
             BusAddress::from_ptr(shader_ptr),
             BusAddress::from_ptr(core::ptr::null::<()>()),
-            BusAddress::from_ptr(&quad),
+            BusAddress::from_ptr(&verts),
         )
     };
 
@@ -305,29 +221,19 @@ fn kernel_main(_vcmail: usize) -> ! {
         IndexedPrimitiveListFlags::TriangleFan | IndexedPrimitiveListFlags::IndexType8,
         vert_list.len() as _,
         vert_list_bus,
-        3,
+        2,
     );
-
-    // let primitives = IndexedPrimitiveList::new(
-    //     IndexedPrimitiveListFlags::Triangles | IndexedPrimitiveListFlags::IndexType8,
-    //     vert_list.len() as _,
-    //     vert_list_bus,
-    //     // &tri.vertices,
-    //     2,
-    // );
-    // let primitives = VertArrPrimitives {
-    //     flags: VertArrPrimitiveListFlags::Triangles,
-    //     length: 3,
-    //     index: 0,
-    // };
 
     debug!("NV shader state @ {:p}", &nv_shader_state);
     debug!(
         "Shader code   @ {:p}",
         gl::shader::VERTEX_COLOR_FRAG_SHADER.as_ptr()
     );
-    debug!("Vertex data   @ {:p}", &quad);
+    debug!("Vertex data   @ {:p}", &verts);
     debug!("Vertex stride = {}", 6 * 4);
+
+    const OFFSET_X: I12F4 = i12f4!(SCREEN_HEIGHT / 2);
+    const OFFSET_Y: I12F4 = i12f4!(SCREEN_HEIGHT / 2);
 
     let mapper = IdentityMapper;
     debug!("Building binning list");
@@ -335,7 +241,10 @@ fn kernel_main(_vcmail: usize) -> ! {
         bin_mode_config,
         clip_config,
         bin_config,
-        ViewportOffset { x: 0, y: 0 },
+        ViewportOffset {
+            x: OFFSET_X,
+            y: OFFSET_Y,
+        },
         mapper
             .virt_to_phys_addr(ArmAddress::from(&raw const nv_shader_state))
             .unwrap()
@@ -381,3 +290,92 @@ fn kernel_main(_vcmail: usize) -> ! {
     info!("Echoing input now");
     cpu::wait_forever();
 }
+
+const SIZE: i16 = (SCREEN_HEIGHT / 4) as _;
+
+const TOP: i16 = -SIZE;
+const LEFT: i16 = -SIZE;
+const RIGHT: i16 = SIZE;
+const BOTTOM: i16 = SIZE;
+
+#[allow(unused)]
+const RAINBOW_TRI_INDICES: [u8; 3] = [0, 1, 2];
+#[allow(unused)]
+const RAINBOW_TRI: [ShadedVertex<VertexColor>; 3] = [
+    ShadedVertex::new(
+        FixedVec2::new(0, TOP),
+        1.0,
+        1.0,
+        VertexColor {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        },
+    ),
+    ShadedVertex::new(
+        FixedVec2::new(RIGHT, BOTTOM),
+        1.0,
+        1.0,
+        VertexColor {
+            r: 0.0,
+            g: 1.0,
+            b: 0.0,
+        },
+    ),
+    ShadedVertex::new(
+        FixedVec2::new(LEFT, BOTTOM),
+        1.0,
+        1.0,
+        VertexColor {
+            r: 0.0,
+            g: 0.0,
+            b: 1.0,
+        },
+    ),
+];
+
+#[allow(unused)]
+const RAINBOW_QUAD_INDICES: [u8; 4] = [0, 1, 2, 3];
+#[allow(unused)]
+const RAINBOW_QUAD: [ShadedVertex<VertexColor>; 4] = [
+    ShadedVertex::new(
+        FixedVec2::new(LEFT, TOP),
+        1.0,
+        1.0,
+        VertexColor {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        },
+    ),
+    ShadedVertex::new(
+        FixedVec2::new(LEFT, BOTTOM),
+        1.0,
+        1.0,
+        VertexColor {
+            r: 0.0,
+            g: 0.0,
+            b: 1.0,
+        },
+    ),
+    ShadedVertex::new(
+        FixedVec2::new(RIGHT, BOTTOM),
+        1.0,
+        1.0,
+        VertexColor {
+            r: 0.0,
+            g: 1.0,
+            b: 1.0,
+        },
+    ),
+    ShadedVertex::new(
+        FixedVec2::new(RIGHT, TOP),
+        1.0,
+        1.0,
+        VertexColor {
+            r: 0.0,
+            g: 1.0,
+            b: 0.0,
+        },
+    ),
+];
