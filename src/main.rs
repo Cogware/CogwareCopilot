@@ -203,7 +203,7 @@ fn kernel_main(_vcmail: usize) -> ! {
     let nv_shader_state = unsafe {
         gl::nv::shader::NvShaderState::new_aligned(
             NvShaderFlags::empty(),
-            6 * 4,
+            core::mem::size_of::<ShadedVertex<VertexColor>>() as _,
             0,
             3,
             BusAddress::from_ptr(shader_ptr),
