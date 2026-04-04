@@ -153,9 +153,6 @@ fn kernel_main(_vcmail: usize) -> ! {
 
     debug!("Building binning mode config");
     let bin_buf_bus = unsafe { BusAddress::from_ptr(bin_buf_ptr) };
-    // Tile state data array: 48 bytes per tile, at offset 0x1000 from allocation base
-    // Tile allocation memory (sub-lists): starts at bin_buf_bus
-    // These MUST NOT overlap or the binner corrupts memory
     let tile_state_bus = unsafe { BusAddress::from_ptr(&raw mut TILE_STATE_BUFFER) };
     debug!(
         "Binning buffer @ {:p}, bus: {:#010X}, tile_state: {:#010X}",
