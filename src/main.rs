@@ -229,7 +229,7 @@ fn kernel_main(_vcmail: usize) -> ! {
     debug!("Vertex data   @ {:p}", &verts);
     debug!("Vertex stride = {}", 6 * 4);
 
-    const OFFSET_X: I12F4 = i12f4!(SCREEN_HEIGHT / 2);
+    const OFFSET_X: I12F4 = i12f4!(SCREEN_WIDTH / 2);
     const OFFSET_Y: I12F4 = i12f4!(SCREEN_HEIGHT / 2);
 
     let mapper = IdentityMapper;
