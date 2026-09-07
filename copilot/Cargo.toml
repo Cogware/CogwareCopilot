@@ -1,0 +1,39 @@
+# The core crate. Rule 1 holds it to `core`, `alloc`, and one dependency:
+# `cogware-can`, the gauge specification. It is here rather than behind a
+# bridge crate because a scene names gauges, and a parser that can reject
+# `"gauge": "RMP"` is worth more than a toolkit that renders it as a blank.
+# Everything `cogware-can` pulls in is `no_std` and builds for
+# aarch64-unknown-none. Check with `cargo tree -p copilot --edges normal`.
+
+[package]
+name = "copilot"
+description = "A no_std retained-mode graphics toolkit with a pluggable rendering backend"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# Over https rather than ssh so that a clone builds for anyone, not only for
+# someone with a key on the account. The crate sits in a subdirectory of that
+# repository and cargo finds it by name; there is no root manifest there and
+# none is needed. `Cargo.lock` is committed, so the exact commit is pinned
+# even though this names no revision.
+cogware-can = { git = "https://codeberg.org/Cogware/CogwareCan.git" }
+
+[dev-dependencies]
+# The gauge table's cells are `critical_section::Mutex`es, and something has
+# to implement the section on the host for tests to read them. Firmware
+# provides its own; this is only ever linked into the test binary.
+critical-section = { version = "1", features = ["std"] }
+
+[features]
+default = []
+# Opts the crate into `std`, purely so host tests can print and use `Vec` from
+# the prelude. It must never gate an API difference — if a feature changes what
+# the crate *does*, the no_std path stops being the one that is tested.
+std = []
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_op_in_unsafe_fn = "deny"

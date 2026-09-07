@@ -1,0 +1,11 @@
+[toolchain]
+# Tracks current stable, like cogware-bcm2837. Nothing here needs nightly.
+channel = "stable"
+profile = "minimal"
+components = ["rust-src", "rustfmt", "clippy"]
+# The core crate must keep building for a bare-metal target or the no_std
+# guarantee is only theoretical. aarch64-unknown-none is digidash's target.
+# The desktop crates build for Linux and Windows on x86-64; the Windows
+# target is listed so a Linux host can at least type-check for it, and can
+# link for it with a cross linker (see "Building" in the README).
+targets = ["aarch64-unknown-none", "x86_64-pc-windows-gnu"]

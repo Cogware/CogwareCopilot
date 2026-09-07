@@ -1,0 +1,36 @@
+# Build output. `/target` rather than `target` so a crate that ever legitimately
+# holds a directory of that name deeper in the tree is not swallowed too.
+/target
+**/*.rs.bk
+*.pdb
+
+# Binaries and object files that land outside `target`: a `cc` invocation with
+# no `-o`, a kernel image built by hand, a core dump from a crash.
+a.out
+*.exe
+*.so
+*.dylib
+*.o
+core
+
+# Frames the simulator and the tests dump with `--ppm`. Never an asset: the
+# images a scene actually ships are `.qoi` and `.gif`, and those are tracked.
+*.ppm
+
+# The tooling this happens to be written with. None of it describes the
+# toolkit, all of it changes every session, and a repository is better for
+# not carrying somebody else's editor state.
+.claude/
+.claude-flow/
+CLAUDE.md
+.mcp.json
+/memory/
+/coordination/
+.swarm/
+.hive-mind/
+.roo/
+.roomodes
+
+# The house rules the code is written to: kept out of the published tree on
+# purpose, so anyone reading the repository is reading the toolkit.
+instructions.md

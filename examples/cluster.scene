@@ -1,0 +1,83 @@
+// A first cluster, in the spirit of the Z31 panel digidash draws.
+// Everything here is hand-editable: comments and trailing commas are fine.
+{
+  "width": 800,
+  "height": 480,
+
+  "root": {
+    "type": "panel",
+    "rect": [0, 0, 800, 480],
+    "background": "#0d1117",          // the backdrop, painted once
+    "name": "root",
+
+    "children": [
+      // --- fuel, down the left edge ---
+      {
+        "type": "frame",
+        "rect": [40, 60, 60, 360],
+        "color": "#30363d",
+        "children": [
+          {
+            "type": "bar",
+            "rect": [4, 4, 52, 352],
+            "name": "fuel",
+            "value": 0.62,
+            "vertical": true,          // fuel rises from the bottom
+            // A slow drain, so the simulator shows motion without anyone
+            // having to wire up a data source yet.
+            "animate": {
+              "property": "value", "from": 0.62, "to": 0.05,
+              "duration_ms": 20000, "easing": "linear", "repeat": "loop",
+            },
+            "fill": "#3fb950",
+            "track": "#161b22",
+          },
+        ],
+      },
+
+      // --- the tachometer strip ---
+      {
+        "type": "panel",
+        "rect": [140, 60, 520, 120],
+        "background": "#161b22",
+        "name": "tacho",
+        "children": [
+          { "type": "bar", "rect": [10, 10, 500, 100], "name": "rpm",
+            "value": 0.45, "fill": "#58a6ff", "track": "#0d1117",
+            // Revs sweep up and fall back, eased at both ends so it reads like
+            // an engine rather than a sawtooth.
+            "animate": {
+              "property": "value", "from": 0.10, "to": 0.92,
+              "duration_ms": 2600, "easing": "in_out_cubic",
+              "repeat": "ping_pong",
+            } },
+        ],
+      },
+
+      // --- speed, centre ---
+      {
+        "type": "panel",
+        "rect": [140, 200, 520, 160],
+        "background": "#161b22",
+        "children": [
+          { "type": "label", "rect": [20, 40, 480, 80], "name": "speed",
+            "text": "88", "color": "#f0f6fc" },
+        ],
+      },
+
+      // --- three small gauges along the bottom ---
+      { "type": "bar", "rect": [140, 390, 160, 24], "name": "coolant",
+        "value": 0.40, "fill": "#d29922", "track": "#161b22" },
+      { "type": "bar", "rect": [320, 390, 160, 24], "name": "oil",
+        "value": 0.75, "fill": "#a371f7", "track": "#161b22",
+        "animate": { "property": "value", "from": 0.55, "to": 0.85,
+                     "duration_ms": 4000, "easing": "in_out_quad",
+                     "repeat": "ping_pong" } },
+      { "type": "bar", "rect": [500, 390, 160, 24], "name": "volts",
+        "value": 0.55, "fill": "#f85149", "track": "#161b22" },
+
+      // a widget deliberately half off-screen, to prove clipping works
+      { "type": "frame", "rect": [700, 430, 200, 100], "color": "#8b949e" },
+    ],
+  },
+}

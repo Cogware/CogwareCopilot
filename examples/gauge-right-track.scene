@@ -1,0 +1,35 @@
+// A round 480x480 gauge on the bus at node 0x03: WATER  F, track mode.
+//
+// One arc for the sweep, a scale on its rim, a needle over it and a readout
+// under the hub, all bound to the same gauge over the same range, so the
+// three agree about where a reading sits without the file restating it. The
+// corners are behind the bezel: "shape" says so, and the editor masks them.
+{
+  "width": 480,
+  "height": 480,
+  "node": "0x03",
+  "shape": "round",
+  "antialias": true,
+  "root": {
+    "type": "panel", "rect": [0, 0, 480, 480], "background": "#05070a", "name": "water",
+    "children": [
+      { "type": "arc", "rect": [30, 30, 420, 420], "name": "sweep",
+        "start": 225, "end": 495, "value": 0.3, "thickness": 16,
+        "fill": "#f85149", "track": "#161b22",
+        "bind": { "gauge": "CLNT", "unit": "F", "min": 120, "max": 270 } },
+      { "type": "scale", "rect": [56, 56, 368, 368], "name": "rim",
+        "start": 225, "end": 495, "ticks": 10, "major_every": 3,
+        "length": 18, "width": 2, "color": "#5a6570", "major_color": "#9aa6b2" },
+      { "type": "needle", "rect": [70, 70, 340, 340], "name": "needle",
+        "start": 225, "end": 495, "value": 0.3, "width": 5, "color": "#f85149", "hub": 14,
+        "bind": { "gauge": "CLNT", "unit": "F", "min": 120, "max": 270 } },
+      { "type": "sevenseg", "rect": [150, 300, 180, 60], "name": "readout",
+        "text": "  0", "color": "#f85149", "ghost": "#1a1f26", "thickness": 6,
+        "bind": { "gauge": "CLNT", "unit": "F", "pad": 3 } },
+      { "type": "label", "rect": [120, 380, 240, 24], "text": "WATER  F",
+        "color": "#9aa6b2", "scale": 3, "align": "center" },
+      { "type": "label", "rect": [140, 120, 200, 16], "name": "mode", "text": "TRACK",
+        "color": "#5c1f1d", "scale": 2, "align": "center" },
+    ],
+  },
+}

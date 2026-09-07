@@ -1,0 +1,41 @@
+# CogwareCopilot — a pure-Rust retained-mode graphics toolkit in the spirit of
+# LVGL, but no_std-first and with the rendering backend left as a seam rather
+# than a bundled driver.
+#
+# The workspace is three crates with a deliberate dependency direction:
+#
+#   copilot        #![no_std] + alloc.  Knows nothing about windows, files or
+#                  operating systems.  Draws into whatever implements `Surface`.
+#   copilot-sim    std.  Owns a window on Linux and Windows, implements
+#                  `Surface` over it, and feeds input back in.  This is the
+#                  only crate allowed to name an OS API.
+#   fontconv       std, host-side build tool.  Converts a TTF into the bitmap
+#                  atlas format `copilot::font` consumes.  Never linked into a
+#                  target build.
+#
+# Nothing flows the other way: `copilot` does not depend on the simulator, so
+# a bare-metal consumer such as digidash pays for none of it.
+
+[workspace]
+resolver = "3"
+members = ["copilot", "copilot-sim", "copilot-edit", "tools/fontconv"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://codeberg.org/Cogware/CogwareCopilot"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+overflow-checks = true   # a rasteriser that wraps a coordinate corrupts memory
+                         # silently; catching it costs less than debugging it
+debug = "full"
+strip = "none"
+
+[profile.dev]
+opt-level = 1            # a debug-build rasteriser at opt-level 0 is unusable
+overflow-checks = true
+debug = "full"

@@ -1,0 +1,28 @@
+# Host-side build tool: converts a TTF into the bitmap atlas `copilot::font`
+# reads. Never linked into a target build, and never a dependency of `copilot`.
+#
+# `ab_glyph` is the one dependency and the reason this crate exists separately:
+# parsing TrueType outlines and rasterising them is a real body of work, it only
+# ever runs on a developer's machine, and reimplementing it would add thousands
+# of lines to a project whose point is that every line is inspectable.
+
+[package]
+name = "fontconv"
+description = "Convert a TTF into a copilot bitmap font atlas"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+ab_glyph = "0.2"
+
+[dev-dependencies]
+# The round-trip test reads back what this crate writes, using the very parser
+# the target will use. It is the only thing stopping the two implementations of
+# the format drifting apart.
+copilot = { path = "../../copilot", features = ["std"] }
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_op_in_unsafe_fn = "deny"

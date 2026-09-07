@@ -1,0 +1,24 @@
+// Proves the asset pipeline: the scene names a file, the host loads and
+// decodes it, and widgets index the table by position.
+{
+  "width": 320,
+  "height": 160,
+
+  // Paths are resolved relative to this file, so a scene and its assets move
+  // together. Index 0 is the first entry, and that is what widgets refer to.
+  "images": ["checker.qoi"],
+
+  "root": {
+    "type": "panel",
+    "rect": [0, 0, 320, 160],
+    "background": "#0d1117",
+    "children": [
+      // natural size, 8x8
+      { "type": "image", "rect": [16, 16, 8, 8], "image": 0 },
+      // scaled up, to show a scene can outlive the panel it was authored for
+      { "type": "image", "rect": [48, 16, 128, 128], "image": 0 },
+      // an index nothing supplied: draws the magenta placeholder, not nothing
+      { "type": "image", "rect": [200, 16, 64, 64], "image": 9 },
+    ],
+  },
+}

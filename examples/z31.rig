@@ -1,0 +1,22 @@
+// The Z31's three screens and its three ways of driving.
+//
+// Node 0x00 is the gateway and is never a display. Paths are relative to this
+// file. The value broadcast for a mode is its index in "modes", which is why
+// the list is in an order and not just a set: normal is 0, sport 1, track 2.
+{
+  "modes": ["normal", "sport", "track"],
+  "displays": [
+    { "name": "cluster", "node": "0x01",
+      "scenes": { "normal": "z31-normal.scene",
+                  "sport":  "z31-sport.scene",
+                  "track":  "z31-track.scene" } },
+    { "name": "map", "node": "0x02",
+      "scenes": { "normal": "gauge-left-normal.scene",
+                  "sport":  "gauge-left-sport.scene",
+                  "track":  "gauge-left-track.scene" } },
+    { "name": "water", "node": "0x03",
+      "scenes": { "normal": "gauge-right-normal.scene",
+                  "sport":  "gauge-right-sport.scene",
+                  "track":  "gauge-right-track.scene" } },
+  ],
+}

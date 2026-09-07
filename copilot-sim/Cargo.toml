@@ -1,0 +1,27 @@
+# The simulator. Rule 1 holds `copilot` to `core`, `alloc` and the gauge spec;
+# this crate is held to the weaker rule, because it has to talk to an operating
+# system and reimplementing a window manager is not the point of the project.
+#
+# `minifb` is the whole of that concession: it does exactly one thing -- put a
+# pixel buffer in a window on Windows and Linux and report keys -- and it is
+# long-standing and small. Nothing here is ever a dependency of `copilot`, so a
+# bare-metal consumer such as digidash pays for none of it.
+
+[package]
+name = "copilot-sim"
+description = "Windowed simulator for the copilot graphics toolkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+copilot = { path = "../copilot", features = ["std"] }
+minifb = "0.28"
+# Implements the critical section the gauge table's cells are guarded by. A
+# host has threads, so `std`'s mutex is the right one.
+critical-section = { version = "1", features = ["std"] }
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_op_in_unsafe_fn = "deny"
