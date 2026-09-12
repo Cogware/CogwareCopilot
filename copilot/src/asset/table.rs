@@ -1,18 +1,11 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! The images a scene refers to, and how they get there.
 //!
-//! Rule 1.4 says the core crate cannot open a file, so a scene cannot load its
-//! own assets. The split is this: a scene file lists the images it wants by
-//! path, [`crate::scene::build_scene`] hands that list back as
-//! [`Scene::requests`], the host reads whichever bytes it can and decodes them
-//! into an [`ImageTable`], and widgets refer to entries by index.
-//!
-//! # Why widgets hold an index and not the pixels
-//!
-//! Two widgets showing the same background share one decode, a [`Kind`] stays
-//! cheap to clone, and — the reason that actually matters on a Pi — the table
-//! can be built once at start-up into memory that is never reallocated, so no
-//! frame ever allocates.
+//! A scene cannot load its own assets, so it lists the images it wants by path
+//! and the host decodes whichever bytes it can into an [`ImageTable`]. Widgets
+//! refer to entries by index, which shares one decode between widgets, keeps
+//! [`Kind`] cheap to clone, and lets the table be built once into memory that
+//! is never reallocated.
 //!
 //! [`Kind`]: crate::widget::Kind
 

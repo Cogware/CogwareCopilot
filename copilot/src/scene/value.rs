@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! The parsed form of a scene document.
 //!
 //! [`Value`] is a plain tree, not a typed scene: widgets are built from it in

@@ -1,15 +1,11 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Structural edits to a scene, performed on the text.
 //!
-//! Adding, removing and replacing widgets by splicing bytes rather than
-//! rewriting the document. Everything the author put in the file that is not
-//! the thing being changed -- comments, blank lines, key order, their own
-//! indentation -- survives untouched, which a round trip through
-//! [`super::Value`] cannot promise.
-//!
-//! The delicate part is commas. An element removed from the middle takes the
-//! comma after it; the last element has none, so it takes the one before
-//! instead. Get that wrong and the editor writes a file it can no longer open.
+//! Widgets are added, removed and replaced by splicing bytes, so comments,
+//! blank lines, key order and the author's own indentation survive — which a
+//! round trip through [`super::Value`] cannot promise. The delicate part is
+//! commas: an element removed from the middle takes the comma after it, and
+//! the last element takes the one before instead.
 
 use alloc::string::String;
 

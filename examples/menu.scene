@@ -1,0 +1,26 @@
+// A settings screen for the Z31's cluster, driven by the button pad.
+//
+// The menu itself is in z31.rig, not here: a scene only says where it is
+// drawn and in what colours, so brightness set in normal mode is still set
+// in track mode. Run it with:
+//
+//   copilot-sim --rig examples/z31.rig examples/menu.scene
+{
+  "width": 480,
+  "height": 480,
+  "node": "0x02",
+  "shape": "round",
+  "antialias": true,
+  "root": {
+    "type": "panel", "rect": [0, 0, 480, 480], "background": "#05070a",
+    "children": [
+      { "type": "frame", "rect": [60, 90, 360, 300], "color": "#1d2733" },
+      // "selected" marks the row the cursor is on, "editing" marks it while
+      // left and right are changing its value. Two colours because those are
+      // two different things to a driver.
+      { "type": "menu", "rect": [70, 100, 340, 280], "menu": "display",
+        "color": "#7a8794", "selected": "#ffffff", "editing": "#ffb000",
+        "scale": 2 },
+    ],
+  },
+}

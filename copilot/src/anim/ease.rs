@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Easing curves.
 //!
 //! All polynomial. `core` has no `sin`, `powf` or `sqrt`, so the usual
@@ -77,13 +77,8 @@ pub enum Easing {
 impl Easing {
     /// Map a normalised time `t` to a normalised progress.
     ///
-    /// `t` is clamped to `0.0..=1.0` first, and NaN is treated as `0.0`,
-    /// so a caller cannot produce a position outside the animation.
-    ///
-    /// For every variant, `apply(0.0)` is exactly `0.0` and `apply(1.0)`
-    /// is exactly `1.0`. The implementation uses only polynomial
-    /// arithmetic on `f32` — no `std` float methods, no allocation, and
-    /// no path that can panic.
+    /// `t` is clamped to `0.0..=1.0` and NaN becomes `0.0`, so the result is
+    /// always in range.
     pub fn apply(self, t: f32) -> f32 {
         // NaN has to be caught before the clamp, not by it: `f32::clamp`
         // propagates NaN rather than pinning it to a bound, and a NaN here

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! GIF decoding.
 //!
 //! GIF rather than a video codec because it is the one animated format small

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! The Bind rows of the properties pane: which gauge a widget shows, in what
 //! unit, over what range.
 //!

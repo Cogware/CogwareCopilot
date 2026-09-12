@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 #![no_std]
 #![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
@@ -18,6 +18,11 @@
 //! driver. That trait is the whole of the "GPU hook-in" — the crate ships one
 //! software rasteriser and no drivers, because a driver that lives in a
 //! graphics toolkit is a driver nobody can replace.
+//!
+//! Five methods make a working backend. Everything past them is optional and
+//! defaults to declining, so a driver accelerates rectangles, pictures,
+//! gradients, dials and resident textures as its hardware allows and the
+//! software rasteriser draws the rest.
 //!
 //! For the same reason there are no files here. A scene arrives as a `&str`
 //! the caller has already read; an image arrives as a `&[u8]`. The core crate
@@ -59,6 +64,7 @@ pub mod asset;
 pub mod color;
 pub mod font;
 pub mod geom;
+pub mod menu;
 pub mod render;
 pub mod rig;
 pub mod scene;
@@ -70,6 +76,6 @@ pub mod widget;
 pub use color::Color;
 pub use geom::{Point, Rect, Size};
 pub use render::Damage;
-pub use surface::{PixelFormat, Surface};
+pub use surface::{Caps, PixelFormat, Primitive, Surface, TextureId};
 pub use surface_mem::MemorySurface;
 pub use widget::{Kind, Node, NodeId, Tree};

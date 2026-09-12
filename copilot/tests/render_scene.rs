@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! End-to-end: the example scene file, through every stage, to pixels.
 //!
 //! This is the v0.1 milestone expressed as a test. It runs headless, so it
@@ -9,7 +9,7 @@ use copilot::asset::{AnimTable, ImageTable};
 use copilot::font::default_font;
 use copilot::render::{Resources, compose_all};
 use copilot::widget::ROOT;
-use copilot::{Color, MemorySurface, PixelFormat, Size, Surface};
+use copilot::{Color, MemorySurface, PixelFormat, Primitive, Rect, Size, Surface};
 
 /// The same file the simulator opens, compiled in so the test cannot drift
 /// from the example anyone is told to run.
@@ -42,6 +42,7 @@ fn res<'a>(images: &'a ImageTable, anims: &'a AnimTable) -> Resources<'a> {
         images,
         anims,
         font: FONT.get_or_init(default_font),
+        menus: &[],
     }
 }
 
@@ -767,4 +768,184 @@ fn a_partial_repaint_of_every_widget_matches_a_full_one() {
             node.name
         );
     }
+}
+
+/// Counts what a backend is asked to do while a real scene composes.
+///
+/// The unit tests prove each hook is offered and honoured in isolation. This
+/// one answers the question a driver author actually has -- *is it worth
+/// writing?* -- by composing the shipped instrument cluster and counting.
+struct Counting {
+    size: Size,
+    /// Whether the fake hardware takes the shapes it is offered.
+    shapes: bool,
+    /// Whether it takes whole rectangles.
+    rects_taken: bool,
+    prims: usize,
+    rects: usize,
+    spans: usize,
+}
+
+impl Counting {
+    fn new(size: Size, shapes: bool, rects_taken: bool) -> Self {
+        Self {
+            size,
+            shapes,
+            rects_taken,
+            prims: 0,
+            rects: 0,
+            spans: 0,
+        }
+    }
+}
+
+impl Surface for Counting {
+    fn size(&self) -> Size {
+        self.size
+    }
+    fn format(&self) -> PixelFormat {
+        PixelFormat::Bgrx8888
+    }
+    fn fill_span(&mut self, _x: i32, _y: i32, _n: u32, _c: Color) {
+        self.spans += 1;
+    }
+    fn blit_span(&mut self, _x: i32, _y: i32, _s: &[Color]) {
+        self.spans += 1;
+    }
+    fn blend_span(&mut self, _x: i32, _y: i32, _s: &[Color]) {
+        self.spans += 1;
+    }
+    fn draw_rect(&mut self, _r: Rect, _c: Color) -> bool {
+        self.rects += 1;
+        self.rects_taken
+    }
+    fn draw_primitive(&mut self, _p: Primitive, _a: Rect, _c: Color, _aa: bool) -> bool {
+        self.prims += 1;
+        self.shapes
+    }
+    fn present(&mut self, _damage: Option<Rect>) {}
+}
+
+/// A round 480x480 gauge: one arc, a scale on its rim, a needle over it and a
+/// readout under the hub. The cluster scene is bars and panels and reaches no
+/// shape hook at all, which is precisely why the counting tests below use
+/// this one instead.
+const DIAL_SCENE: &str = include_str!("../../examples/gauge-left-normal.scene");
+
+fn count(shapes: bool, rects: bool) -> Counting {
+    let doc = copilot::scene::parse(DIAL_SCENE).expect("the dial scene must parse");
+    let tree = copilot::scene::build(&doc).expect("the dial scene must build");
+    let bounds = tree.get(ROOT).unwrap().rect;
+    let mut s = Counting::new(bounds.size, shapes, rects);
+    compose_all(&mut s, &tree, res(&ImageTable::new(), &AnimTable::new()));
+    s
+}
+
+#[test]
+fn a_round_gauge_offers_its_dial_as_primitives() {
+    // If a real scene never reached the hook, every unit test above would
+    // still pass and the hook would be dead code. The cluster scene, which is
+    // bars and panels, reaches it exactly zero times -- so this test being
+    // pointed at the right scene is half of what it checks.
+    let s = count(false, false);
+    assert!(
+        s.prims > 0,
+        "the shipped dial drew no primitives at all; the hook is unwired"
+    );
+    assert!(s.rects > 0, "and it should still be drawing rectangles");
+}
+
+#[test]
+fn taking_the_shapes_removes_over_half_of_what_a_dial_costs() {
+    // The number that decides whether a VideoCore crate is worth writing.
+    // Not a performance assertion -- it counts calls, not time -- but the
+    // ratio is the reason the hook exists, and a regression that quietly
+    // routed dials back through the coverage sampler would show up here.
+    let soft = count(false, false);
+    let hard = count(true, false);
+    assert_eq!(soft.prims, hard.prims, "the same shapes either way");
+    assert!(
+        hard.spans * 2 < soft.spans,
+        "the shapes should be over half the spans in a dial, \
+         but went from {} to {} for {} primitives",
+        soft.spans,
+        hard.spans,
+        hard.prims
+    );
+}
+
+#[test]
+fn the_two_hooks_together_leave_almost_nothing_on_the_sampler() {
+    // What is left after the shapes is the seven-segment readout and the
+    // panels behind it, and those are rectangles. Taking both is what a real
+    // backend does, and it is worth recording that the two hooks between them
+    // cover the scene rather than each covering half of it twice.
+    let soft = count(false, false);
+    let hard = count(true, true);
+    assert!(
+        hard.spans * 20 < soft.spans,
+        "shapes and rectangles together should leave a remainder, \
+         but went from {} to {} ({} primitives, {} rectangles)",
+        soft.spans,
+        hard.spans,
+        hard.prims,
+        hard.rects
+    );
+}
+
+// --- menus ---
+
+const MENU_SCENE: &str = include_str!("../../examples/menu.scene");
+const MENU_RIG: &str = include_str!("../../examples/z31.rig");
+
+/// Render the menu scene with the rig's menus, or without them.
+fn menu_render(with_rig: bool) -> MemorySurface {
+    let doc = copilot::scene::parse(MENU_SCENE).expect("the menu scene must parse");
+    let tree = copilot::scene::build(&doc).expect("the menu scene must build");
+    let menus = if with_rig {
+        copilot::rig::parse(MENU_RIG)
+            .expect("the rig must parse")
+            .menus
+    } else {
+        Vec::new()
+    };
+    let bounds = tree.get(ROOT).unwrap().rect;
+    let mut s = MemorySurface::new(bounds.size, PixelFormat::Bgrx8888);
+    let (images, anims) = (ImageTable::new(), AnimTable::new());
+    compose_all(
+        &mut s,
+        &tree,
+        Resources {
+            images: &images,
+            anims: &anims,
+            font: FONT.get_or_init(default_font),
+            menus: &menus,
+        },
+    );
+    s
+}
+
+fn count_of(s: &MemorySurface, want: [u8; 3]) -> usize {
+    s.pixels()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| [p[2], p[1], p[0]] == want)
+        .count()
+}
+
+#[test]
+fn a_menu_widget_draws_the_rigs_menu() {
+    // The scene names a menu, the rig owns it, and the two only meet here.
+    let s = menu_render(true);
+    assert_eq!(count_of(&s, [255, 0, 255]), 0, "drew the placeholder");
+    assert!(count_of(&s, [255, 255, 255]) > 0, "drew no selected text");
+}
+
+#[test]
+fn a_menu_widget_whose_menu_is_missing_draws_the_placeholder() {
+    // Same scene, no rig: a typo in the menu name has to be visible on the
+    // screen it was authored for, not silently blank.
+    let s = menu_render(false);
+    assert!(count_of(&s, [255, 0, 255]) > 0, "drew nothing at all");
 }

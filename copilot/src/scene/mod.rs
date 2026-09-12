@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Reading a scene from text.
 //!
 //! The format is JSON with three additions: `//` and `/* */` comments, and

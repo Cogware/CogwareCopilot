@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Plotted series: a polyline and the chart built on it.
 //!
 //! Both take their coordinates as fractions of the widget's box rather than
@@ -11,11 +11,10 @@ use crate::{Color, Point, Rect, Surface};
 use super::fill_rect;
 use super::shape::line;
 
-/// Draws a sequence of connected line segments, mapping normalised
-/// coordinates into the widget's box so that the shape scales with its
-/// allocation.  The `closed` flag closes the loop when there are enough
-/// vertices to form a polygon, avoiding a degenerate self-overlap on
-/// two-point inputs.
+/// Draw connected line segments from normalised coordinates mapped into `at`.
+///
+/// `closed` joins the last point to the first, and is ignored below three
+/// points where it would only double an existing segment.
 #[allow(clippy::too_many_arguments)] // A stroke is its points, width, colour, closure and finish.
 pub fn polyline<S: Surface + ?Sized>(
     surface: &mut S,
@@ -36,7 +35,7 @@ pub fn polyline<S: Surface + ?Sized>(
     let segment = |surface: &mut S, a: Point, b: Point| {
         if antialias {
             let c = |p: Point| (p.x as f32 + 0.5, p.y as f32 + 0.5);
-            super::aa::line(surface, clip, c(a), c(b), width.max(1) as f32, color);
+            super::aa::line(surface, clip, c(a), c(b), width.max(1) as f32, color, true);
         } else {
             line(surface, a, b, width, color, clip);
         }
@@ -58,8 +57,6 @@ pub fn polyline<S: Surface + ?Sized>(
 }
 
 /// Renders a filled area chart with a crisp stroke along the top edge.
-/// The fill is painted first so that the stroke remains unobscured,
-/// preserving visual clarity at the boundary between the two regions.
 #[allow(clippy::too_many_arguments)] // A series, a stroke, a fill and a finish.
 pub fn chart<S: Surface + ?Sized>(
     surface: &mut S,
@@ -157,7 +154,15 @@ pub fn chart<S: Surface + ?Sized>(
             if let Some(p) = prev {
                 if antialias {
                     let c = |p: Point| (p.x as f32 + 0.5, p.y as f32 + 0.5);
-                    super::aa::line(surface, clip, c(p), c(pt), width.max(1) as f32, stroke);
+                    super::aa::line(
+                        surface,
+                        clip,
+                        c(p),
+                        c(pt),
+                        width.max(1) as f32,
+                        stroke,
+                        true,
+                    );
                 } else {
                     line(surface, p, pt, width, stroke, clip);
                 }
@@ -168,11 +173,6 @@ pub fn chart<S: Surface + ?Sized>(
 }
 
 /// Turn a pair of normalised fractions into a pixel inside `at`.
-///
-/// One helper rather than the arithmetic written out at each call site,
-/// because the clamp is the load-bearing part: without it a scene file's
-/// stray value scatters pixels across the whole framebuffer, and a clamp
-/// forgotten in one of three places is a bug nobody sees until it ships.
 fn map(at: Rect, fx: f32, fy: f32) -> Point {
     // `w - 1` rather than `w`: a fraction of 1.0 means the last pixel inside
     // the box, not the first one past its exclusive right edge.
@@ -185,20 +185,12 @@ fn map(at: Rect, fx: f32, fy: f32) -> Point {
 }
 
 /// Clamp a fraction to 0.0..=1.0, treating NaN as 0.0.
-///
-/// NaN compares false against everything, so an unguarded `clamp` would pass
-/// it straight through into a cast whose result is not worth predicting.
 fn clamp_frac(t: f32) -> f32 {
     if t.is_nan() { 0.0 } else { t.clamp(0.0, 1.0) }
 }
 
 /// A hard cap on the number of edge crossings a single scanline can record.
-///
-/// This crate renders without allocating, so a fixed-size stack buffer is the
-/// only option. A dashboard shape that produces more than 64 crossings on one
-/// scanline is not a shape anyone drew on purpose; beyond this bound the
-/// remaining crossings are silently dropped rather than risking a heap
-/// allocation or a panic.
+/// Beyond this bound, remaining crossings are silently dropped.
 const MAX_CROSSINGS: usize = 64;
 
 /// How many sub-rows a row is cut into for antialiasing a polygon, and how
@@ -208,10 +200,6 @@ const ACROSS: u32 = 16;
 
 /// The x positions where the polygon's edges cross the horizontal line at
 /// `yc`, sorted, written into `out`. Returns how many there are.
-///
-/// The half-open rule -- an edge counts when one end is at or above the line
-/// and the other strictly below -- makes each vertex count for exactly one of
-/// its two edges, which is what keeps the even-odd rule right at a vertex.
 fn crossings(
     vertices: impl Fn(usize) -> (f32, f32),
     n: usize,
@@ -253,16 +241,6 @@ fn crossings(
 
 /// Fill a polygon defined by normalised vertices, clipped to the damage
 /// region, using the even-odd rule.
-///
-/// The scanline algorithm walks each row of the intersection between the
-/// widget's box and the clip region, collecting the x-coordinates where the
-/// polygon's edges cross the centre of that row. Crossings are sorted and
-/// consumed in pairs to determine the filled spans.
-///
-/// Antialiased, each row is cut into [`SUBROWS`] and every sub-row's spans
-/// are measured against each pixel they touch, so a pixel's coverage is the
-/// mean of four exact horizontal overlaps. Exact across and sampled down,
-/// because a span already knows exactly where it starts and stops.
 pub fn polygon<S: Surface + ?Sized>(
     surface: &mut S,
     at: Rect,

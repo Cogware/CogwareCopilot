@@ -1,48 +1,14 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Binding a widget to a gauge.
 //!
-//! A scene can say what a widget *shows* -- `"bind": { "gauge": "RPM", "max":
-//! 8000 }` -- and not only what it looks like at one authored value. The gauge
-//! is resolved here, at build time, against the table in [`cogware_can`], so a
-//! name the bus has never heard of fails on the desk rather than drawing a
-//! blank in the car.
-//!
-//! # What a binding does at run time
-//!
-//! Nothing, on its own. The host reads the bus into the gauge table
-//! ([`cogware_can::feed_frame`]) and then asks each binding to
-//! [`apply`](Binding::apply) itself. One reading goes through four steps, in
-//! this order:
-//!
-//! 1. **unit** -- converted from the gauge's own unit to the one the scene
-//!    asked for, if it asked for one. kPa to psi, °C to °F.
-//! 2. **transform** -- `reading / divide + offset`. A tachometer face printed
-//!    `x100 r/min` shows hundreds; a boost gauge reads zero at atmospheric
-//!    rather than 14.7. Neither is something the bus should carry, and
-//!    neither should be a reason to write code.
-//! 3. **range or format** -- mapped onto the widget's 0..1 fraction over
-//!    `min..max`, or formatted to `decimals` places and padded to `pad`.
-//! 4. **written** through the tree's setters, so only a reading that actually
-//!    changed marks damage.
-//!
-//! [`Scene::wanted`] is the list of gauge ids the display should subscribe
-//! to, derived from the same bindings, so a scene cannot show a gauge it
-//! forgot to ask for.
-//!
-//! # Bindings and animations
-//!
-//! Both may sit on one widget. A host applies bindings *after* ticking the
-//! animator, so live data wins where there is a source and the authored
-//! animation runs where there is none: the same file demonstrates itself in
-//! the simulator and reads the engine in the car.
-//!
-//! # Why `max` is required for a reading
-//!
-//! A bar bound to RPM with no range would be pinned full from one rev per
-//! minute, which looks like a rendering bug and is a scene-file one. Refusing
-//! the file is the kinder failure. Text has no range to be wrong about, so
-//! there `min` and `max` only describe the span a dummy-value sweep should
-//! cover, and default to 0..100.
+//! A scene can say what a widget *shows* — `"bind": { "gauge": "RPM", "max":
+//! 8000 }` — and the gauge is resolved here at build time against the table in
+//! [`cogware_can`], so a name the bus has never heard of fails on the desk
+//! rather than drawing a blank in the car. At run time a binding does nothing
+//! until the host applies it, after ticking the animator, so live data wins
+//! where there is a source and the authored animation runs where there is not.
+//! `docs/widgets.md` describes the unit, transform and range steps a reading
+//! passes through.
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Shaping a curve on the preview instead of typing it as a row of numbers.
 //!
 //! Two widgets carry one: a `segbar`'s `profile`, the envelope its cells are

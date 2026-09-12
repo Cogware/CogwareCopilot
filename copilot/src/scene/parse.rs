@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Turning a token stream into a [`Value`] tree.
 //!
 //! A recursive-descent parser over [`super::lex::Lexer`]. It is deliberately strict
@@ -71,8 +71,8 @@ impl From<LexError> for ParseError {
 ///
 /// # Errors
 ///
-/// Returns [`ParseError`] for malformed input. This function does not panic on
-/// any input, which is the property rule 5.1 requires of it.
+/// Returns [`ParseError`] for malformed input, and does not panic on any
+/// input a caller can supply.
 pub fn parse(src: &str) -> Result<Value, ParseError> {
     let mut p = Parser {
         lexer: Lexer::new(src),

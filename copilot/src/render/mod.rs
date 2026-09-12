@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Turning a scene into pixels.
 //!
 //! The renderer is deliberately thin: [`damage`] decides *what* to repaint and
@@ -21,31 +21,41 @@ pub struct Resources<'a> {
     pub anims: &'a AnimTable,
     /// The font labels are drawn in.
     pub font: &'a Font<'a>,
+    /// The rig's menus, which a `menu` widget shows one of by name.
+    pub menus: &'a [crate::menu::Menu],
 }
 
 pub mod aa;
 pub mod compose;
 pub mod damage;
 pub mod draw;
+pub mod frame;
 pub mod gauge;
 pub mod gradient;
 pub mod grid;
+pub mod menu;
+pub mod picture;
 pub mod plot;
 pub mod raster;
 pub mod scale;
 pub mod segbar;
 pub mod segment;
 pub mod shape;
+pub mod transition;
 
-pub use compose::{compose, compose_all};
+pub use compose::{compose, compose_all, compose_moved};
 pub use damage::Damage;
 pub use draw::draw_kind;
+pub use frame::{frame, release_assets, upload_assets};
 pub use gauge::{needle, ruler, scale};
 pub use gradient::gradient;
 pub use grid::grid;
+pub use menu::menu;
+pub use picture::{blit, image};
 pub use plot::{chart, polygon, polyline};
-pub use raster::{blit, clip, fill_rect, stroke_rect};
+pub use raster::{clip, fill_rect, stroke_rect};
 pub use scale::scale_nearest;
 pub use segbar::seg_bar;
 pub use segment::seven_seg;
 pub use shape::{circle, disc, line};
+pub use transition::{Edge, Transition, transition};

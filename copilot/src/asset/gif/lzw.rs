@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! GIF's variable-width LZW.
 //!
 //! Written out rather than pulled in because it is the only part of GIF with
-//! any real substance, and rule 1 means the alternative to writing it is not
-//! having animation at all.
+//! any real substance, and with no dependency to reach for the alternative to
+//! writing it is not having animation at all.
 //!
 //! # The two traps
 //!

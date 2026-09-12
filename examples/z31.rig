@@ -5,6 +5,15 @@
 // the list is in an order and not just a set: normal is 0, sport 1, track 2.
 {
   "modes": ["normal", "sport", "track"],
+
+  // How a mode change moves from one scene to the next: "cut", "crossfade",
+  // or "slide-<edge>" / "wipe-<edge>" where the edge is the one the new scene
+  // arrives from. Slides and wipes are a clip and an offset over two ordinary
+  // tree walks. "crossfade" needs a second framebuffer from the board, and
+  // cuts instead on one that has none.
+  "transition": "slide-left",
+  "transition_ms": 250,
+
   "displays": [
     { "name": "cluster", "node": "0x01",
       "scenes": { "normal": "z31-normal.scene",
@@ -18,5 +27,29 @@
       "scenes": { "normal": "gauge-right-normal.scene",
                   "sport":  "gauge-right-sport.scene",
                   "track":  "gauge-right-track.scene" } },
+  ],
+
+  // Menus live here rather than in a scene so a setting survives a mode
+  // change: brightness chosen in normal mode is still chosen in track mode.
+  // A scene shows one with { "type": "menu", "menu": "display" }.
+  //
+  // An item's kind comes from its fields: "options" is a choice, "max" is a
+  // number, neither is an action. A host reads the value back by "name".
+  "menus": [
+    { "name": "display", "title": "DISPLAY",
+      "items": [
+        { "name": "display brightness", "label": "Brightness",
+          "value": 80, "min": 10, "max": 100, "step": 10 },
+        { "name": "display units", "label": "Units",
+          "options": ["metric", "imperial"], "value": 1 },
+        { "name": "display theme", "label": "Theme",
+          "options": ["night", "day"] },
+      ] },
+    { "name": "trip", "title": "TRIP",
+      "items": [
+        { "name": "trip shift light", "label": "Shift light",
+          "value": 6500, "min": 4000, "max": 7500, "step": 100 },
+        { "name": "trip reset", "label": "Reset trip" },
+      ] },
   ],
 }

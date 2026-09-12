@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Lines, circles and discs.
 //!
 //! All integer: no float maths anywhere, because the core crate has none to
@@ -27,8 +27,8 @@ const MAX_RADIUS: i32 = 32_767;
 
 /// Draw a `width`-pixel line from `a` to `b`.
 ///
-/// Uses integer Bresenham; each step plots a `width`×`width` square centred
-/// on the current pixel, clipped to `clip`.
+/// Integer Bresenham, plotting a `width`-square at each step. A `width` below
+/// one still draws a single-pixel line.
 pub fn line<S: Surface + ?Sized>(
     surface: &mut S,
     a: Point,
@@ -76,9 +76,8 @@ pub fn line<S: Surface + ?Sized>(
 
 /// Draw the outline of a circle centred on `c` with radius `r`.
 ///
-/// Uses the integer midpoint circle algorithm; each of the eight symmetric
-/// points is plotted as a `width`×`width` clipped square.
-/// `r <= 0` draws nothing.
+/// Integer midpoint circle, plotting a `width`-square at each of the eight
+/// symmetric points. A radius of zero or less draws nothing.
 pub fn circle<S: Surface + ?Sized>(
     surface: &mut S,
     c: Point,
@@ -130,9 +129,8 @@ pub fn circle<S: Surface + ?Sized>(
 
 /// Fill a disc centred on `c` with radius `r`.
 ///
-/// For each scanline `dy` in `-r..=r`, computes the half-width via integer
-/// square root and fills a 1-pixel-tall row, clipped to `clip`.
-/// `r <= 0` draws nothing.
+/// One span per row, the half-width from an integer square root. A radius of
+/// zero or less draws nothing.
 pub fn disc<S: Surface + ?Sized>(surface: &mut S, c: Point, r: i32, color: Color, clip: Rect) {
     if r <= 0 {
         return;

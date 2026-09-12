@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! The widget tree, and the pane that edits whichever widget is selected.
 //!
 //! Two panes on opposite sides of the preview: the tree on the left says

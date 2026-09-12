@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Tests for the commands, driven through `App` with no window in sight.
 //!
 //! The editor's riskiest code is the part that rearranges a document by

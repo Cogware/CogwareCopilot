@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! A rig open in the editor: every display on the bus, side by side, with
 //! one of them being edited.
 //!
@@ -15,8 +15,8 @@
 //! # Modes
 //!
 //! A mode switch is the same as opening three files at once, and is treated
-//! that way: it is refused while anything is unsaved, and the undo history
-//! goes with the documents it belonged to.
+//! that way: it asks before dropping unsaved work, and the undo history goes
+//! with the documents it belonged to.
 
 use std::path::{Path, PathBuf};
 
@@ -231,21 +231,41 @@ impl App {
         self.status = format!("editing {name} (node 0x{node:02X})");
     }
 
-    /// Show every display in mode `m`.
+    /// Show every display in mode `m`, asking first if that would cost work.
     ///
-    /// Refused while anything is unsaved: switching is opening a different
-    /// set of files, and an unsaved change would have nowhere to go.
+    /// Switching is opening a different set of files, so an unsaved change
+    /// has nowhere to go. That used to end the matter -- the click did
+    /// nothing and the reason went to the status line, which is a place
+    /// nobody looks when a button they just pressed appears to be broken.
+    /// The refusal is a question instead, put by [`App::switch_prompt`] and
+    /// answered through it.
     pub(crate) fn set_mode(&mut self, m: usize) {
-        let Some(mut session) = self.rig.take() else {
+        let Some(session) = self.rig.as_ref() else {
             return;
         };
         if m == session.mode || m >= session.rig.modes.len() {
-            self.rig = Some(session);
             return;
         }
         if self.dirty || session.any_parked_dirty() {
+            self.switching = Some(m);
+            return;
+        }
+        self.swap_to_mode(m);
+    }
+
+    /// Show every display in mode `m`, whatever is unsaved.
+    ///
+    /// Every document is re-read from disk, so anything held only in the
+    /// editor is gone. Callers have to have settled that first: [`set_mode`]
+    /// by finding nothing to lose, the prompt by being answered.
+    ///
+    /// [`set_mode`]: App::set_mode
+    pub(crate) fn swap_to_mode(&mut self, m: usize) {
+        let Some(mut session) = self.rig.take() else {
+            return;
+        };
+        if m >= session.rig.modes.len() {
             self.rig = Some(session);
-            self.status = "save or discard the unsaved changes before switching mode".into();
             return;
         }
         session.mode = m;
@@ -437,16 +457,18 @@ mod tests {
     }
 
     #[test]
-    fn a_mode_switch_reloads_every_display_and_is_refused_while_dirty() {
+    fn a_mode_switch_reloads_every_display_and_asks_first_while_dirty() {
         let dir = rig_on_disk();
         let mut a = App::new(None, &[]);
         a.open_rig(dir.join("test.rig"));
         a.dirty = true;
         a.set_mode(1);
         assert_eq!(a.rig.as_ref().unwrap().mode, 0, "{}", a.status);
-        assert!(a.status.contains("unsaved"), "{}", a.status);
+        // Not a refusal and not a dead click: a question, for the prompt.
+        assert_eq!(a.switching, Some(1));
 
         a.dirty = false;
+        a.switching = None;
         a.set_mode(1);
         let r = a.rig.as_ref().unwrap();
         assert_eq!(r.mode, 1);
@@ -456,6 +478,77 @@ mod tests {
             "{:?}",
             r.docs[1].path
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Both ways through the prompt, from the same starting point: two
+    /// displays edited, and a mode clicked.
+    fn asked_to_switch(dir: &std::path::Path) -> App {
+        let mut a = App::new(None, &[]);
+        a.open_rig(dir.join("test.rig"));
+        a.text.push(' ');
+        a.dirty = true;
+        let parked = &mut a.rig.as_mut().expect("a rig").docs[1];
+        parked.text.push(' ');
+        parked.dirty = true;
+        a.set_mode(1);
+        assert_eq!(a.switching, Some(1), "no question was asked");
+        assert_eq!(a.unsaved(), 2, "both edits should be counted");
+        a
+    }
+
+    #[test]
+    fn switching_without_saving_takes_what_is_on_disk() {
+        let dir = rig_on_disk();
+        let mut a = asked_to_switch(&dir);
+
+        a.switching = None;
+        a.swap_to_mode(1);
+        let r = a.rig.as_ref().expect("a rig");
+        assert_eq!(r.mode, 1);
+        assert_eq!(root_name(&a), "d1-sport");
+        assert_eq!(a.unsaved(), 0, "the edits were thrown away, not carried");
+        assert!(!a.text.ends_with(' '));
+        // And the files they were edits to are as they were.
+        let on_disk = std::fs::read_to_string(dir.join("d1-normal.scene")).unwrap();
+        assert!(!on_disk.ends_with(' '), "an unsaved edit reached the disk");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn saving_and_switching_writes_every_display_before_it_moves() {
+        let dir = rig_on_disk();
+        let mut a = asked_to_switch(&dir);
+
+        a.save_and_switch(1);
+        assert!(a.switching.is_none(), "the question is answered");
+        assert_eq!(a.rig.as_ref().expect("a rig").mode, 1, "{}", a.status);
+        assert_eq!(root_name(&a), "d1-sport");
+        assert_eq!(a.unsaved(), 0);
+        // The parked display's edit was written too, not just the visible one.
+        for f in ["d1-normal.scene", "d2-normal.scene"] {
+            let on_disk = std::fs::read_to_string(dir.join(f)).unwrap();
+            assert!(
+                on_disk.ends_with(' '),
+                "{f} was not saved before the switch"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_switch_that_could_not_save_stays_where_it_is() {
+        let dir = rig_on_disk();
+        let mut a = asked_to_switch(&dir);
+        // A scene that will not parse is refused by `save`, and switching
+        // over the top of it would lose the work the prompt exists to keep.
+        a.text.push('{');
+        a.reload();
+
+        a.save_and_switch(1);
+        assert_eq!(a.rig.as_ref().expect("a rig").mode, 0, "{}", a.status);
+        assert!(a.status.starts_with("not switched:"), "{}", a.status);
+        assert!(a.dirty, "the edit that could not be written is still here");
         let _ = std::fs::remove_dir_all(dir);
     }
 

@@ -1,25 +1,12 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Values that change over time.
 //!
 //! An animation binds one numeric property of one widget to a curve between
-//! two endpoints. [`Animator::tick`] advances every animation and marks whatever
-//! moved as dirty, so an animated scene costs exactly the rectangles that are
-//! actually changing — the damage tracker never has to be told twice.
-//!
-//! # Why time is passed in rather than read
-//!
-//! There is no portable clock. A bare-metal caller reads the system timer, the
-//! simulator reads `Instant`, and a test passes whatever number it likes —
-//! which is the only reason animation is testable at all. Every function here
-//! takes a monotonic microsecond count and none of them knows where it came
-//! from.
-//!
-//! # Why the elapsed time is stored rather than a start instant
-//!
-//! Storing "started at T" means the first tick after a long stall jumps the
-//! animation forward by the whole stall. Storing elapsed time and adding a
-//! clamped delta means a stall costs at most one frame of motion, which is
-//! what a gauge should do when the machine hiccups: resume, not teleport.
+//! two endpoints, and [`Animator::tick`] advances them all and marks what
+//! moved. Time is a monotonic microsecond count the caller passes in, because
+//! there is no portable clock and a test needs to pass whatever number it
+//! likes. Elapsed time is stored rather than a start instant, so a stall costs
+//! one clamped frame of motion instead of teleporting the animation forward.
 
 use crate::widget::{NodeId, Tree};
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Resampling an image to a widget's size.
 //!
 //! Nearest-neighbour only. Bilinear would look better on a photograph and
@@ -11,6 +11,10 @@ use crate::Color;
 
 /// Resample `src` (a `src_w` x `src_h` image) to `dst_w` x `dst_h` using
 /// nearest-neighbour sampling.
+///
+/// Not on the render path, because it allocates in proportion to the
+/// destination's area: [`super::picture`] resamples a chunk of a row at a time
+/// instead. This is for pre-scaling once, at load.
 pub fn scale_nearest(
     src: &[Color],
     src_w: u32,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! A bargraph made of discrete cells, the way a vacuum-fluorescent panel
 //! shows a reading.
 //!
@@ -40,26 +40,8 @@ fn shaped(profile: &[f32], i: i32) -> f32 {
 /// Draw a segmented bar gauge, clipped to the damage region and the widget
 /// box.
 ///
-/// The gauge is split into discrete cells separated by gaps. Each cell is
-/// coloured by the band in which it sits rather than by the reading, so a
-/// cell that occupies the danger zone is always painted in the danger colour
-/// whenever it is lit: the reader sees the threshold bands as fixed landmarks
-/// on the scale, not as a moving highlight.
-///
-/// The number of lit cells is the fractional reading rounded *up*, so any
-/// non-zero value lights at least one cell; a gauge just off its stop must
-/// not read as empty.
-///
-/// # Why the cells are laid out in fractions of a pixel
-///
-/// `n` cells and `n - 1` gaps share the box exactly, each cell the same
-/// fraction of a pixel wide. Antialiased, that is what is drawn, and a row of
-/// cells that are each 3.2 pixels wide looks even because it is. Without
-/// antialiasing every edge rounds to its nearest pixel, so the cells differ
-/// by at most one pixel and the difference is spread along the row rather
-/// than piled up at one end -- and the gap is the same everywhere, which it
-/// was not when the last cell was handed the space of the gap it did not
-/// have.
+/// Cells are coloured by their position on the scale, and the number of lit
+/// cells is the fractional reading rounded up.
 #[allow(clippy::too_many_arguments)] // Every one is a distinct gauge property.
 pub fn seg_bar<S: Surface + ?Sized>(
     surface: &mut S,

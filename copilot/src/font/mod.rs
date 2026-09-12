@@ -1,18 +1,11 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Fixed-cell bitmap fonts.
 //!
-//! Bitmap rather than outline, for the reason LVGL made the same choice:
-//! rasterising a glyph outline needs floating point, a scanline fill and a
-//! cache, and a dashboard draws the same dozen digits forever. A cell lookup
-//! is a shift and a mask.
-//!
-//! Fixed cell rather than proportional in this version. Every glyph occupies
-//! the same box, so a glyph's address is a multiplication rather than a table
-//! lookup, and a column of numbers lines up without anyone thinking about it
-//! -- which is what a speedometer wants. A per-glyph width table can be added
-//! behind a header flag when proportional text is worth its cost.
-
-//! Fixed-cell bitmap font atlas parser.
+//! Bitmap rather than outline because rasterising an outline needs floating
+//! point, a scanline fill and a cache, where a cell lookup is a shift and a
+//! mask. Fixed cell rather than proportional so a glyph's address is a
+//! multiplication and a column of numbers lines up without anyone arranging
+//! it; a width table can follow behind a header flag.
 
 /// Why a font atlas could not be read.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! A [`Surface`] over an ordinary heap buffer.
 //!
 //! This is the reference implementation of the trait and the one the tests and
@@ -6,7 +6,7 @@
 //! real backend: flat memory, so [`Surface::row_mut`] is implemented and the
 //! renderer can bypass the per-span dispatch entirely.
 
-use crate::{Color, PixelFormat, Rect, Size, Surface};
+use crate::{Caps, Color, PixelFormat, Rect, Size, Surface};
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -15,6 +15,8 @@ pub struct MemorySurface {
     buf: Vec<u8>,
     size: Size,
     format: PixelFormat,
+    /// A second buffer of the same size, when one was asked for.
+    scratch: Option<Vec<u8>>,
 }
 
 impl MemorySurface {
@@ -26,7 +28,17 @@ impl MemorySurface {
             buf: vec![0u8; len],
             size,
             format,
+            scratch: None,
         }
+    }
+
+    /// The same surface with a second buffer, so a cross-fade can blend.
+    ///
+    /// Opt-in because it doubles the memory, and only a cross-fade uses it.
+    #[must_use]
+    pub fn with_scratch_buffer(mut self) -> Self {
+        self.scratch = Some(vec![0u8; self.buf.len()]);
+        self
     }
 
     /// The whole buffer, as the backend's own byte layout.
@@ -58,10 +70,9 @@ impl MemorySurface {
 
     /// Byte offset and pixel count of the on-surface part of a span.
     ///
-    /// Returns `None` when none of it lands. The renderer clips before it gets
-    /// here (rule 4.4), so this is belt and braces -- but a `Surface` is a
-    /// public trait anyone may call directly, and rule 5.1 says a caller must
-    /// not be able to make library code panic.
+    /// Returns `None` when none of it lands. The renderer has already clipped,
+    /// so this is belt and braces -- but `Surface` is a public trait anyone may
+    /// call directly, and no caller may be able to make this panic.
     fn span_range(&self, x: i32, y: i32, count: usize) -> Option<(usize, usize)> {
         let x = usize::try_from(x).ok()?;
         let y = usize::try_from(y).ok()?;
@@ -84,6 +95,50 @@ impl Surface for MemorySurface {
 
     fn format(&self) -> PixelFormat {
         self.format
+    }
+
+    /// Both of the ones a plain buffer earns, and neither of them by
+    /// accident: the pixels can be read back because they are right there,
+    /// and they survive a present because nothing happens on one.
+    fn caps(&self) -> Caps {
+        let base = Caps::READ_BACK | Caps::RETAINS_CONTENT;
+        if self.scratch.is_some() {
+            base | Caps::SCRATCH
+        } else {
+            base
+        }
+    }
+
+    fn with_scratch(&mut self, alpha: u8, draw: &mut dyn FnMut(&mut dyn Surface)) -> bool {
+        let Some(mut buf) = self.scratch.take() else {
+            return false;
+        };
+        // Drawn into a surface of its own so the renderer sees an ordinary
+        // target, then blended back a pixel at a time.
+        let mut into = Self {
+            buf: core::mem::take(&mut buf),
+            size: self.size,
+            format: self.format,
+            scratch: None,
+        };
+        into.clear(Color::TRANSPARENT);
+        draw(&mut into);
+
+        let bpp = self.format.bytes_per_pixel();
+        let format = self.format;
+        for (front, over) in self
+            .buf
+            .chunks_exact_mut(bpp)
+            .zip(into.buf.chunks_exact(bpp))
+        {
+            let under = Color::unpack(front, format);
+            let mut top = Color::unpack(over, format);
+            top.a = alpha;
+            let (packed, sig) = top.over(under).pack(format);
+            front[..sig].copy_from_slice(&packed[..sig]);
+        }
+        self.scratch = Some(into.buf);
+        true
     }
 
     fn fill_span(&mut self, x: i32, y: i32, count: u32, color: Color) {
@@ -146,6 +201,16 @@ mod tests {
 
     fn surf(w: u32, h: u32) -> MemorySurface {
         MemorySurface::new(Size { w, h }, PixelFormat::Bgrx8888)
+    }
+
+    #[test]
+    fn it_advertises_what_a_plain_buffer_can_actually_do() {
+        // `frame` reads RETAINS_CONTENT to decide whether repainting only the
+        // damage is even correct, so getting this wrong here would show up as
+        // fragments of an older frame rather than as a failing assertion.
+        let c = surf(1, 1).caps();
+        assert!(c.contains(Caps::READ_BACK | Caps::RETAINS_CONTENT));
+        assert!(!c.contains(Caps::ACCELERATED));
     }
 
     #[test]

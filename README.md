@@ -34,6 +34,11 @@ none of the rest.
   all just implementations. The crate ships one software rasteriser and no
   drivers, because a driver inside a graphics toolkit is a driver nobody can
   replace.
+- **A GPU seam that does not demand a whole GPU.** Five methods make a working
+  backend; past them a driver takes whole rectangles, pictures, gradients,
+  dials and resident textures, declining whatever its hardware lacks so the
+  software rasteriser draws it instead. See
+  [`docs/backends.md`](docs/backends.md).
 - **A scene format that is JSON plus comments and trailing commas**, because a
   format nobody can annotate is a format nobody maintains.
 - **Widgets bound to live readings.** A widget says which gauge it shows and
@@ -123,8 +128,11 @@ let mut sub = Subscription::new(&scene.wanted());   // the gauge ids it shows
 // ... per frame: feed_frame(&f) for everything off the bus ...
 scene.anims.tick(&mut scene.tree, now_us);
 scene.apply_gauges();                                // live data over the top
-copilot::render::compose(&mut surface, &scene.tree, resources);
+copilot::render::frame(&mut surface, &mut scene.tree, resources);
 ```
+
+`frame` asks the backend whether the last frame's pixels are still there and
+repaints either the damage or the screen accordingly.
 
 `examples/cluster.scene` is a working instrument cluster; `copilot/tests/`
 renders it headless and asserts on pixels, and checks that every scene in
@@ -165,3 +173,13 @@ target for.
 The rules the code is written to, in short: comments explain *why*, a warning
 is a broken build, the core crate depends on `core`, `alloc` and the gauge spec
 and nothing else, and anything testable on the host is tested on the host.
+
+Sending a patch accepts the contributor agreement in `CONTRIBUTING.md`. The
+project is dual licensed, and that agreement is what keeps the commercial half
+possible.
+
+## License
+
+GPL-3.0-only, with `tools/fontconv` under MIT OR Apache-2.0. A commercial
+license is available for firmware you cannot ship under the GPL; `LICENSING.md`
+explains both and how to ask.

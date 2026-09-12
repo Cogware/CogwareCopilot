@@ -1,17 +1,11 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! QOI image decoding.
 //!
-//! QOI is here rather than PNG because it is the only lossless format whose
-//! decoder is small enough to own outright: no entropy coder, no filters, no
-//! zlib. The whole format is a 14-byte header and six chunk types, which is
-//! why rule 1 can demand an empty dependency table and still ship images.
-//!
-//! # Why the decoder never indexes a slice directly
-//!
-//! A scene's assets can come off an SD card someone else wrote. Every read
-//! here goes through `.get()` and turns a short buffer into
-//! [`QoiError::UnexpectedEnd`], because on bare metal a panic is not a
-//! backtrace, it is a dead dashboard.
+//! QOI rather than PNG because it is the only lossless format whose decoder is
+//! small enough to own outright: no entropy coder, no filters, no zlib. Every
+//! read goes through `.get()` and turns a short buffer into
+//! [`QoiError::UnexpectedEnd`], because assets can come off a card someone
+//! else wrote and a panic on bare metal is a dead dashboard.
 
 use alloc::vec;
 use alloc::vec::Vec;
@@ -50,8 +44,8 @@ pub enum QoiError {
 ///
 /// `checked_mul` is not enough on its own: `u32::MAX * u32::MAX` fits in a
 /// 64-bit `usize`, so the multiply succeeds and the allocation then aborts on
-/// capacity overflow -- a panic a malformed header can trigger, which rule 5.1
-/// forbids. 256 Mpx is far beyond any panel this crate targets and well inside
+/// capacity overflow -- a panic a malformed header must not be able to
+/// trigger. 256 Mpx is far beyond any panel this crate targets and well inside
 /// what `Vec` can express on a 32-bit machine.
 const MAX_PIXELS: usize = 1 << 28;
 
@@ -186,8 +180,8 @@ pub fn decode(bytes: &[u8]) -> Result<(QoiHeader, Vec<Color>), QoiError> {
                     continue;
                 }
                 // The tag is two bits and all four values are handled above.
-                // Returning an error rather than `unreachable!` keeps rule 5.1
-                // true even if someone edits the constants wrongly later.
+                // Returning an error rather than `unreachable!` keeps it from
+                // panicking even if someone edits the constants wrongly later.
                 _ => return Err(QoiError::UnexpectedEnd),
             }
         }

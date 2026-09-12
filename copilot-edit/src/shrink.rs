@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Shrinking a frame to the size it is shown at.
 //!
 //! The preview is a texture drawn at whatever scale fits the panel, and a

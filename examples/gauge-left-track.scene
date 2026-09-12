@@ -21,7 +21,7 @@
         "start": 225, "end": 495, "ticks": 10, "major_every": 3,
         "length": 18, "width": 2, "color": "#5a6570", "major_color": "#9aa6b2" },
       { "type": "needle", "rect": [70, 70, 340, 340], "name": "needle",
-        "start": 225, "end": 495, "value": 0.3, "width": 5, "color": "#f85149", "hub": 14,
+        "start": 225, "end": 495, "value": 0.3, "width": 5, "color": "#f84949ff", "hub": 14,
         "bind": { "gauge": "MAP", "unit": "psi", "min": 0, "max": 45 } },
       { "type": "sevenseg", "rect": [150, 300, 180, 60], "name": "readout",
         "text": "  0", "color": "#f85149", "ghost": "#1a1f26", "thickness": 6,

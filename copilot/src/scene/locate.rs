@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Finding where a value lives in the source text.
 //!
 //! The editor edits *text*, not a tree, so changing one property means

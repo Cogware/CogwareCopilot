@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! A fill that changes colour across the widget.
 //!
 //! One span per row (or column) rather than a per-pixel blend: the axis a
@@ -43,10 +43,19 @@ pub fn gradient<S: Surface + ?Sized>(
     to: Color,
     vertical: bool,
 ) {
-    let Some(area) = at.intersection(clip) else {
+    // Against the surface as well as the damage rectangle: the spans below go
+    // straight to `fill_span`, so this is the only place they are clipped.
+    let Some(area) = at
+        .intersection(clip)
+        .and_then(|a| crate::render::clip(surface, a))
+    else {
         return;
     };
     if area.is_empty() {
+        return;
+    }
+    // Both rectangles: `at` fixes the ramp, `area` fixes what may be painted.
+    if surface.draw_gradient(at, area, from, to, vertical) {
         return;
     }
 

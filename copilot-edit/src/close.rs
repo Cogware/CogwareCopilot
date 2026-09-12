@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Not losing work on the way out.
 //!
 //! The window manager's close button is the one command in the editor that

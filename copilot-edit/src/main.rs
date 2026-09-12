@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 #![deny(missing_docs)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -180,6 +180,9 @@ struct App {
     rig: Option<rig::RigSession>,
     /// The Modes dialog, while it is open.
     modes: Option<modes_ui::ModesDialog>,
+    /// The mode a switch is waiting on an answer about, while the prompt
+    /// asking what to do with the unsaved work is up.
+    switching: Option<usize>,
     /// The curve being shaped on the preview, while one is.
     curve: Option<curve::CurveEdit>,
     /// Whether the unsaved-changes prompt is up.
@@ -252,6 +255,7 @@ impl App {
             new_doc: None,
             rig: None,
             modes: None,
+            switching: None,
             curve: None,
             asking_close: false,
             closing: false,

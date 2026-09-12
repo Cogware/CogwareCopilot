@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Tokeniser for a JSON-superset scene format.
 //!
 //! Supports line comments (`//`), block comments (`/* */`), and trailing

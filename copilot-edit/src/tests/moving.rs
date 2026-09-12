@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Tests for moving a widget about the tree: the one operation a drag in
 //! the outliner, Move inwards and Move outwards are all made of.
 

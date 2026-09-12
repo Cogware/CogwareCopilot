@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Dial furniture: the pointer and the tick marks around it.
 //!
 //! Both take the same sweep description as [`super::draw`]'s arc -- degrees
@@ -13,10 +13,7 @@ use super::shape::{disc, line};
 
 /// Draw a pointer from the centre of `at` out to the rim.
 ///
-/// The hub goes on last. A line rasterised at an angle ends in a stair-step
-/// that looks like a frayed thread at the pivot, where every needle in a
-/// cluster converges and the eye is drawn; a disc painted over the top hides
-/// all of them at once.
+/// The hub is drawn last to mask the ragged end of the stroke at the pivot.
 #[allow(clippy::too_many_arguments)] // Every one is a distinct dial property.
 pub fn needle<S: Surface + ?Sized>(
     surface: &mut S,
@@ -71,9 +68,9 @@ pub fn needle<S: Surface + ?Sized>(
         // matches the disc the integer path draws, which spans 2r + 1.
         let centre = (cx as f32 + 0.5, cy as f32 + 0.5);
         let end = (tip.x as f32 + 0.5, tip.y as f32 + 0.5);
-        super::aa::line(surface, clip, centre, end, width.max(1) as f32, color);
+        super::aa::line(surface, clip, centre, end, width.max(1) as f32, color, true);
         if hub > 0 {
-            super::aa::disc(surface, clip, centre, hub as f32 + 0.5, color);
+            super::aa::disc(surface, clip, centre, hub as f32 + 0.5, color, true);
         }
         return;
     }
@@ -87,9 +84,7 @@ pub fn needle<S: Surface + ?Sized>(
 
 /// Draw evenly spaced tick marks around the rim of `at`.
 ///
-/// Major ticks are longer and thicker rather than merely a different colour,
-/// because a cluster is read at a glance and often in poor light: length
-/// survives being seen out of the corner of an eye in a way that hue does not.
+/// Major ticks are longer and thicker than minor ones.
 #[allow(clippy::too_many_arguments)] // Every one is a distinct dial property.
 pub fn scale<S: Surface + ?Sized>(
     surface: &mut S,
@@ -159,6 +154,7 @@ pub fn scale<S: Surface + ?Sized>(
                 (inner.x as f32 + 0.5, inner.y as f32 + 0.5),
                 tick_width as f32,
                 tick_color,
+                true,
             );
         } else {
             line(surface, outer, inner, tick_width, tick_color, clip);
@@ -177,19 +173,9 @@ fn point_at(cx: i32, cy: i32, angle: i32, dist: i32) -> Point {
     }
 }
 
-/// Draws a ruler of tick marks along the near edge of a widget box, clipped to a damage region.
+/// Draw tick marks along the near edge of `at`, clipped to `clip`.
 ///
-/// The function exists to give embedded UIs a deterministic, allocation-free way to render
-/// measurement scales without relying on higher-level widget machinery.  Because the caller
-/// supplies both the widget box and the damage region, the implementation can bail out
-/// early when there is no visible overlap, avoiding any pixel writes that would be
-/// immediately discarded by the compositor.
-///
-/// The tick count is bounded to a hard ceiling so that a misconfigured or hostile caller
-/// cannot stall the frame for an unbounded number of iterations.  Each tick is drawn
-/// inwards from the near edge and clipped against the damage region before being handed
-/// to the surface, ensuring that no pixel is ever written outside the area the caller has
-/// marked dirty.
+/// The tick count is capped, so a misconfigured scene cannot stall a frame.
 #[allow(clippy::too_many_arguments)] // Every one is a distinct dial property.
 pub fn ruler<S: Surface + ?Sized>(
     surface: &mut S,

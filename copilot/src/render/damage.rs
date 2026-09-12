@@ -1,40 +1,29 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Tracking which parts of the screen actually changed.
 //!
-//! This is the whole reason the toolkit is fast on a machine with no GPU. On
-//! the Raspberry Pi the framebuffer is mapped non-cacheable, so every pixel
-//! written is a trip to DRAM and clearing a 2400x900 page costs more than the
-//! rest of the frame put together. Repainting only what moved turns a frame
-//! from tens of milliseconds into hundreds of microseconds.
-//!
-//! # Why a small fixed set of rectangles and not a region algebra
-//!
-//! An exact region — a sorted list of disjoint spans, properly subtracted —
-//! is the textbook answer and it is the wrong shape here. Real damage from a
-//! widget tree is a handful of small boxes that are usually far apart, so the
-//! bookkeeping costs more than the pixels it saves. Instead this keeps at most
-//! [`MAX_RECTS`] rectangles and, when a new one would not fit, merges the two
-//! whose union wastes the fewest pixels. Overdraw is bounded, allocation is
-//! zero, and the worst case degrades to "repaint one bigger box" rather than
-//! to unbounded work.
-//!
-//! # Why the rectangles are allowed to overlap
-//!
-//! Making them disjoint would mean splitting on every insert, which is the
-//! region algebra this is avoiding. Overlap only costs the overlapped pixels
-//! being painted twice, and rule 4.1 says a widget repaints the whole of its
-//! own rectangle anyway — so painting twice is correct, just slightly wasteful.
-//! Callers that cannot tolerate double painting should use [`Damage::bounds`]
-//! and repaint the union once.
+//! Repainting only what moved is what makes the toolkit fast on a machine with
+//! no GPU, where a non-cacheable framebuffer makes every pixel a trip to DRAM.
+//! This keeps at most [`MAX_RECTS`] rectangles and, when a new one will not
+//! fit, merges the two whose union wastes fewest pixels: bounded overdraw and
+//! no allocation, rather than the region algebra a widget tree does not need.
+//! The rectangles may overlap, which only costs those pixels being painted
+//! twice; a caller that cannot tolerate that should repaint [`Damage::bounds`].
 
 use crate::Rect;
 
 /// How many rectangles are tracked before merging begins.
 ///
-/// Eight covers the instrument-cluster case — a handful of gauges plus a
+/// Sixteen covers the instrument-cluster case — a handful of gauges plus a
 /// telltale strip — without the merge path ever running. It is a tuning
 /// constant, not a limit on what callers may mark.
-pub const MAX_RECTS: usize = 8;
+///
+/// It was eight while a moving widget marked its whole rectangle, when a
+/// frame could not produce many distinct boxes. Now that an arc and a needle
+/// each mark only the wedge they swept, a triple-buffered display repainting
+/// three frames of history has three small boxes per instrument rather than
+/// one big one — and merging those back together would hand back exactly the
+/// area the wedges were computed to avoid.
+pub const MAX_RECTS: usize = 16;
 
 /// The set of rectangles that must be repainted this frame.
 #[derive(Clone, Debug, Default)]

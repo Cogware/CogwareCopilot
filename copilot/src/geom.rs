@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Geometry primitives for a `no_std` graphics crate.
 
 /// A point in 2D space with integer coordinates.
@@ -258,4 +259,70 @@ mod tests {
         assert!(i.is_empty());
         assert_eq!(i.left(), i32::MIN + 100);
     }
+}
+
+/// The bounding box of an annulus sector: the part of the ring between
+/// `inner` and `outer` radius that lies between two angles.
+///
+/// This is what makes a moving gauge cheap. A dial's arc and its needle both
+/// occupy a widget rectangle the size of the whole face, so marking that
+/// rectangle dirty when a reading changes repaints the entire dial -- 176,400
+/// pixels on a 480x480 gauge to move a needle two degrees. What actually
+/// changed is the wedge swept between the old reading and the new one, and
+/// this is its box.
+///
+/// Angles are brads, in the same frame the renderer uses: clockwise, with
+/// zero at three o'clock. `a` and `b` may arrive in either order.
+///
+/// The box is the extremes of four corner points -- each angle at each radius
+/// -- widened at whichever compass points the sweep passes through, because a
+/// sector spanning due east bulges out to `outer` there even though neither
+/// end does.
+#[must_use]
+pub fn sector_bounds(cx: i32, cy: i32, inner: i32, outer: i32, a: i32, b: i32) -> Rect {
+    use crate::trig::{ONE, TURN, cos, sin};
+
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    let (inner, outer) = (inner.min(outer).max(0), outer.max(inner).max(0));
+
+    // A sweep of a full turn or more reaches everywhere; no point in walking
+    // the arithmetic to rediscover the whole circle.
+    if hi - lo >= TURN {
+        return Rect::new(
+            cx - outer,
+            cy - outer,
+            (outer * 2 + 1) as u32,
+            (outer * 2 + 1) as u32,
+        );
+    }
+
+    let at = |angle: i32, r: i32| (cx + (cos(angle) * r) / ONE, cy + (sin(angle) * r) / ONE);
+    let mut x0 = i32::MAX;
+    let mut y0 = i32::MAX;
+    let mut x1 = i32::MIN;
+    let mut y1 = i32::MIN;
+    let mut include = |p: (i32, i32)| {
+        x0 = x0.min(p.0);
+        y0 = y0.min(p.1);
+        x1 = x1.max(p.0);
+        y1 = y1.max(p.1);
+    };
+    for angle in [lo, hi] {
+        include(at(angle, inner));
+        include(at(angle, outer));
+    }
+
+    // The quarter-turn points the sweep crosses, where the ring reaches its
+    // extreme in one axis. `lo` is folded into the turn containing it and the
+    // candidates walked forward, so a sweep that straddles the wrap is found
+    // the same way as one that does not.
+    let base = lo.div_euclid(TURN) * TURN;
+    for k in 0..=4 {
+        let cardinal = base + k * (TURN / 4);
+        if cardinal >= lo && cardinal <= hi {
+            include(at(cardinal, outer));
+        }
+    }
+
+    Rect::new(x0, y0, (x1 - x0 + 1) as u32, (y1 - y0 + 1) as u32)
 }

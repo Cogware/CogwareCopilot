@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Turning a parsed document into a widget tree.
 //!
 //! This is the schema layer. [`crate::scene::parse()`] guarantees the text was
@@ -59,19 +59,14 @@ pub enum BuildError {
 pub const MAX_DEPTH: u32 = 64;
 
 /// Build a widget tree, discarding any image requests.
-///
-/// For scenes that reference no assets, and for tests. A scene that names
-/// images will still build; its `Image` widgets simply draw the missing-asset
-/// placeholder because nothing populated a table for them.
 pub fn build(doc: &Value) -> Result<Tree, BuildError> {
     build_scene(doc).map(|s| s.tree)
 }
 
 /// Build a widget tree and collect the image paths it asked for.
 ///
-/// The host is expected to read those paths, decode them, and push one entry
-/// per request into an [`ImageTable`] -- including a placeholder for any it
-/// could not load, or every later index shifts.
+/// The host must push one entry per request into an [`ImageTable`],
+/// including a placeholder for any it could not load.
 ///
 /// [`ImageTable`]: crate::asset::ImageTable
 pub fn build_scene(doc: &Value) -> Result<Scene, BuildError> {
@@ -147,10 +142,6 @@ pub fn build_scene(doc: &Value) -> Result<Scene, BuildError> {
 }
 
 /// Build one node, push it under `parent`, then recurse into its children.
-///
-/// The recursion carries `&mut Tree` rather than returning a `Node` for the
-/// caller to attach, because a child's `NodeId` only exists once it has been
-/// pushed -- a parent cannot record ids for children it has not inserted yet.
 fn insert(
     tree: &mut Tree,
     anims: &mut Animator,
@@ -216,9 +207,7 @@ fn string_list(doc: &Value, field: &'static str) -> Result<Vec<String>, BuildErr
 
 /// Read an `animate` block.
 ///
-/// Every field except `property`, `from` and `to` has a default, so the common
-/// case -- a gauge sweeping between two readings -- is three lines in a scene
-/// file rather than seven.
+/// Every field except `property`, `from` and `to` has a default.
 fn animation(node: NodeId, spec: &Value) -> Result<Animation, BuildError> {
     let property = spec
         .get("property")
@@ -288,8 +277,6 @@ fn colour(val: &Value, field: &'static str, default: &str) -> Result<Color, Buil
 }
 
 /// Read an optional 0.0..=1.0 field, clamping rather than rejecting.
-///
-/// Someone typing 1.5 for a brightness means "full", not "reject my file".
 fn fraction(val: &Value, field: &'static str, default: f32) -> Result<f32, BuildError> {
     match val.get(field) {
         Some(v) => {
@@ -301,10 +288,6 @@ fn fraction(val: &Value, field: &'static str, default: f32) -> Result<f32, Build
 }
 
 /// Read an optional signed integer field.
-///
-/// The `try_from` is the point: a scene file is JSON and its numbers are
-/// `i64`, so a value a user typed with one digit too many would otherwise
-/// wrap silently into a plausible-looking coordinate.
 fn int(val: &Value, field: &'static str, default: i32) -> Result<i32, BuildError> {
     match val.get(field) {
         Some(v) => {
@@ -316,10 +299,6 @@ fn int(val: &Value, field: &'static str, default: i32) -> Result<i32, BuildError
 }
 
 /// Read an optional unsigned integer field, treating a negative as zero.
-///
-/// Zero is meaningful for all of these -- no hub, no ticks, no major marks --
-/// so a negative is a slip rather than a request, and clamping keeps the rest
-/// of the scene on screen.
 fn count(val: &Value, field: &'static str, default: u32) -> Result<u32, BuildError> {
     match val.get(field) {
         Some(v) => {
@@ -332,11 +311,7 @@ fn count(val: &Value, field: &'static str, default: u32) -> Result<u32, BuildErr
 
 /// Read a `points` array of `[x, y]` pairs.
 ///
-/// A point is a two-element array rather than an object: a curve is dozens of
-/// them, and `[0.1, 0.8]` stays readable in a scene file where
-/// `{"x": 0.1, "y": 0.8}` would not. Absent is an empty shape rather than an
-/// error, so an author sketching a layout gets an empty node instead of a
-/// rejected file.
+/// Absent is an empty shape rather than an error.
 fn read_points(val: &Value) -> Result<alloc::vec::Vec<(f32, f32)>, BuildError> {
     let mut points = alloc::vec::Vec::new();
     let Some(v) = val.get("points") else {
@@ -364,10 +339,6 @@ fn read_points(val: &Value) -> Result<alloc::vec::Vec<(f32, f32)>, BuildError> {
 }
 
 /// Read an optional number that is a fraction but may sit outside 0..=1.
-///
-/// A band threshold is one of these: putting it above the top of the scale is
-/// how a scene says "no band", and clamping it to 1.0 would silently turn that
-/// into "the last cell only".
 fn unbounded(val: &Value, field: &'static str, default: f32) -> Result<f32, BuildError> {
     match val.get(field) {
         Some(v) => {
@@ -402,9 +373,7 @@ fn flag(val: &Value, field: &'static str, default: bool) -> Result<bool, BuildEr
 
 /// Read the fields common to every node, without touching its children.
 ///
-/// `default_antialias` is what the node draws with when it does not say:
-/// the scene's setting for the document root, and nothing for everything
-/// else, which inherits at draw time.
+/// `default_antialias` is used if the node does not specify its own.
 fn build_node(val: &Value, default_antialias: Option<bool>) -> Result<Node, BuildError> {
     let type_str = val
         .get("type")
@@ -484,6 +453,27 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                 None => parse_hex("#00000000").unwrap(),
             };
             Ok(Kind::Panel { background: bg })
+        }
+        "menu" => {
+            let menu = val
+                .get("menu")
+                .and_then(Value::as_str)
+                .ok_or(BuildError::Missing { field: "menu" })?
+                .to_string();
+            let scale = match val.get("scale") {
+                Some(v) => {
+                    let n = v.as_i64().ok_or(BuildError::BadField { field: "scale" })?;
+                    u8::try_from(n.max(1)).map_err(|_| BuildError::BadField { field: "scale" })?
+                }
+                None => 1,
+            };
+            Ok(Kind::Menu {
+                menu,
+                color: colour(val, "color", "#b0b8c0ff")?,
+                selected: colour(val, "selected", "#ffffffff")?,
+                editing: colour(val, "editing", "#ffb000ff")?,
+                scale,
+            })
         }
         "frame" => {
             let color = match val.get("color") {

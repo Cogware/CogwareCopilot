@@ -1,9 +1,9 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Drawing primitives, and the one place clipping happens.
 //!
 //! Every function here clips against the surface first and then emits spans
-//! that are guaranteed in bounds. That is what rule 4.4 promises a [`Surface`]
-//! implementation, and it is why the inner loops need no bounds checks and no
+//! that are guaranteed in bounds. That is what a [`Surface`] implementation is
+//! promised, and it is why the inner loops need no bounds checks and no
 //! `unsafe` to avoid them — there is nothing left to check.
 //!
 //! # Why the clip is a separate step and not folded into each primitive
@@ -12,6 +12,11 @@
 //! gets a chance to get one of them wrong. Doing it once, in [`clip`], means a
 //! bug in the clip is a bug in one place, and the primitives below it read as
 //! the geometry they actually are.
+//!
+//! It is also where the acceleration hooks are offered: each primitive clips,
+//! asks the surface whether it would rather draw the whole thing, and
+//! rasterises only when the answer is no. [`super::picture`] does the same for
+//! images.
 
 use crate::{Color, Rect, Surface};
 
@@ -39,6 +44,11 @@ pub fn fill_rect<S: Surface + ?Sized>(surface: &mut S, rect: Rect, color: Color)
     let Some(r) = clip(surface, rect) else {
         return;
     };
+    // Offered whole: panels, frames, bar segments and every run of ink in a
+    // glyph arrive here.
+    if surface.draw_rect(r, color) {
+        return;
+    }
     for y in r.top()..r.bottom() {
         surface.fill_span(r.left(), y, r.size.w, color);
     }
@@ -74,41 +84,6 @@ pub fn stroke_rect<S: Surface + ?Sized>(surface: &mut S, rect: Rect, color: Colo
     }
 }
 
-/// Blit `src`, a `width`-pixel-wide RGBA image, with its top-left at `at`.
-///
-/// Rows are copied whole where the image is fully on screen and sliced where
-/// it is not, so a partly off-screen image costs only the pixels that land.
-///
-/// `src` shorter than `width * height` draws only the rows it can supply,
-/// which makes a truncated decode degrade to a partial image rather than to a
-/// panic.
-pub fn blit<S: Surface + ?Sized>(surface: &mut S, at: Rect, src: &[Color], width: u32) {
-    if width == 0 {
-        return;
-    }
-    let Some(r) = clip(surface, at) else {
-        return;
-    };
-
-    // How far into the source the clip moved us. Both are non-negative because
-    // `r` is the intersection, so it can only have shrunk from `at`.
-    let skip_x = (r.left() - at.left()) as usize;
-    let skip_y = (r.top() - at.top()) as usize;
-    let stride = width as usize;
-
-    for (n, y) in (r.top()..r.bottom()).enumerate() {
-        let row_start = (skip_y + n) * stride + skip_x;
-        let Some(row) = src.get(row_start..) else {
-            return;
-        };
-        let take = (r.size.w as usize).min(row.len());
-        if take == 0 {
-            return;
-        }
-        surface.blit_span(r.left(), y, &row[..take]);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,8 +109,8 @@ mod tests {
                 blits: Vec::new(),
             }
         }
-        /// Panics if anything landed outside the surface. This is the contract
-        /// rule 4.4 makes to every backend, so it is worth asserting directly.
+        /// Panics if anything landed outside the surface, which every backend
+        /// is promised and so is worth asserting directly.
         fn assert_in_bounds(&self) {
             for &(x, y, n) in &self.fills {
                 assert!(x >= 0 && y >= 0, "span at ({x},{y}) is negative");
@@ -166,6 +141,72 @@ mod tests {
             self.blits.push((x, y, src.len()));
         }
         fn present(&mut self, _damage: Option<Rect>) {}
+    }
+
+    /// A backend that takes every rectangle it is offered, or none of them.
+    ///
+    /// What the tests below check is that the software path did *not* also
+    /// run, which would draw the rectangle twice.
+    struct Accel {
+        takes: bool,
+        rects: Vec<(Rect, Color)>,
+        spans: usize,
+    }
+
+    impl Accel {
+        fn new(takes: bool) -> Self {
+            Self {
+                takes,
+                rects: Vec::new(),
+                spans: 0,
+            }
+        }
+    }
+
+    impl Surface for Accel {
+        fn size(&self) -> Size {
+            Size { w: 100, h: 100 }
+        }
+        fn format(&self) -> PixelFormat {
+            PixelFormat::Bgrx8888
+        }
+        fn fill_span(&mut self, _x: i32, _y: i32, _n: u32, _c: Color) {
+            self.spans += 1;
+        }
+        fn blit_span(&mut self, _x: i32, _y: i32, _src: &[Color]) {
+            self.spans += 1;
+        }
+        fn draw_rect(&mut self, rect: Rect, color: Color) -> bool {
+            self.rects.push((rect, color));
+            self.takes
+        }
+        fn present(&mut self, _damage: Option<Rect>) {}
+    }
+
+    #[test]
+    fn an_accelerated_fill_is_offered_clipped_and_not_also_rasterised() {
+        let mut s = Accel::new(true);
+        fill_rect(&mut s, Rect::new(-5, -5, 20, 20), Color::WHITE);
+        assert_eq!(s.rects, vec![(Rect::new(0, 0, 15, 15), Color::WHITE)]);
+        assert_eq!(s.spans, 0, "the software path ran as well");
+    }
+
+    #[test]
+    fn a_declined_fill_falls_back_to_spans() {
+        // The half-finished driver: it sees every rectangle and takes none.
+        let mut s = Accel::new(false);
+        fill_rect(&mut s, Rect::new(10, 20, 5, 3), Color::WHITE);
+        assert_eq!(s.rects.len(), 1);
+        assert_eq!(s.spans, 3);
+    }
+
+    #[test]
+    fn a_transparent_fill_is_never_offered() {
+        // Nothing to draw is nothing to draw; waking the hardware for it is
+        // the cost this early return exists to avoid.
+        let mut s = Accel::new(true);
+        fill_rect(&mut s, Rect::new(0, 0, 5, 5), Color::TRANSPARENT);
+        assert!(s.rects.is_empty());
     }
 
     #[test]
@@ -228,33 +269,5 @@ mod tests {
         let mut s = Recorder::new(100, 100);
         stroke_rect(&mut s, Rect::new(0, 0, 10, 1), Color::WHITE);
         assert_eq!(s.fills, vec![(0, 0, 10)]);
-    }
-
-    #[test]
-    fn a_blit_offsets_into_the_source_when_clipped() {
-        let mut s = Recorder::new(100, 100);
-        let img = vec![Color::WHITE; 10 * 10];
-        blit(&mut s, Rect::new(-3, -2, 10, 10), &img, 10);
-        // Seven columns and eight rows survive the clip.
-        assert_eq!(s.blits.len(), 8);
-        assert!(s.blits.iter().all(|&(x, _, n)| x == 0 && n == 7));
-        s.assert_in_bounds();
-    }
-
-    #[test]
-    fn a_truncated_image_draws_the_rows_it_has() {
-        // A partial decode should degrade to a partial image, not a panic.
-        let mut s = Recorder::new(100, 100);
-        let img = vec![Color::WHITE; 25];
-        blit(&mut s, Rect::new(0, 0, 10, 10), &img, 10);
-        assert_eq!(s.blits.len(), 3);
-        s.assert_in_bounds();
-    }
-
-    #[test]
-    fn a_zero_width_image_draws_nothing() {
-        let mut s = Recorder::new(100, 100);
-        blit(&mut s, Rect::new(0, 0, 10, 10), &[Color::WHITE], 0);
-        assert!(s.blits.is_empty());
     }
 }

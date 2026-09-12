@@ -1,25 +1,12 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! The retained widget tree.
 //!
-//! A scene is built once and then persists. Between frames the application
-//! mutates widgets through [`Node`] accessors, each of which records that the
-//! widget changed; the compositor then repaints only what those changes
-//! touched. Nothing here walks the tree looking for differences — a widget
-//! knows when it is dirty because the setter that made it dirty said so.
-//!
-//! # Why the tree is a flat arena and not `Box<dyn Widget>`
-//!
-//! Trait objects would be the idiomatic shape and are the wrong one here.
-//! Every node would be a separate allocation, a repaint would chase pointers
-//! all over the heap, and on a target where the heap is a fixed pool that
-//! fragments badly. A `Vec<Node>` with `u32` indices keeps the whole tree in
-//! one contiguous block, makes a node id a plain number that a scene file can
-//! reference, and turns "visit every child" into a linear scan.
-//!
-//! The cost is that a node's kind is an enum rather than an open trait, so a
-//! downstream crate cannot add a widget type. That is a real limitation and it
-//! is deliberate: an embedded UI has a closed set of primitives, and the scene
-//! format has to name them anyway.
+//! A scene is built once and persists; mutating a widget through a [`Node`]
+//! accessor records that it changed, and the compositor repaints only what
+//! those changes touched. The tree is a flat `Vec<Node>` with `u32` indices
+//! rather than trait objects, so it sits in one block, a node id is a number a
+//! scene file can name, and a fixed-pool heap does not fragment. The cost is
+//! that [`Kind`] is a closed enum, which an embedded UI can afford.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -29,7 +16,7 @@ use crate::{Color, Rect};
 mod hit;
 mod kind;
 pub use hit::hit_test;
-pub use kind::{Align, BindTarget, Kind, VAlign};
+pub use kind::{Align, BindTarget, Kind, MAX_READING_RECTS, VAlign};
 
 /// Index of a node within a [`Tree`].
 ///
@@ -153,6 +140,17 @@ impl Tree {
         Some(())
     }
 
+    /// Mark a node dirty without changing it.
+    ///
+    /// For a widget whose appearance depends on state the tree does not own,
+    /// such as a `menu` widget when the rig's menu moves under it.
+    pub fn touch(&mut self, id: NodeId) -> Option<()> {
+        let node = self.nodes.get(id.0 as usize)?;
+        let absolute = self.absolute_of_opt(node.parent, node.rect);
+        self.dirty.add(absolute);
+        Some(())
+    }
+
     /// Replace what a node draws, marking it dirty.
     pub fn set_kind(&mut self, id: NodeId, kind: Kind) -> Option<()> {
         let node = self.nodes.get(id.0 as usize)?;
@@ -183,11 +181,24 @@ impl Tree {
     /// times a second must not repaint sixty times a second.
     pub fn set_reading(&mut self, id: NodeId, value: f32) -> Option<()> {
         let node = self.nodes.get(id.0 as usize)?;
-        if node.kind.reading()? == value {
+        let old = node.kind.reading()?;
+        if old == value {
             return Some(());
         }
         let kind = node.kind.with_reading(value)?;
-        self.set_kind(id, kind)
+        // Not `set_kind`: that marks the node's whole rectangle, and a dial's
+        // arc and needle each own the entire face while changing only the
+        // wedge between the old reading and the new one. Asking the kind what
+        // actually moved is what keeps a moving gauge from repainting a
+        // screenful of unchanged pixels every frame.
+        let absolute = self.absolute_of_opt(node.parent, node.rect);
+        let mut rects = [crate::Rect::ZERO; crate::widget::MAX_READING_RECTS];
+        let n = kind.reading_damage(absolute, old, value, &mut rects);
+        self.nodes[id.0 as usize].kind = kind;
+        for rect in &rects[..n] {
+            self.dirty.add(*rect);
+        }
+        Some(())
     }
 
     /// Set how tall a segbar's lit cells stand, marking it dirty if changed.
@@ -658,5 +669,47 @@ mod push_tests {
         n.children.push(NodeId(7));
         let id = t.push(ROOT, n).unwrap();
         assert!(t.get(id).unwrap().children.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod touch_tests {
+    use super::*;
+    use crate::Color;
+    use alloc::vec::Vec;
+
+    #[test]
+    fn touching_a_node_marks_its_rectangle_without_changing_it() {
+        let mut t = Tree::new(Rect::new(0, 0, 40, 30));
+        let id = t
+            .push(
+                ROOT,
+                Node {
+                    rect: Rect::new(4, 5, 10, 6),
+                    kind: Kind::Panel {
+                        background: Color::WHITE,
+                    },
+                    visible: true,
+                    antialias: None,
+                    name: None,
+                    children: Vec::new(),
+                    parent: None,
+                },
+            )
+            .unwrap();
+        let before = t.get(id).unwrap().kind.clone();
+        t.clear_damage();
+
+        assert!(t.touch(id).is_some());
+        assert_eq!(t.damage().bounds(), Some(Rect::new(4, 5, 10, 6)));
+        assert_eq!(t.get(id).unwrap().kind, before, "touch must not edit");
+    }
+
+    #[test]
+    fn touching_a_node_that_is_not_there_marks_nothing() {
+        let mut t = Tree::new(Rect::new(0, 0, 10, 10));
+        t.clear_damage();
+        assert!(t.touch(NodeId(99)).is_none());
+        assert!(t.damage().is_empty());
     }
 }

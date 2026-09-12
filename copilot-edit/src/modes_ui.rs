@@ -1,5 +1,6 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
-//! The Modes dialog: the rig's mode list, and what can be done to it.
+// SPDX-License-Identifier: GPL-3.0-only
+//! The Modes dialog: the rig's mode list, and what can be done to it, and
+//! the prompt a mode switch puts when it would cost unsaved work.
 //!
 //! Apart from [`crate::modes`], which holds the operations themselves, for the
 //! reason the widget property table is apart from the pane that draws it: what
@@ -174,6 +175,97 @@ impl App {
         }
         // Closed by the X, or by the rig being closed out from under it.
         self.modes = (open && self.rig.is_some()).then_some(d);
+    }
+}
+
+impl App {
+    /// The question a mode switch asks when it would cost unsaved work.
+    ///
+    /// The same three answers the close prompt offers, for the same reason:
+    /// a switch re-reads every display from disk, so the edit in front of
+    /// the person is about to go. Saying so and offering the way through
+    /// beats the old silent refusal, which was taken for a dead button --
+    /// and it is one click either way, which the status line never was.
+    pub(crate) fn switch_prompt(&mut self, ctx: &egui::Context) {
+        let Some(m) = self.switching else {
+            return;
+        };
+        // The rig can be closed, or the mode taken off it, while the prompt
+        // is up; a question about a mode that is gone is not one to put.
+        let Some(name) = self.rig.as_ref().and_then(|r| r.rig.modes.get(m).cloned()) else {
+            self.switching = None;
+            return;
+        };
+        // Saved by some other route -- Ctrl+S, Save all -- since the click.
+        // There is nothing left to ask about, so the switch just happens.
+        let n = self.unsaved();
+        if n == 0 {
+            self.switching = None;
+            self.swap_to_mode(m);
+            return;
+        }
+
+        let mut save = false;
+        let mut discard = false;
+        let mut open = true;
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "{n} display{} of this rig {} unsaved changes.",
+                    if n == 1 { "" } else { "s" },
+                    if n == 1 { "has" } else { "have" }
+                ));
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Switching to {name} re-reads every display's scene from the folder."
+                    ))
+                    .small()
+                    .weak(),
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    save = ui.button("Save and switch").clicked();
+                    discard = ui
+                        .button("Switch without saving")
+                        .on_hover_text("The changes are lost")
+                        .clicked();
+                    if ui.button("Cancel").clicked() {
+                        self.switching = None;
+                    }
+                });
+            });
+        // The X on the prompt means the same as Cancel: stay, unsaved.
+        if !open {
+            self.switching = None;
+        }
+
+        if discard {
+            self.switching = None;
+            self.swap_to_mode(m);
+        } else if save {
+            self.switching = None;
+            self.save_and_switch(m);
+        }
+    }
+
+    /// Write every display out and then switch, or stay put and say why.
+    ///
+    /// Still unsaved after a save means the save did not happen -- a scene
+    /// that will not parse is refused rather than written over the copy that
+    /// did. Switching over the top of that would throw the work away in the
+    /// one case the prompt exists to prevent, so it stays where it is.
+    pub(crate) fn save_and_switch(&mut self, m: usize) {
+        self.switching = None;
+        self.save_all();
+        if self.unsaved() == 0 {
+            self.swap_to_mode(m);
+        } else {
+            self.status = format!("not switched: {}", self.status);
+        }
     }
 }
 

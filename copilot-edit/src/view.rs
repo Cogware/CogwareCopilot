@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Where the preview sits on screen, and how the two coordinate systems line
 //! up.
 //!

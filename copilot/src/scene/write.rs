@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Writing a scene back out as text.
 //!
 //! The editor's half of the round trip. Output is indented one entry per line

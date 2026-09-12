@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Seven-segment digits, the way an instrument panel shows a number.
 //!
 //! Not a font. A bitmap glyph magnified is a picture of a digit; this is the
@@ -10,9 +10,7 @@ use crate::{Color, Rect, Surface};
 
 use super::fill_rect;
 
-/// Maps each printable character to the bitmask of segments it illuminates,
-/// so that the caller can decide which bars to paint without branching on
-/// the glyph itself.
+/// Maps each printable character to the bitmask of segments it illuminates.
 fn segments(ch: char) -> u8 {
     match ch {
         '0' => 0x3F,
@@ -32,10 +30,6 @@ fn segments(ch: char) -> u8 {
 }
 
 /// One cell of a readout: a digit, and whether its decimal point is lit.
-///
-/// A point is not a cell of its own. On real hardware it is an eighth
-/// segment hanging off the bottom-right of a digit, which is why `14.7` fits
-/// a three-digit display and why the digits either side of it do not shift.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Cell {
     /// The character whose segments this cell lights.
@@ -49,45 +43,57 @@ struct Cell {
 /// A `.` attaches to the digit before it; one with no digit before it gets a
 /// blank cell to sit on, so `.5` is two cells rather than a point with
 /// nowhere to go.
-fn cells(text: &str) -> impl Iterator<Item = Cell> + '_ {
-    let mut out = alloc::vec::Vec::new();
+/// The most cells a readout is built from at once.
+///
+/// Not a limit on what a caller may pass: overflowing this does what
+/// overflowing the field does, and keeps the low-order end.
+const MAX_CELLS: usize = 16;
+
+/// Lay `text` out into `out`, returning how many cells were written.
+///
+/// A `.` attaches to the digit before it, and one with no digit before it gets
+/// a blank cell to sit on. Fills a caller's array rather than returning a
+/// `Vec` because this runs once per readout per frame.
+fn cells_into(text: &str, out: &mut [Cell; MAX_CELLS]) -> usize {
+    let mut n: usize = 0;
     for c in text.chars() {
-        match (c, out.last_mut()) {
-            (
-                '.',
-                Some(Cell {
-                    point: p @ false, ..
-                }),
-            ) => *p = true,
-            ('.', _) => out.push(Cell {
+        // A point folds into the cell before it, the one case that does not
+        // advance the count.
+        if c == '.'
+            && let Some(last) = n.checked_sub(1)
+            && !out[last].point
+        {
+            out[last].point = true;
+            continue;
+        }
+        let cell = if c == '.' {
+            Cell {
                 glyph: ' ',
                 point: true,
-            }),
-            _ => out.push(Cell {
+            }
+        } else {
+            Cell {
                 glyph: c,
                 point: false,
-            }),
+            }
+        };
+        if n == MAX_CELLS {
+            // Past the end, keep shifting: the low-order digits are the ones
+            // that still move.
+            out.rotate_left(1);
+            out[MAX_CELLS - 1] = cell;
+        } else {
+            out[n] = cell;
+            n += 1;
         }
     }
-    out.into_iter()
+    n
 }
 
-/// Renders a seven-segment readout by decomposing each glyph into the seven
-/// canonical bars and painting only those that fall within the damage region,
-/// so that the surface is never touched outside the area that actually needs
-/// refreshing.
+/// Draw `text` as a seven-segment readout, clipped to the damage region.
 ///
-/// `digits` is how many cells the readout has, whatever the text is: a fixed
-/// field, the way a panel soldered with four digits stays four digits. The
-/// text is right-aligned into it and the spare cells on the left are blank,
-/// so a number does not resize its own display as it grows. Zero sizes the
-/// field to the text instead, which is what a readout with nothing else
-/// beside it wants.
-///
-/// A readout showing a decimal point anywhere shows its unlit points too, on
-/// every cell -- a display with points has them whether or not they are on --
-/// while one showing no point at all draws none, so a speedometer does not
-/// grow three dark dots it will never use.
+/// `digits` sets the field width and zero sizes it to the text. A readout
+/// showing a decimal point anywhere shows its unlit points on every cell.
 #[allow(clippy::too_many_arguments)] // Each one is a distinct property of the readout.
 pub fn seven_seg<S: Surface + ?Sized>(
     surface: &mut S,
@@ -106,17 +112,21 @@ pub fn seven_seg<S: Surface + ?Sized>(
     // Right-aligned into the field, keeping the low-order digits when the
     // value has outgrown it: a number too big for its display is a scene that
     // needs a wider one, and the last digits are the ones that still move.
-    let mut cells: alloc::vec::Vec<Cell> = cells(text).collect();
+    let mut buf = [Cell {
+        glyph: ' ',
+        point: false,
+    }; MAX_CELLS];
+    let written = cells_into(text, &mut buf);
     let n = match digits {
-        0 => cells.len(),
+        0 => written,
         d => d as usize,
     };
     if n == 0 {
         return;
     }
-    if cells.len() > n {
-        cells.drain(..cells.len() - n);
-    }
+    // The low-order end, when the value has outgrown its field.
+    let first = written.saturating_sub(n);
+    let cells = &buf[first..written];
     let lead = n - cells.len();
 
     let cell_w = at.size.w as i32 / n as i32;
@@ -555,11 +565,22 @@ mod tests {
 
     // --- the decimal point ---
 
+    /// The cells `text` lays out as, for the tests that care about layout
+    /// rather than pixels.
+    fn cells(text: &str) -> alloc::vec::Vec<Cell> {
+        let mut buf = [Cell {
+            glyph: ' ',
+            point: false,
+        }; MAX_CELLS];
+        let n = cells_into(text, &mut buf);
+        buf[..n].to_vec()
+    }
+
     #[test]
     fn a_point_rides_on_a_digit_rather_than_taking_a_cell_of_its_own() {
         // The whole reason an AFR gauge fits: "14.7" is three cells, not four,
         // so the digits sit where a three-digit field puts them.
-        let got: alloc::vec::Vec<Cell> = cells("14.7").collect();
+        let got = cells("14.7");
         assert_eq!(got.len(), 3);
         assert_eq!(
             got[1],
@@ -579,7 +600,7 @@ mod tests {
 
     #[test]
     fn a_point_with_no_digit_before_it_gets_a_blank_to_sit_on() {
-        let got: alloc::vec::Vec<Cell> = cells(".5").collect();
+        let got = cells(".5");
         assert_eq!(got.len(), 2);
         assert_eq!(
             got[0],
@@ -590,7 +611,21 @@ mod tests {
         );
         // And a second point in a row starts another cell rather than being
         // swallowed, so nonsense input stays visible as nonsense.
-        assert_eq!(cells("8..").count(), 2);
+        assert_eq!(cells("8..").len(), 2);
+    }
+
+    #[test]
+    fn a_value_longer_than_the_buffer_keeps_its_low_order_end() {
+        // The same thing an overlong value does to a field it does not fit:
+        // the digits that still move are the last ones.
+        let long: alloc::string::String = (0..MAX_CELLS + 4)
+            .map(|i| char::from(b'0' + (i % 10) as u8))
+            .collect();
+        let got = cells(&long);
+        assert_eq!(got.len(), MAX_CELLS);
+        let want: alloc::vec::Vec<char> = long.chars().skip(4).collect();
+        let have: alloc::vec::Vec<char> = got.iter().map(|c| c.glyph).collect();
+        assert_eq!(have, want);
     }
 
     #[test]

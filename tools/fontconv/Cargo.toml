@@ -11,7 +11,9 @@ name = "fontconv"
 description = "Convert a TTF into a copilot bitmap font atlas"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+# The font converter is a host-side build tool, not part of the firmware it
+# feeds, so it stays permissive while the rest of the workspace is GPL.
+license = "MIT OR Apache-2.0"
 repository.workspace = true
 
 [dependencies]

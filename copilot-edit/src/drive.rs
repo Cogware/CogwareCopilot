@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Dummy values, for seeing a scene at readings it does not hold.
 //!
 //! A scene file stores one authored value per gauge — whatever the author

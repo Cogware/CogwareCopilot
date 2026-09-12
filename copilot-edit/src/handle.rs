@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Selection handles, and what dragging one does to a rectangle.
 //!
 //! Geometry only: it knows nothing about egui, the mouse, or the scene text.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Pulling a dragged widget onto the lines its neighbours already sit on.
 //!
 //! Geometry only, like [`crate::handle`]: no egui, no mouse, no scene text.

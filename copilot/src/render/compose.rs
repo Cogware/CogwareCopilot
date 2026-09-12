@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Painting a widget tree into a surface.
 //!
 //! The compositor walks the tree in document order, so a later sibling paints
@@ -52,6 +52,28 @@ pub fn compose_all<S: Surface + ?Sized>(surface: &mut S, tree: &Tree, res: Resou
         ROOT,
         Rect::ZERO,
         Rect::new(0, 0, size.w, size.h),
+        res,
+        false,
+    );
+}
+
+/// Repaint the whole tree, moved by (`dx`, `dy`) and clipped to `clip`.
+///
+/// For a transition, which puts two trees in different places in one frame.
+pub fn compose_moved<S: Surface + ?Sized>(
+    surface: &mut S,
+    tree: &Tree,
+    res: Resources<'_>,
+    dx: i32,
+    dy: i32,
+    clip: Rect,
+) {
+    paint(
+        surface,
+        tree,
+        ROOT,
+        Rect::new(dx, dy, 0, 0),
+        clip,
         res,
         false,
     );
@@ -112,6 +134,7 @@ mod tests {
             images,
             anims,
             font,
+            menus: &[],
         }
     }
 

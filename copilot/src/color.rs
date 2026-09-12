@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Colour, and the one place the crate converts to a backend's pixel layout.
 //!
 //! Everything composites in straight (non-premultiplied) 8-bit RGBA and

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Drawing a single widget.
 //!
 //! Split from [`super::compose()`] so the tree walk and the per-widget
@@ -6,11 +6,11 @@
 //! identical on screen and are found in completely different places.
 
 use crate::font::Font;
-use crate::render::scale::scale_nearest;
+use crate::surface::TextureId;
 use crate::widget::{Align, Kind, VAlign};
 use crate::{Color, Rect, Surface};
 
-use super::{Resources, blit, fill_rect, stroke_rect};
+use super::{Resources, fill_rect, image, stroke_rect};
 
 /// Draw `text` with its top-left at `at`, clipped to `clip`.
 ///
@@ -47,7 +47,7 @@ fn offset(text: &str, at: Rect, advance: i32, cell: i32, align: Align) -> i32 {
 }
 
 #[allow(clippy::too_many_arguments)] // Each one is a distinct property of the run.
-fn draw_text<S: Surface + ?Sized>(
+pub(super) fn draw_text<S: Surface + ?Sized>(
     surface: &mut S,
     text: &str,
     color: Color,
@@ -138,78 +138,38 @@ fn arc<S: Surface + ?Sized>(
     track: Color,
     antialias: bool,
 ) {
-    use crate::trig::{ONE, TURN, cos, sin};
+    use crate::trig::TURN;
 
     let outer = (at.size.w.min(at.size.h) / 2) as i32;
     if outer <= 0 {
         return;
     }
-    if antialias {
-        // The track over the whole sweep and the fill over the lit part of
-        // it, each as one blended ring: no stepping, so no seams either.
-        let to_brad = |deg: i32| {
-            ((deg as i64 * TURN as i64) / 360 - i64::from(TURN / 4))
-                .clamp(i32::MIN as i64, i32::MAX as i64) as i32
-        };
-        let (a0, a1) = (to_brad(start_deg), to_brad(end_deg));
-        let sweep = a1.saturating_sub(a0);
-        let c = (
-            at.left() as f32 + at.size.w as f32 / 2.0,
-            at.top() as f32 + at.size.h as f32 / 2.0,
-        );
-        let outer = at.size.w.min(at.size.h) as f32 / 2.0;
-        let inner = (outer - thickness.max(1) as f32).max(0.0);
-        let lit = (sweep as f32 * value) as i32;
-        super::aa::arc(surface, clip, c, inner, outer, a0, sweep, track);
-        super::aa::arc(surface, clip, c, inner, outer, a0, lit, fill);
-        return;
-    }
-    let inner = (outer - thickness.max(1) as i32).max(0);
-    let cx = at.left() + at.size.w as i32 / 2;
-    let cy = at.top() + at.size.h as i32 / 2;
-
-    // Degrees clockwise from twelve o'clock, into brads measured the way the
-    // table is: a quarter turn back puts zero at the top.
-    // Converted in i64 and clamped rather than folded: a scene may name any
-    // i32 as an angle and `deg * TURN` overflows long before i32::MAX, but
-    // folding each angle on its own turns 0..360 into a zero sweep -- the two
-    // ends of a full circle are the same direction and different sweeps.
-    // `sin` and `cos` mask internally, so a large brad value is harmless.
-    // The quarter-turn offset is applied before the clamp, or clamping to
-    // i32::MIN and then subtracting from it overflows.
+    // The track over the whole sweep and the fill over the lit part of it,
+    // each as one blended ring: no stepping, so no seams either.
+    //
+    // Scanlined rather than walked round in polar steps, which is what this
+    // used to do. Sampling a ring along rays cannot cover it: at any radius
+    // the samples land on whichever pixel the truncation picks, and the ones
+    // between two rays are simply never named. It left a spray of unpainted
+    // pixels through the whole annulus -- 954 of them in the 480x480 gauge --
+    // that antialiasing hid only because the antialiased path already worked
+    // this way. One rasteriser, one geometry, and `antialias` decides nothing
+    // but whether the edge pixels are blended or hard.
     let to_brad = |deg: i32| {
         ((deg as i64 * TURN as i64) / 360 - i64::from(TURN / 4))
             .clamp(i32::MIN as i64, i32::MAX as i64) as i32
     };
     let (a0, a1) = (to_brad(start_deg), to_brad(end_deg));
     let sweep = a1.saturating_sub(a0);
-
-    // One step per pixel of outer arc length, so consecutive steps land on
-    // adjacent pixels: any coarser leaves gaps, any finer redraws the same
-    // pixel. Arc length is r * angle, and TURN brads is 2*pi radians.
-    let steps =
-        ((outer as i64 * sweep.unsigned_abs() as i64 * 7) / (TURN as i64)).clamp(1, 4096) as i32;
-    let lit = (steps as f32 * value) as i32;
-
-    for i in 0..=steps {
-        let colour = if i <= lit { fill } else { track };
-        if colour.is_transparent() {
-            continue;
-        }
-        // In i64: `sweep * i` overflows for a large sweep long before the
-        // division brings it back into range.
-        let a = (i64::from(a0) + i64::from(sweep) * i64::from(i) / i64::from(steps))
-            .clamp(i32::MIN as i64, i32::MAX as i64) as i32;
-        let (s, c) = (sin(a), cos(a));
-        // Walk the ring's thickness at this angle. Stepping the radius rather
-        // than drawing a line keeps every pixel inside the annulus, which a
-        // thick line across the band would not.
-        for r in inner..=outer {
-            let x = cx + (c * r) / ONE;
-            let y = cy + (s * r) / ONE;
-            fill_clipped(surface, Rect::new(x, y, 1, 1), clip, colour);
-        }
-    }
+    let c = (
+        at.left() as f32 + at.size.w as f32 / 2.0,
+        at.top() as f32 + at.size.h as f32 / 2.0,
+    );
+    let outer = at.size.w.min(at.size.h) as f32 / 2.0;
+    let inner = (outer - thickness.max(1) as f32).max(0.0);
+    let lit = (sweep as f32 * value) as i32;
+    super::aa::arc(surface, clip, c, inner, outer, a0, sweep, track, antialias);
+    super::aa::arc(surface, clip, c, inner, outer, a0, lit, fill, antialias);
 }
 
 /// Clamp to 0.0..=1.0, treating NaN as zero.
@@ -283,6 +243,7 @@ fn round_rect<S: Surface + ?Sized>(
                     at.right(),
                     color,
                     &inside,
+                    true,
                 );
             } else {
                 fill_clipped(surface, Rect::new(at.left(), y, w, 1), clip, color);
@@ -357,6 +318,24 @@ pub fn draw_kind<S: Surface + ?Sized>(
             }
             fill_rect(surface, area, *background);
         }
+        Kind::Menu {
+            menu,
+            color,
+            selected,
+            editing,
+            scale,
+        } => {
+            // A widget naming a menu the rig does not have draws its name in
+            // the placeholder magenta, so the typo is visible on the screen it
+            // was authored for.
+            let Some(m) = res.menus.iter().find(|m| &m.name == menu) else {
+                fill_clipped(surface, at, clip, Color::rgb(255, 0, 255));
+                return;
+            };
+            super::menu::menu(
+                surface, m, at, clip, res, *color, *selected, *editing, *scale,
+            );
+        }
         Kind::Frame { color } => {
             if color.is_transparent() {
                 return;
@@ -406,23 +385,23 @@ pub fn draw_kind<S: Surface + ?Sized>(
                 *valign,
             );
         }
-        Kind::Image { image } => {
+        Kind::Image { image: index } => {
             // A widget naming an image the host never supplied draws the
             // magenta placeholder, not nothing: nothing is indistinguishable
             // from a transparent widget that is working correctly.
-            let Some(img) = res.images.get(*image) else {
+            let Some(img) = res.images.get(*index) else {
                 fill_clipped(surface, at, clip, Color::rgb(255, 0, 255));
                 return;
             };
-            // Scaling to the widget's rectangle is what lets a scene be
-            // authored once and shown on a panel of a different size.
-            if img.width == at.size.w && img.height == at.size.h {
-                blit(surface, at, &img.pixels, img.width);
-            } else {
-                let scaled =
-                    scale_nearest(&img.pixels, img.width, img.height, at.size.w, at.size.h);
-                blit(surface, at, &scaled, at.size.w);
-            }
+            image(
+                surface,
+                TextureId::Image { index: *index },
+                at,
+                clip,
+                &img.pixels,
+                img.width,
+                img.height,
+            );
         }
         Kind::Anim { anim, frame, .. } => {
             let Some(a) = res.anims.get(*anim) else {
@@ -434,18 +413,18 @@ pub fn draw_kind<S: Surface + ?Sized>(
             // obvious way, not vanish.
             let idx = (*frame as usize).min(a.frames.len().saturating_sub(1));
             let Some(f) = a.frames.get(idx) else { return };
-            if u32::from(a.width) == at.size.w && u32::from(a.height) == at.size.h {
-                blit(surface, at, &f.pixels, u32::from(a.width));
-            } else {
-                let scaled = scale_nearest(
-                    &f.pixels,
-                    u32::from(a.width),
-                    u32::from(a.height),
-                    at.size.w,
-                    at.size.h,
-                );
-                blit(surface, at, &scaled, at.size.w);
-            }
+            image(
+                surface,
+                TextureId::AnimFrame {
+                    anim: *anim,
+                    frame: idx as u32,
+                },
+                at,
+                clip,
+                &f.pixels,
+                u32::from(a.width),
+                u32::from(a.height),
+            );
         }
         Kind::Arc {
             start,
@@ -740,6 +719,7 @@ mod tests {
             images,
             anims,
             font,
+            menus: &[],
         }
     }
 
@@ -1388,6 +1368,7 @@ mod clip_tests {
             images,
             anims,
             font,
+            menus: &[],
         }
     }
 
@@ -1449,6 +1430,7 @@ mod widget_tests {
                 images: &i,
                 anims: &a,
                 font: &f,
+                menus: &[],
             },
             false,
         );
@@ -1468,6 +1450,7 @@ mod widget_tests {
             images: i,
             anims: a,
             font: f,
+            menus: &[],
         }
     }
 

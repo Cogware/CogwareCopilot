@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! What a widget draws.
 //!
 //! A closed enum rather than a trait, for the reasons in the module above.
@@ -12,11 +12,6 @@ use alloc::vec::Vec;
 use crate::Color;
 
 /// Where a label's text sits in its box.
-///
-/// Without this a scene file has to place text by hand, computing the pixel
-/// width of a string from the font's cell size and halving it. That
-/// arithmetic is wrong the moment the text or the scale changes, and it is
-/// wrong silently.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
     /// Against the left edge.
@@ -29,10 +24,6 @@ pub enum Align {
 }
 
 /// Where a label's text sits between the top and bottom of its box.
-///
-/// A separate enum from [`Align`] rather than one with six variants, because a
-/// label needs one of each and a single enum would let a scene ask for "left"
-/// on the axis that has no left.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum VAlign {
     /// Against the top edge.
@@ -43,6 +34,10 @@ pub enum VAlign {
     /// Against the bottom edge.
     Bottom,
 }
+/// The most rectangles [`Kind::reading_damage`] can produce.
+///
+/// A needle is the widest case: a hub plus one band per radial slice.
+pub const MAX_READING_RECTS: usize = 8;
 
 /// The drawable kinds of widget.
 #[derive(Clone, Debug, PartialEq)]
@@ -53,6 +48,22 @@ pub enum Kind {
     Panel {
         /// Fill colour. [`Color::TRANSPARENT`] draws nothing.
         background: Color,
+    },
+    /// A view onto one of the rig's menus.
+    ///
+    /// The menu itself lives in the rig, not here, so a setting survives a
+    /// mode change; this only says where it is drawn and in what colours.
+    Menu {
+        /// Which of the rig's menus to show, by its `name`.
+        menu: String,
+        /// Colour of an item that is neither selected nor being edited.
+        color: Color,
+        /// Colour of the selected item.
+        selected: Color,
+        /// Colour of the selected item while its value is being changed.
+        editing: Color,
+        /// Integer magnification of the font, as [`Kind::Label`] uses.
+        scale: u8,
     },
     /// A rectangle outline, one pixel wide, drawn just inside the node.
     Frame {
@@ -66,12 +77,6 @@ pub enum Kind {
         /// Text colour.
         color: Color,
         /// Integer magnification, 1 for the font's own size.
-        ///
-        /// Integer rather than a point size because the font is a bitmap: a
-        /// glyph doubled is four crisp pixels per pixel, while a glyph scaled
-        /// by 1.7 is a smear. A panel that wants a 90-pixel speedometer reads
-        /// far better built from a clean 5x7 at twelve times than from an
-        /// interpolated one.
         scale: u8,
         /// Where the text sits across the node's box.
         align: Align,
@@ -79,19 +84,11 @@ pub enum Kind {
         valign: VAlign,
     },
     /// A still image, by its index in the scene's image table.
-    ///
-    /// An index rather than the pixels, so that two widgets showing the same
-    /// background share one decode, and so a `Kind` stays cheap to clone.
     Image {
         /// Index into the scene's image table.
         image: u32,
     },
     /// A playing animation, referenced by the index the scene assigned it.
-    ///
-    /// The current frame lives here, in the retained tree, rather than in the
-    /// decoder. That is what makes playback controllable: pausing is a field,
-    /// seeking is an assignment, and a scene reloaded from disk resumes where
-    /// the widget says it was rather than at frame zero.
     Anim {
         /// Index into the scene's animation table.
         anim: u32,
@@ -105,11 +102,9 @@ pub enum Kind {
         /// Microseconds accumulated towards the next frame.
         elapsed_us: u64,
     },
-    /// A ring filled between two angles: the round gauge every cluster has.
+    /// A ring filled between two angles.
     ///
-    /// Angles are degrees clockwise from twelve o'clock, which is how a person
-    /// describes a dial. The renderer converts once; the scene file never sees
-    /// the brads the trigonometry actually uses.
+    /// Angles are degrees clockwise from twelve o'clock.
     Arc {
         /// Where the sweep begins, degrees clockwise from the top.
         start: i32,
@@ -124,10 +119,9 @@ pub enum Kind {
         /// Colour of the rest of the sweep. Transparent leaves it unpainted.
         track: Color,
     },
-    /// A pointer swinging over a sweep: the analogue gauge's moving part.
+    /// A pointer swinging over a sweep.
     ///
-    /// Shares its angle convention with [`Kind::Arc`] so that a needle, a ring
-    /// and a [`Kind::Scale`] stacked in one node all agree where a value sits.
+    /// Shares its angle convention with [`Kind::Arc`].
     Needle {
         /// Where the sweep begins, degrees clockwise from the top.
         start: i32,
@@ -143,10 +137,6 @@ pub enum Kind {
         hub: u32,
     },
     /// Tick marks around a dial's rim.
-    ///
-    /// Separate from [`Kind::Needle`] rather than a field on it because the
-    /// ticks never change once the scene is loaded while the needle moves every
-    /// frame; keeping them apart lets the renderer repaint only the pointer.
     Scale {
         /// Where the sweep begins, degrees clockwise from the top.
         start: i32,
@@ -167,9 +157,7 @@ pub enum Kind {
     },
     /// A run of connected line segments through listed points.
     ///
-    /// Points are fractions of the node's box rather than pixels, so the same
-    /// curve serves a 320-pixel panel and a 1080-pixel one. A cluster designed
-    /// once should not need rewriting for the next screen it lands on.
+    /// Points are fractions of the node's box.
     Line {
         /// Vertices, each `(x, y)` in 0.0..=1.0 from the box's top-left.
         points: Vec<(f32, f32)>,
@@ -181,11 +169,6 @@ pub enum Kind {
         closed: bool,
     },
     /// A filled shape through listed points.
-    ///
-    /// The filled counterpart to [`Kind::Line`], and what a telltale symbol
-    /// actually is: an arrow, a warning triangle and a chevron are all three
-    /// points and four points, and a scene that can say so needs no built-in
-    /// icon set to be kept up to date with what people want to draw.
     Polygon {
         /// Vertices, each `(x, y)` in 0.0..=1.0 from the box's top-left.
         points: Vec<(f32, f32)>,
@@ -193,10 +176,6 @@ pub enum Kind {
         color: Color,
     },
     /// A series plotted across the node, optionally filled beneath.
-    ///
-    /// Distinct from [`Kind::Line`] because the x positions are implied by the
-    /// count rather than given: a rolling window of readings can be pushed and
-    /// popped without the scene restating where each one sits.
     Chart {
         /// The series, each 0.0 on the bottom edge to 1.0 on the top.
         values: Vec<f32>,
@@ -207,12 +186,7 @@ pub enum Kind {
         /// Colour of the area beneath it. Transparent leaves only the line.
         fill: Color,
     },
-    /// A number in seven-segment cells, the way an instrument shows one.
-    ///
-    /// Not a [`Kind::Label`] in a squarish font. A magnified bitmap glyph is a
-    /// picture of a digit; this is the digit, drawn from the seven bars a real
-    /// display has. That is what lets it show its *unlit* segments, which is
-    /// most of what makes a panel read as a panel rather than as text.
+    /// A number in seven-segment cells.
     SevenSeg {
         /// The characters to show. Digits, a minus and a space are the ones
         /// with a shape; anything else is blank.
@@ -225,18 +199,9 @@ pub enum Kind {
         thickness: u32,
         /// How many cells the readout has, whatever the text is. 0 sizes the
         /// field to the text.
-        ///
-        /// A soldered display does not gain and lose digits as the number
-        /// does. Without this, "9" and "188" are drawn at two different cell
-        /// widths in the same box, and a speedometer visibly rearranges
-        /// itself every time it crosses a hundred.
         digits: u32,
     },
     /// A fill that ramps from one colour to another across the widget.
-    ///
-    /// Separate from [`Kind::Panel`] rather than a field on it, for the reason
-    /// [`Kind::RoundRect`] is separate: the flat case is the overwhelmingly
-    /// common one and it draws with a single span per row.
     Gradient {
         /// The colour at the top, or at the left.
         from: Color,
@@ -245,11 +210,7 @@ pub enum Kind {
         /// Whether the ramp runs down rather than across.
         vertical: bool,
     },
-    /// Tick marks along an edge: the straight counterpart to [`Kind::Scale`].
-    ///
-    /// A bar gauge had no way to be graduated, so a reading could be seen to
-    /// move without being read off. Same fields as the round one, minus the
-    /// angles it has no use for.
+    /// Tick marks along an edge.
     Ruler {
         /// How many marks, counting both ends.
         ticks: u32,
@@ -266,16 +227,9 @@ pub enum Kind {
         /// Whether the marks run down the left edge rather than across the top.
         vertical: bool,
     },
-    /// A bargraph of discrete cells, the way a vacuum-fluorescent panel shows
-    /// a reading.
+    /// A bargraph of discrete cells.
     ///
-    /// Not a refinement of [`Kind::Bar`] but a different instrument. A solid
-    /// bar says "about this much"; a row of cells says "this many", and a
-    /// driver counts them without looking away from the road.
-    ///
-    /// The colour bands come from where a cell *sits*, not from the reading,
-    /// so a red cell is red whenever it is lit. That is what makes a redline a
-    /// redline rather than a colour the whole gauge turns at the last moment.
+    /// Colour bands are determined by cell position, not the reading.
     SegBar {
         /// How far the reading has got, 0.0 to 1.0.
         value: f32,
@@ -289,11 +243,6 @@ pub enum Kind {
         track: Color,
         /// Cells at or past this fraction light in `warn_fill`. Above 1.0
         /// there is no warning band at all.
-        ///
-        /// Bands run from the top of the scale down, which is what a
-        /// tachometer, a temperature gauge and a boost gauge all want. A tank
-        /// is the exception -- low is the bad end -- and reads better as a
-        /// telltale beside the gauge than as an inverted band inside it.
         warn: f32,
         /// The colour those cells light in.
         warn_fill: Color,
@@ -305,10 +254,6 @@ pub enum Kind {
         vertical: bool,
         /// How far across each cell reaches, 0.0 to 1.0, cut from the base
         /// edge. Empty for a plain bargraph whose cells fill their box.
-        ///
-        /// This is what a printed lens does to a real tachometer: the cells
-        /// are cut to a power curve, so the lit ones trace the engine's torque
-        /// rather than forming a level block.
         profile: Vec<f32>,
         /// How far up its envelope each lit cell reaches, 0.0 to 1.0.
         ///
@@ -442,6 +387,134 @@ impl Kind {
             | Kind::SegBar { value, .. } => Some(*value),
             Kind::Led { level, .. } => Some(*level),
             _ => None,
+        }
+    }
+
+    /// The parts of the screen that can differ when a reading moves from
+    /// `old` to `new`, written into `out` and counted by the return value.
+    ///
+    /// Defaults to the widget's whole rectangle, which is always correct. For
+    /// the two widgets that occupy a whole dial face while changing only a
+    /// sliver of it -- the arc and the needle -- it is the swept wedge
+    /// instead, which is the difference between repainting a gauge and
+    /// repainting a sliver of one.
+    ///
+    /// # Why the needle comes back in pieces
+    ///
+    /// A needle is a spoke. Sweeping it two degrees changes a long thin
+    /// triangle from the pivot to the rim, and the *bounding box* of that
+    /// triangle is very nearly the quadrant it points into -- 16,772 pixels
+    /// on a 480x480 gauge where the arc's own wedge is 310. One box would
+    /// hand back most of what the wedge was computed to save, so the sweep is
+    /// cut into radial bands and each is bounded on its own. The bands trace
+    /// the triangle instead of boxing it.
+    ///
+    /// Deliberately conservative throughout: every box is padded for the
+    /// rounding in the rasteriser's fixed-point trigonometry and for the
+    /// stroke's half-width, and any kind this cannot reason about falls back
+    /// to the full rectangle.
+    #[must_use]
+    pub fn reading_damage(
+        &self,
+        absolute: crate::Rect,
+        old: f32,
+        new: f32,
+        out: &mut [crate::Rect; MAX_READING_RECTS],
+    ) -> usize {
+        use crate::geom::sector_bounds;
+        use crate::trig::TURN;
+
+        let clamp01 = |v: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, 1.0) };
+        let (old, new) = (clamp01(old), clamp01(new));
+        let w = absolute.size.w as i32;
+        let h = absolute.size.h as i32;
+        let radius = w.min(h) / 2;
+        let whole = |out: &mut [crate::Rect; MAX_READING_RECTS]| {
+            out[0] = absolute;
+            1
+        };
+        if radius <= 0 {
+            return whole(out);
+        }
+        let cx = absolute.left() + w / 2;
+        let cy = absolute.top() + h / 2;
+        // Degrees clockwise from twelve o'clock into the renderer's brads,
+        // which put zero at three. Same conversion as `render::draw`, and it
+        // has to stay the same or the wedge misses what was drawn.
+        let to_brad = |deg: i32| {
+            ((deg as i64 * TURN as i64) / 360 - i64::from(TURN / 4))
+                .clamp(i32::MIN as i64, i32::MAX as i64) as i32
+        };
+
+        // Padded and never clamped to `absolute`. A stroke is centred on its
+        // geometry, so a needle five pixels wide reaches two and a half
+        // pixels past the rectangle whose edge its tip sits on. Clamping here
+        // left a column of the needle unrepainted at full deflection, which
+        // whole-rectangle damage had covered only by accident, because the
+        // arc behind it was marking the entire face. Marking more than
+        // changed is merely slower; marking less leaves a stale pixel.
+        let grow = |r: crate::Rect, pad: i32| {
+            crate::Rect::new(
+                r.left() - pad,
+                r.top() - pad,
+                r.size.w + 2 * pad as u32,
+                r.size.h + 2 * pad as u32,
+            )
+        };
+
+        match *self {
+            Kind::Arc {
+                start,
+                end,
+                thickness,
+                ..
+            } => {
+                let a0 = to_brad(start);
+                let sweep = to_brad(end).saturating_sub(a0);
+                let angle = |v: f32| a0.saturating_add((sweep as f32 * v) as i32);
+                let inner = (radius - thickness.max(1) as i32).max(0);
+                out[0] = grow(
+                    sector_bounds(cx, cy, inner, radius, angle(old), angle(new)),
+                    2,
+                );
+                1
+            }
+            Kind::Needle {
+                start,
+                end,
+                width,
+                hub,
+                ..
+            } => {
+                let a0 = to_brad(start);
+                let sweep = to_brad(end).saturating_sub(a0);
+                let angle = |v: f32| a0.saturating_add((sweep as f32 * v) as i32);
+                let (a, b) = (angle(old), angle(new));
+                let pad = width.max(1) as i32 / 2 + 2;
+
+                let mut n = 0;
+                // The pivot, where the hub sits and every sweep overlaps.
+                if hub > 0 {
+                    let r = hub as i32 + 1;
+                    out[n] = grow(
+                        crate::Rect::new(cx - r, cy - r, (r * 2 + 1) as u32, (r * 2 + 1) as u32),
+                        pad,
+                    );
+                    n += 1;
+                }
+                // The spoke, in bands. Four is enough to follow the triangle
+                // closely without the per-rectangle cost of the compositor
+                // walking the tree again outweighing the pixels saved.
+                const BANDS: i32 = 4;
+                for k in 0..BANDS {
+                    let lo = radius * k / BANDS;
+                    let hi = radius * (k + 1) / BANDS;
+                    out[n] = grow(sector_bounds(cx, cy, lo, hi, a, b), pad);
+                    n += 1;
+                }
+                n
+            }
+            _ => whole(out),
         }
     }
 

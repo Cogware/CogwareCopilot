@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Rendering a scene into an egui texture.
 //!
 //! The preview is drawn by `copilot` itself — the same [`compose_all`] the
@@ -206,6 +206,7 @@ impl Preview {
                 images: &self.images,
                 anims: &self.clips,
                 font: &self.font,
+                menus: &[],
             },
         );
         tree.clear_damage();

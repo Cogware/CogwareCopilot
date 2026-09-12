@@ -1,29 +1,16 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
-//! Antialiasing: shapes whose edge pixels are painted by how much of each
-//! the shape covers.
+// SPDX-License-Identifier: GPL-3.0-only
+//! Antialiasing: shapes whose edge pixels are painted by how much of each the
+//! shape covers.
 //!
-//! Everything else in this renderer writes whole pixels, which is what a
-//! bitmap font and a solid panel want and what a bus-bound display can
-//! afford. A needle at an odd angle, a ring, a curve and a cell edge that
-//! falls between two pixels all read better with the edge blended by
-//! coverage, and that is what this module does when a scene asks for it.
-//!
-//! Coverage is measured by sampling: a four-by-four grid of points inside
-//! each pixel, each asked whether it is inside the shape. Sampling rather than
-//! analytic area because it works the same way for every shape, and a shape
-//! has to answer only one question -- is this point inside you -- to be
-//! antialiased. The exception is the rectangle with fractional edges, whose
-//! coverage is the product of two overlaps and is computed exactly.
-//!
-//! Blending needs the pixel underneath, which the surface contract does not
-//! otherwise require. [`Surface::blend_span`] reads it back where the surface
-//! can be read and falls back to whole pixels where it cannot, so a scene
-//! asking for antialiasing on a write-only panel gets the aliased picture
-//! rather than a wrong one.
-//!
-//! No `sqrt` and no `floor`: neither exists in `core` for `f32`. Distances
-//! are compared squared, and the helpers below round by hand.
+//! Coverage is measured by sampling a four-by-four grid inside each pixel,
+//! rather than analytically, so every shape need only answer whether a point
+//! is inside it; the exception is a rectangle with fractional edges, whose
+//! coverage is an exact product of two overlaps. Blending needs the pixel
+//! underneath, so [`Surface::blend_span`] falls back to whole pixels where the
+//! surface cannot be read. Nothing here uses `sqrt` or `floor`, neither of
+//! which `core` offers for `f32`.
 
+use crate::surface::Primitive;
 use crate::trig::{ONE, TURN, cos, isqrt, sin};
 use crate::{Color, Rect, Surface};
 
@@ -84,7 +71,45 @@ pub fn at_coverage(color: Color, cov: f32) -> Color {
 }
 
 /// How many of the samples in pixel (`x`, `y`) `inside` accepts.
+///
+/// # The unanimity shortcut
+///
+/// A shaded span is mostly interior: a ring sixteen pixels thick has fourteen
+/// pixels that are wholly covered for every two on an edge, and every one of
+/// them used to pay for sixteen `inside` calls to be told what its corners
+/// already agreed on. Probing the four corners and the centre first settles
+/// those in five, and only a pixel whose probes disagree -- an edge -- is
+/// supersampled.
+///
+/// This is exact for the shapes this module draws, which are all locally
+/// convex: a disc, a ring, a rotated rectangle. Between four corners that are
+/// all inside such a shape there is no gap, and the curvature that could hide
+/// one is bounded by the sagitta over a one-pixel chord -- about a
+/// thousandth of a pixel even for a hub of radius fourteen. The centre probe
+/// is what guards the empty case, where a feature narrower than a pixel
+/// diagonal could otherwise slip between the corners unnoticed.
+///
+/// It matters most on a target whose FPU has no divide: `inside` is several
+/// float operations, and cutting the common pixel from sixteen calls to five
+/// is the difference between a gauge that animates and one that does not.
 fn samples(x: i32, y: i32, inside: &impl Fn(f32, f32) -> bool) -> u32 {
+    // Corners pulled a hair inwards: a probe exactly on the boundary of an
+    // abutting shape belongs to neither, and would make both edges disagree.
+    const E: f32 = 1.0 / 64.0;
+    let (fx, fy) = (x as f32, y as f32);
+    let first = inside(fx + 0.5, fy + 0.5);
+    let unanimous = [
+        (fx + E, fy + E),
+        (fx + 1.0 - E, fy + E),
+        (fx + E, fy + 1.0 - E),
+        (fx + 1.0 - E, fy + 1.0 - E),
+    ]
+    .iter()
+    .all(|&(px, py)| inside(px, py) == first);
+    if unanimous {
+        return if first { FULL } else { 0 };
+    }
+
     let mut n = 0;
     for j in 0..SUB {
         for i in 0..SUB {
@@ -147,6 +172,7 @@ impl<'s, S: Surface + ?Sized> Run<'s, S> {
 
 /// Shade the pixels `x0..x1` of row `y` by how much of each `inside` covers,
 /// staying inside `clip`, which must already be inside the surface.
+#[allow(clippy::too_many_arguments)] // A row, a span, a colour, a test and a switch.
 pub fn shade_row<S: Surface + ?Sized>(
     surface: &mut S,
     clip: Rect,
@@ -155,6 +181,7 @@ pub fn shade_row<S: Surface + ?Sized>(
     x1: i32,
     color: Color,
     inside: &impl Fn(f32, f32) -> bool,
+    antialias: bool,
 ) {
     if y < clip.top() || y >= clip.bottom() {
         return;
@@ -162,7 +189,16 @@ pub fn shade_row<S: Surface + ?Sized>(
     let (x0, x1) = (x0.max(clip.left()), x1.min(clip.right()));
     let mut run = Run::new(surface, y);
     for x in x0..x1 {
-        let n = samples(x, y, inside);
+        // Without antialiasing a pixel is simply in or out by its centre.
+        // Same walk, same spans, same shape -- only the edge is hard, which
+        // is what "no antialiasing" means and all it should mean.
+        let n = if antialias {
+            samples(x, y, inside)
+        } else if inside(x as f32 + 0.5, y as f32 + 0.5) {
+            FULL
+        } else {
+            0
+        };
         if n == 0 {
             run.flush();
         } else {
@@ -266,6 +302,7 @@ pub fn line<S: Surface + ?Sized>(
     b: (f32, f32),
     width: f32,
     color: Color,
+    antialias: bool,
 ) {
     if color.is_transparent() {
         return;
@@ -273,46 +310,86 @@ pub fn line<S: Surface + ?Sized>(
     let Some(clip) = clip_to_surface(surface, clip) else {
         return;
     };
+    // Offered whole: one primitive to hardware, length times width in
+    // coverage tests to the sampler below.
+    if surface.draw_primitive(Primitive::Line { a, b, width }, clip, color, antialias) {
+        return;
+    }
     let r = (width / 2.0).max(0.5);
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
     let len2 = dx * dx + dy * dy;
+    // Reciprocal once, not a division per sample. The projection below runs
+    // five times for every pixel the line's band covers and sixteen more for
+    // every edge pixel, and `len2` does not change across any of them. It
+    // costs nothing on a desktop, where divide is a single instruction, and a
+    // great deal on an Xtensa LX7, whose FPU has multiply and add but no
+    // divide at all -- there each one is a software routine.
+    let inv_len2 = if len2 > 0.0 { 1.0 / len2 } else { 0.0 };
     let (min_x, max_x) = (a.0.min(b.0) - r, a.0.max(b.0) + r);
     let (min_y, max_y) = (a.1.min(b.1) - r, a.1.max(b.1) + r);
     let inside = |px: f32, py: f32| {
         let (ex, ey) = (px - a.0, py - a.1);
-        let t = if len2 > 0.0 {
-            ((ex * dx + ey * dy) / len2).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let t = ((ex * dx + ey * dy) * inv_len2).clamp(0.0, 1.0);
         let (qx, qy) = (ex - t * dx, ey - t * dy);
         qx * qx + qy * qy <= r * r
     };
+    // The slope and the half-reach are the same on every row; only where the
+    // line crosses changes. Two more divisions lifted out of the row loop for
+    // the same reason as the one above.
+    let steep = dy.abs() >= 1e-3;
+    let slope = if steep { dx / dy } else { 0.0 };
+    let half_reach = r * (1.0 + slope.abs()) + 1.0;
     let rows = floor_i(min_y).max(clip.top())..ceil_i(max_y).min(clip.bottom());
     for y in rows {
         let yc = y as f32 + 0.5;
         // Where the line crosses this row, and how far either side of that
         // the band reaches. The reach grows as the line flattens; for a flat
         // line it is the whole segment, which the endpoints already bound.
-        let (lo, hi) = if dy.abs() < 1e-3 {
-            (min_x, max_x)
+        let (lo, hi) = if steep {
+            let xc = a.0 + (yc - a.1) * slope;
+            ((xc - half_reach).max(min_x), (xc + half_reach).min(max_x))
         } else {
-            let xc = a.0 + (yc - a.1) * dx / dy;
-            let hx = r * (1.0 + (dx / dy).abs()) + 1.0;
-            ((xc - hx).max(min_x), (xc + hx).min(max_x))
+            (min_x, max_x)
         };
-        shade_row(surface, clip, y, floor_i(lo), ceil_i(hi), color, &inside);
+        shade_row(
+            surface,
+            clip,
+            y,
+            floor_i(lo),
+            ceil_i(hi),
+            color,
+            &inside,
+            antialias,
+        );
     }
 }
 
 /// Fill a disc of radius `r` around `c`.
-pub fn disc<S: Surface + ?Sized>(surface: &mut S, clip: Rect, c: (f32, f32), r: f32, color: Color) {
+pub fn disc<S: Surface + ?Sized>(
+    surface: &mut S,
+    clip: Rect,
+    c: (f32, f32),
+    r: f32,
+    color: Color,
+    antialias: bool,
+) {
     if color.is_transparent() || !above(r, 0.0) {
         return;
     }
     let Some(clip) = clip_to_surface(surface, clip) else {
         return;
     };
+    if surface.draw_primitive(
+        Primitive::Disc {
+            centre: c,
+            radius: r,
+        },
+        clip,
+        color,
+        antialias,
+    ) {
+        return;
+    }
     let inside = |px: f32, py: f32| {
         let (vx, vy) = (px - c.0, py - c.1);
         vx * vx + vy * vy <= r * r
@@ -327,6 +404,7 @@ pub fn disc<S: Surface + ?Sized>(surface: &mut S, clip: Rect, c: (f32, f32), r: 
             ceil_i(c.0 + r),
             color,
             &inside,
+            antialias,
         );
     }
 }
@@ -347,6 +425,7 @@ pub fn arc<S: Surface + ?Sized>(
     a0: i32,
     sweep: i32,
     color: Color,
+    antialias: bool,
 ) {
     if color.is_transparent() || !above(outer, 0.0) || sweep == 0 {
         return;
@@ -355,6 +434,22 @@ pub fn arc<S: Surface + ?Sized>(
         return;
     };
     let inner = inner.clamp(0.0, outer);
+    // Clamped before the offer, so a backend never sees a ring whose hole is
+    // bigger than the ring.
+    if surface.draw_primitive(
+        Primitive::Arc {
+            centre: c,
+            inner,
+            outer,
+            start: a0,
+            sweep,
+        },
+        clip,
+        color,
+        antialias,
+    ) {
+        return;
+    }
     let ray = |brad: i32| (cos(brad) as f32 / ONE as f32, sin(brad) as f32 / ONE as f32);
     let start = ray(a0);
     let end = ray(a0.saturating_add(sweep));
@@ -399,10 +494,10 @@ pub fn arc<S: Surface + ?Sized>(
         match reach(inner) {
             Some(hole) if hole > 1 => {
                 let (h0, h1) = (floor_i(c.0) - hole + 1, ceil_i(c.0) + hole - 1);
-                shade_row(surface, clip, y, x0, h0, color, &inside);
-                shade_row(surface, clip, y, h1, x1, color, &inside);
+                shade_row(surface, clip, y, x0, h0, color, &inside, antialias);
+                shade_row(surface, clip, y, h1, x1, color, &inside, antialias);
             }
-            _ => shade_row(surface, clip, y, x0, x1, color, &inside),
+            _ => shade_row(surface, clip, y, x0, x1, color, &inside, antialias),
         }
     }
 }
@@ -486,7 +581,7 @@ mod tests {
         // Half a width of 2.5 either side of 16.5 reaches from 15.25 to
         // 17.75: row 16 is wholly inside and rows 15 and 17 are three
         // quarters covered.
-        line(&mut s, AREA, (3.0, 16.5), (30.0, 16.5), 2.5, W);
+        line(&mut s, AREA, (3.0, 16.5), (30.0, 16.5), 2.5, W, true);
         assert_eq!(level(&s, 16, 16), 255, "the core is solid");
         let edge = level(&s, 16, 15);
         assert!(edge > 0 && edge < 255, "edge {edge}");
@@ -497,7 +592,7 @@ mod tests {
     #[test]
     fn a_diagonal_line_covers_its_corner_pixels_partly() {
         let mut s = surf();
-        line(&mut s, AREA, (1.0, 1.0), (30.0, 30.0), 1.0, W);
+        line(&mut s, AREA, (1.0, 1.0), (30.0, 30.0), 1.0, W, true);
         let on = level(&s, 15, 15);
         let beside = level(&s, 16, 15);
         assert!(on > 0, "nothing on the diagonal");
@@ -509,7 +604,7 @@ mod tests {
         let mut s = surf();
         // The centre sits on a pixel corner, so a radius of 5.5 cuts pixel
         // row 10 -- which spans 5 to 6 away -- down the middle.
-        disc(&mut s, AREA, (16.0, 16.0), 5.5, W);
+        disc(&mut s, AREA, (16.0, 16.0), 5.5, W, true);
         assert_eq!(level(&s, 16, 16), 255);
         assert_eq!(level(&s, 16, 24), 0);
         let rim = level(&s, 16, 10);
@@ -521,7 +616,17 @@ mod tests {
         let mut s = surf();
         // A quarter turn from twelve o'clock, clockwise: the top-right.
         let top = -(TURN / 4);
-        arc(&mut s, AREA, (16.0, 16.0), 8.0, 12.0, top, TURN / 4, W);
+        arc(
+            &mut s,
+            AREA,
+            (16.0, 16.0),
+            8.0,
+            12.0,
+            top,
+            TURN / 4,
+            W,
+            true,
+        );
         assert!(level(&s, 23, 9) > 0, "the top-right quadrant is empty");
         assert_eq!(level(&s, 9, 23), 0, "the bottom-left quadrant was painted");
         assert_eq!(level(&s, 16, 16), 0, "the hole was painted");
@@ -531,7 +636,17 @@ mod tests {
     fn a_reflex_arc_is_the_complement_of_the_small_one() {
         let mut s = surf();
         let top = -(TURN / 4);
-        arc(&mut s, AREA, (16.0, 16.0), 8.0, 12.0, top, TURN * 3 / 4, W);
+        arc(
+            &mut s,
+            AREA,
+            (16.0, 16.0),
+            8.0,
+            12.0,
+            top,
+            TURN * 3 / 4,
+            W,
+            true,
+        );
         assert!(level(&s, 23, 9) > 0, "top-right");
         assert!(level(&s, 23, 23) > 0, "bottom-right");
         assert!(level(&s, 9, 23) > 0, "bottom-left");
@@ -541,7 +656,7 @@ mod tests {
     #[test]
     fn a_full_turn_is_a_whole_ring() {
         let mut s = surf();
-        arc(&mut s, AREA, (16.0, 16.0), 8.0, 12.0, 0, TURN, W);
+        arc(&mut s, AREA, (16.0, 16.0), 8.0, 12.0, 0, TURN, W, true);
         for (x, y) in [(23, 9), (23, 23), (9, 23), (9, 9)] {
             assert!(level(&s, x, y) > 0, "({x}, {y}) is empty");
         }
@@ -551,9 +666,17 @@ mod tests {
     fn nothing_lands_outside_the_clip() {
         let mut s = surf();
         let clip = Rect::new(0, 0, 16, 32);
-        line(&mut s, AREA, (2.0, 16.0), (30.0, 16.0), 3.0, Color::BLACK);
-        line(&mut s, clip, (2.0, 16.0), (30.0, 16.0), 3.0, W);
-        disc(&mut s, clip, (16.0, 4.0), 6.0, W);
+        line(
+            &mut s,
+            AREA,
+            (2.0, 16.0),
+            (30.0, 16.0),
+            3.0,
+            Color::BLACK,
+            true,
+        );
+        line(&mut s, clip, (2.0, 16.0), (30.0, 16.0), 3.0, W, true);
+        disc(&mut s, clip, (16.0, 4.0), 6.0, W, true);
         frac_rect(&mut s, clip, 10.0, 24.5, 30.0, 28.5, W, true);
         for y in 0..32 {
             for x in 16..32 {

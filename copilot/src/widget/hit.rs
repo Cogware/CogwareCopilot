@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! Finding the widget under a point.
 //!
 //! Used by the editor to turn a click on the preview into a selection, and

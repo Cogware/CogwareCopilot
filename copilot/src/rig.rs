@@ -1,9 +1,8 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! A rig: every display on one bus, and the scene each shows in each mode.
 //!
-//! A car has more than one screen -- a 2400x900 cluster and a pair of round
-//! 480x480 gauges, say -- and more than one way of driving. The rig file is
-//! where those two lists meet:
+//! A car has more than one screen and more than one way of driving, and the
+//! rig file is where those two lists meet:
 //!
 //! ```jsonc
 //! {
@@ -17,23 +16,18 @@
 //! }
 //! ```
 //!
-//! Every display names a scene for every mode. A mode with no scene is an
-//! error rather than a fallback, because a car in track mode with a blank
-//! gauge is precisely the failure this file exists to rule out.
-//!
-//! # What is deliberately not here
-//!
-//! Size and shape: each scene already says how big it is and whether its
-//! corners are behind a bezel, and stating it twice is a way to be wrong once.
-//! Files: the paths are opaque strings relative to the rig, and the host reads
-//! them, exactly as it does a scene's `images`. Which gauge carries the mode
-//! value on the bus: that is the bus spec's business; this crate only maps the
-//! value it is handed to a mode index with [`Rig::mode_index`].
+//! Every display names a scene for every mode, and a mode with no scene is an
+//! error rather than a fallback. Size, shape and the file bytes are not here:
+//! each scene already states its own, and the paths are opaque strings the
+//! host reads. Which gauge carries the mode value is the bus spec's business;
+//! this crate only maps a value to an index with [`Rig::mode_index`].
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use crate::asset::Scene;
+use crate::menu::{Item, Menu};
+use crate::render::Transition;
 use crate::scene::bind::node_address;
 use crate::scene::{BuildError, ParseError, Value};
 
@@ -47,6 +41,8 @@ pub enum RigError {
         /// Name of the absent field.
         field: &'static str,
     },
+    /// `transition` named something that is not a transition.
+    BadTransition(String),
     /// A field had the wrong type or an unusable value.
     BadField {
         /// Name of the field that was unusable.
@@ -74,6 +70,15 @@ pub enum RigError {
         /// The mode that is not in the list.
         mode: String,
     },
+    /// Two menus claimed one name.
+    DuplicateMenu(String),
+    /// A menu, or an item in one, was unusable.
+    BadMenu {
+        /// The menu, by its `name`.
+        menu: String,
+        /// What was wrong with it.
+        field: &'static str,
+    },
     /// A scene says it is for a different node than the rig placed it on.
     NodeMismatch {
         /// The scene, by the path the rig gave for it.
@@ -97,13 +102,24 @@ pub struct Display {
 }
 
 /// Every display on the bus and the scene each shows in each mode.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Not `Eq`: a menu item's value is an `f32`.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Rig {
     /// The mode names, in bus order: the value broadcast for a mode is its
     /// index here.
     pub modes: Vec<String>,
     /// The displays, in file order.
     pub displays: Vec<Display>,
+    /// How a mode change moves from one scene to the next.
+    pub transition: Transition,
+    /// How long that takes, in milliseconds. Zero is a cut.
+    pub transition_ms: u32,
+    /// The menus, in file order. A scene's `menu` widget names one of these.
+    ///
+    /// They live here rather than in a scene so that a setting survives a mode
+    /// change: brightness chosen in normal mode is still chosen in track mode.
+    pub menus: Vec<Menu>,
 }
 
 impl Rig {
@@ -111,6 +127,17 @@ impl Rig {
     #[must_use]
     pub fn display(&self, node: u8) -> Option<&Display> {
         self.displays.iter().find(|d| d.node == node)
+    }
+
+    /// The menu called `name`, if the rig has one.
+    #[must_use]
+    pub fn menu(&self, name: &str) -> Option<&Menu> {
+        self.menus.iter().find(|m| m.name == name)
+    }
+
+    /// The menu called `name`, to press a button into.
+    pub fn menu_mut(&mut self, name: &str) -> Option<&mut Menu> {
+        self.menus.iter_mut().find(|m| m.name == name)
     }
 
     /// The scene the display at `node` shows in mode `mode`.
@@ -183,7 +210,118 @@ pub fn parse(text: &str) -> Result<Rig, RigError> {
         displays.push(d);
     }
 
-    Ok(Rig { modes, displays })
+    let mut menus: Vec<Menu> = Vec::new();
+    if let Some(entries) = doc.get("menus") {
+        let entries = entries
+            .as_array()
+            .ok_or(RigError::BadField { field: "menus" })?;
+        for entry in entries {
+            let m = menu(entry)?;
+            if menus.iter().any(|x| x.name == m.name) {
+                return Err(RigError::DuplicateMenu(m.name.clone()));
+            }
+            menus.push(m);
+        }
+    }
+
+    let transition = match doc.get("transition").and_then(Value::as_str) {
+        Some(name) => {
+            Transition::parse(name).ok_or_else(|| RigError::BadTransition(name.to_string()))?
+        }
+        None => Transition::Cut,
+    };
+    // Zero rather than a default, so a rig that names no transition behaves
+    // exactly as it did before there were any.
+    let transition_ms = match doc.get("transition_ms").and_then(Value::as_i64) {
+        Some(ms) => u32::try_from(ms).map_err(|_| RigError::BadField {
+            field: "transition_ms",
+        })?,
+        None => {
+            if transition == Transition::Cut {
+                0
+            } else {
+                250
+            }
+        }
+    };
+
+    Ok(Rig {
+        modes,
+        displays,
+        transition,
+        transition_ms,
+        menus,
+    })
+}
+
+/// Read one `menus` entry.
+fn menu(val: &Value) -> Result<Menu, RigError> {
+    let name = val
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or(RigError::Missing { field: "menu name" })?;
+    // The heading defaults to the lookup name, so a one-menu rig need not say
+    // the same word twice.
+    let title = val.get("title").and_then(Value::as_str).unwrap_or(name);
+    let mut out = Menu::new(name, title);
+
+    let items = val
+        .get("items")
+        .and_then(Value::as_array)
+        .ok_or_else(|| RigError::BadMenu {
+            menu: name.to_string(),
+            field: "items",
+        })?;
+    for entry in items {
+        out.push(item(entry, name)?);
+    }
+    Ok(out)
+}
+
+/// Read one entry of a menu's `items`.
+///
+/// The kind is inferred from which fields are present: `options` makes a
+/// choice, `max` makes a number, and neither makes an action. Naming the kind
+/// as well would be a second place for a file to contradict itself.
+fn item(val: &Value, menu: &str) -> Result<Item, RigError> {
+    let bad = |field: &'static str| RigError::BadMenu {
+        menu: menu.to_string(),
+        field,
+    };
+    let name = val
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad("item name"))?;
+    let label = val.get("label").and_then(Value::as_str).unwrap_or(name);
+
+    if let Some(options) = val.get("options") {
+        let options = options.as_array().ok_or_else(|| bad("options"))?;
+        let mut list = Vec::with_capacity(options.len());
+        for o in options {
+            list.push(o.as_str().ok_or_else(|| bad("options"))?.to_string());
+        }
+        if list.is_empty() {
+            return Err(bad("options"));
+        }
+        let index = val.get("value").and_then(Value::as_i64).unwrap_or(0);
+        let index = u32::try_from(index).map_err(|_| bad("value"))?;
+        return Ok(Item::choice(name, label, index, list));
+    }
+
+    let Some(max) = val.get("max").and_then(Value::as_f64) else {
+        return Ok(Item::action(name, label));
+    };
+    let min = val.get("min").and_then(Value::as_f64).unwrap_or(0.0);
+    let step = val.get("step").and_then(Value::as_f64).unwrap_or(1.0);
+    let value = val.get("value").and_then(Value::as_f64).unwrap_or(min);
+    Ok(Item::number(
+        name,
+        label,
+        value as f32,
+        min as f32,
+        max as f32,
+        step as f32,
+    ))
 }
 
 /// Read one `displays` entry against the mode list.
@@ -419,6 +557,138 @@ mod tests {
                 rig: 1,
                 scene: 2
             })
+        );
+    }
+}
+
+#[cfg(test)]
+mod menu_tests {
+    use super::*;
+    use crate::menu::{Button, Value};
+
+    const RIG: &str = include_str!("../../examples/z31.rig");
+
+    #[test]
+    fn the_example_rig_carries_its_menus() {
+        let rig = parse(RIG).expect("the example rig must parse");
+        assert_eq!(rig.menus.len(), 2);
+        assert_eq!(
+            rig.menu("display").map(|m| m.title.as_str()),
+            Some("DISPLAY")
+        );
+        assert!(rig.menu("nothing").is_none());
+    }
+
+    #[test]
+    fn an_items_kind_comes_from_the_fields_it_has() {
+        let rig = parse(RIG).unwrap();
+        let m = rig.menu("display").unwrap();
+        assert_eq!(m.value("display brightness"), Some(Value::Number(80.0)));
+        assert_eq!(m.value("display units"), Some(Value::Choice(1)));
+        let trip = rig.menu("trip").unwrap();
+        assert_eq!(trip.value("trip reset"), Some(Value::Action(false)));
+    }
+
+    #[test]
+    fn a_choice_with_no_value_starts_on_its_first_option() {
+        let rig = parse(RIG).unwrap();
+        let m = rig.menu("display").unwrap();
+        assert_eq!(m.item("display theme").and_then(Item::shown), Some("night"));
+    }
+
+    #[test]
+    fn a_host_drives_a_menu_and_reads_the_result_back() {
+        // The whole point of the feature, end to end.
+        let mut rig = parse(RIG).unwrap();
+        let m = rig.menu_mut("display").unwrap();
+        m.press(Button::Centre);
+        m.press(Button::Right);
+        assert_eq!(m.value("display brightness"), Some(Value::Number(90.0)));
+    }
+
+    #[test]
+    fn a_rig_with_no_menus_is_still_a_rig() {
+        // Every existing rig file has no "menus" key and must keep working.
+        let rig = parse(
+            r#"{ "modes": ["a"], "displays": [
+                 { "name": "x", "node": "0x01", "scenes": { "a": "s.scene" } }] }"#,
+        )
+        .expect("menus are optional");
+        assert!(rig.menus.is_empty());
+    }
+
+    #[test]
+    fn two_menus_may_not_share_a_name() {
+        let text = r#"{ "modes": ["a"],
+            "displays": [{ "name": "x", "node": "0x01", "scenes": { "a": "s" } }],
+            "menus": [ { "name": "d", "items": [] }, { "name": "d", "items": [] } ] }"#;
+        assert_eq!(parse(text), Err(RigError::DuplicateMenu("d".into())));
+    }
+
+    #[test]
+    fn a_menu_without_items_is_refused() {
+        let text = r#"{ "modes": ["a"],
+            "displays": [{ "name": "x", "node": "0x01", "scenes": { "a": "s" } }],
+            "menus": [ { "name": "d" } ] }"#;
+        assert_eq!(
+            parse(text),
+            Err(RigError::BadMenu {
+                menu: "d".into(),
+                field: "items"
+            })
+        );
+    }
+
+    #[test]
+    fn a_choice_with_an_empty_option_list_is_refused() {
+        // It would be an item no press could ever move, which reads as a bug.
+        let text = r#"{ "modes": ["a"],
+            "displays": [{ "name": "x", "node": "0x01", "scenes": { "a": "s" } }],
+            "menus": [ { "name": "d", "items": [ { "name": "i", "options": [] } ] } ] }"#;
+        assert!(matches!(parse(text), Err(RigError::BadMenu { .. })));
+    }
+}
+
+#[cfg(test)]
+mod transition_tests {
+    use super::*;
+    use crate::render::Edge;
+
+    fn rig_with(extra: &str) -> Result<Rig, RigError> {
+        parse(&alloc::format!(
+            r#"{{ "modes": ["a"], {extra}
+                 "displays": [{{ "name": "x", "node": "0x01",
+                                 "scenes": {{ "a": "s.scene" }} }}] }}"#
+        ))
+    }
+
+    #[test]
+    fn the_example_rig_names_its_transition() {
+        let rig = parse(include_str!("../../examples/z31.rig")).unwrap();
+        assert_eq!(rig.transition, Transition::Slide(Edge::Left));
+        assert_eq!(rig.transition_ms, 250);
+    }
+
+    #[test]
+    fn a_rig_that_names_none_cuts_instantly() {
+        // Every rig written before transitions existed must behave as it did.
+        let rig = rig_with("").unwrap();
+        assert_eq!(rig.transition, Transition::Cut);
+        assert_eq!(rig.transition_ms, 0, "a cut takes no time");
+    }
+
+    #[test]
+    fn a_transition_without_a_duration_gets_a_usable_one() {
+        let rig = rig_with(r#""transition": "wipe-up","#).unwrap();
+        assert_eq!(rig.transition, Transition::Wipe(Edge::Up));
+        assert!(rig.transition_ms > 0, "a wipe over zero ms is a cut");
+    }
+
+    #[test]
+    fn a_transition_that_is_not_one_is_refused() {
+        assert_eq!(
+            rig_with(r#""transition": "dissolve","#),
+            Err(RigError::BadTransition("dissolve".into()))
         );
     }
 }

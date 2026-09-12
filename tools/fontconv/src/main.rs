@@ -8,22 +8,11 @@
 //! fontconv --size 16 --range 32-126 DejaVuSansMono.ttf out.cpfn
 //! ```
 //!
-//! # Why a build tool and not a runtime loader
-//!
-//! Rasterising an outline needs floating point, a scanline fill and somewhere
-//! to cache the result. Doing it once here, on a machine with all three, means
-//! the target does a shift and a mask — and it means `copilot` keeps an empty
-//! dependency table while still being able to draw any font you have the right
-//! to use.
-//!
-//! # Why the cell is sized from the glyphs rather than from the font metrics
-//!
-//! A font's declared ascent and descent describe the space it reserves, not
-//! the space its glyphs occupy, and for a monospace face aimed at a small
-//! panel that difference is often several wasted rows in every cell. Measuring
-//! the actual outlines of the requested range gives the smallest box they all
-//! fit in, which on a 5-row display is the difference between four lines of
-//! text and three.
+//! A build tool rather than a runtime loader, so the target does a shift and a
+//! mask and `copilot` keeps an empty dependency table. The cell is sized from
+//! the glyphs actually requested rather than from the font's declared ascent
+//! and descent, which reserve space the glyphs do not use — several wasted
+//! rows per cell on a small panel.
 
 mod pack;
 

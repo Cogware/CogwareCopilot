@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! The panels, and the keys that reach them first.
 //!
 //! Separated from the commands in [`crate::main`] and the menus in
@@ -423,6 +423,7 @@ impl eframe::App for App {
         self.resolution_dialog(ctx);
         self.new_dialog(ctx);
         self.modes_window(ctx);
+        self.switch_prompt(ctx);
         self.canvas(ctx, now_us, delta_us);
 
         // Animation and sweeping both need a steady repaint; egui is

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: GPL-3.0-only
 //! A ruled grid, the way a panel's glass is.
 //!
 //! Not a drawing aid. The instrument this crate was written for has a fine
