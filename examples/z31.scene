@@ -117,12 +117,18 @@
                         0.58, 0.62, 0.66, 0.70, 0.74, 0.78, 0.81, 0.84, 0.87, 0.89,
                         0.91, 0.93, 0.95, 0.96, 0.97, 0.98, 0.99, 1.00, 1.00, 0.99,
                         0.98, 0.97, 0.95, 0.93, 0.91, 0.89, 0.86, 0.83, 0.80, 0.77],
+            // A block rather than a bar: `lights: all` stands every column
+            // at the boost reading, dimly, and the revs say which one of them
+            // burns at full for its whole height. Two readings on one
+            // display, the way the instrument shows them.
+            //
             // The cells are drawn to the envelope whether they are lit or
             // not, so the curve stands as a row of unlit dashes and the
             // reading fills up into it. Brighter than the vertical banks'
             // track as well: these cells are 34 dashes each, and at the old
             // colour an unlit one was three pixels of near-black.
-            "fill": "#3fb950", "track": "#1d2b22", "track_shape": "envelope" },
+            "fill": "#1f6f34", "cursor": "#a8f5c0", "lights": "all",
+            "track": "#1d2b22", "track_shape": "envelope" },
           // The curve on the glass. Its points come from the same profile the
           // cells are cut to, so the printed line and the cut it describes are
           // one curve rather than two guesses at it.
