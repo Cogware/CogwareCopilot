@@ -89,6 +89,9 @@ const VALIGNMENTS: &[&str] = &["top", "middle", "bottom"];
 /// The words a pager's axis may take.
 const AXES: &[&str] = &["horizontal", "vertical"];
 
+/// How much of its cell an unlit `segbar` cell paints.
+const TRACK_SHAPES: &[&str] = &["lit", "envelope", "box"];
+
 fn valign_word(a: VAlign) -> &'static str {
     match a {
         VAlign::Top => "top",
@@ -260,6 +263,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             fill,
             fill_to,
             track,
+            track_shape,
             warn,
             warn_fill,
             danger,
@@ -275,6 +279,10 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("gap", Value::Count(*gap)),
             ("fill", Value::Color(*fill)),
             ("fill_to", Value::Color(*fill_to)),
+            (
+                "track_shape",
+                Value::Choice(track_shape.name(), TRACK_SHAPES),
+            ),
             ("track", Value::Color(*track)),
             // Not `Frac`: a band is switched off by putting it above the top
             // of the scale, and a slider capped at 1.0 could not say that.

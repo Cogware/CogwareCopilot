@@ -16,7 +16,7 @@ use crate::{Color, Point, Rect};
 mod hit;
 mod kind;
 pub use hit::hit_test;
-pub use kind::{Align, BindTarget, Kind, MAX_READING_RECTS, VAlign};
+pub use kind::{Align, BindTarget, Kind, MAX_READING_RECTS, TrackShape, VAlign};
 
 /// Index of a node within a [`Tree`].
 ///

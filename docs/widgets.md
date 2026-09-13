@@ -23,7 +23,7 @@ agree about where a value sits without the scene file restating it.
 | `image` | A still from the scene's image table, scaled nearest-neighbour. |
 | `anim` | A GIF from the animation table, with play, pause, seek and speed. |
 | `bar` | Horizontal or vertical fill against a track. |
-| `segbar` | The same reading as discrete cells, the way a vacuum-fluorescent panel shows it: colour bands fixed to the scale, colour optionally ramping across the cells, an optional profile cutting each cell to a curve, a second axis setting how tall the lit cells stand, and optional divisions breaking each cell into dashes on a grid shared right along the bank. |
+| `segbar` | The same reading as discrete cells, the way a vacuum-fluorescent panel shows it: colour bands fixed to the scale, colour optionally ramping across the cells, an optional profile cutting each cell to a curve, a say in how much of its cell an unlit one paints, a second axis setting how tall the lit cells stand, and optional divisions breaking each cell into dashes on a grid shared right along the bank. |
 | `arc` | A ring filled between two angles. Every round gauge starts here. |
 | `needle` | A pointer swinging over a sweep, with a hub over the pivot. |
 | `scale` | Tick marks around a dial's rim, with major divisions longer and thicker. |
@@ -272,6 +272,23 @@ widget, bound to a lamp or to a plain gauge, and anything at or past halfway
 shows. On a panel it hides everything inside, which is how a warning banner
 with its own icon and text is authored. Do not put it on a pager's page — the
 pager owns that flag and wins the moment the page turns.
+
+## What an unlit cell paints
+
+A lit cell is cut twice: `profile` gives it the envelope printed on the lens,
+and `height` says how far up that envelope the reading stands. An unlit cell
+has no reading to stand at, so `track_shape` says what it shows instead.
+
+| `track_shape` | An unlit cell paints |
+|---|---|
+| `lit` | Exactly what it would if it were lit: envelope and height both. The default, and what every scene drew before this existed. |
+| `envelope` | The whole envelope `profile` cuts, whatever `height` says -- the shape the bank fills *into*. |
+| `box` | The whole cell, ignoring both. The row of empty boxes that fills up. |
+
+`box` is what a profiled bank wants if its curve starts low: an unlit cell that
+follows a steep envelope is a few pixels tall at the bottom end and does not
+read as a box at all. It is also the only one of the three that looks the same
+on a bank with a profile and one without.
 
 ## Ramping a colour
 

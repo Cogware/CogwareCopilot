@@ -7,6 +7,7 @@
 //! driver counts them without looking away from the road. It is also what the
 //! instrument being replicated actually has.
 
+use crate::widget::TrackShape;
 use crate::{Color, Rect, Surface};
 
 /// How far across a cell reaches, as a fraction, when the caller has given
@@ -54,6 +55,7 @@ pub fn seg_bar<S: Surface + ?Sized>(
     fill: Color,
     fill_to: Color,
     track: Color,
+    track_shape: TrackShape,
     warn: f32,
     warn_fill: Color,
     danger: f32,
@@ -172,7 +174,19 @@ pub fn seg_bar<S: Surface + ?Sized>(
         // lens, and `height` is how far up it the reading stands. On the
         // instrument this replicates the columns light with the revs and
         // their height is boost, so the top row is full boost.
-        let reach = across * shaped(profile, i) * tall;
+        //
+        // An unlit cell has no reading to stand at, so it says how much of
+        // its cell to paint instead: the same as a lit one, the envelope it
+        // would fill into, or the whole box.
+        let reach = if is_lit {
+            across * shaped(profile, i) * tall
+        } else {
+            match track_shape {
+                TrackShape::Lit => across * shaped(profile, i) * tall,
+                TrackShape::Envelope => across * shaped(profile, i),
+                TrackShape::Box => across,
+            }
+        };
         if reach <= 0.0 {
             continue;
         }
@@ -244,6 +258,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -270,6 +285,7 @@ mod segbar_tests {
             Color::rgb(255, 0, 0),
             Color::rgb(0, 0, 255),
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -304,6 +320,7 @@ mod segbar_tests {
                 Color::rgb(255, 0, 0),
                 Color::rgb(0, 0, 255),
                 OFF,
+                TrackShape::Lit,
                 2.0,
                 WARN,
                 2.0,
@@ -335,6 +352,7 @@ mod segbar_tests {
             Color::rgb(255, 0, 0),
             Color::rgb(0, 0, 255),
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             0.9,
@@ -346,6 +364,80 @@ mod segbar_tests {
             false,
         );
         assert_eq!(px(&s, 62, 32), bgr(DANGER), "the last cell lost its band");
+    }
+
+    /// A profiled bank, half lit, whose unlit cells paint `shape`.
+    fn profiled(s: &mut MemorySurface, shape: TrackShape) {
+        // A curve rising from a tenth of the box: at the low end an unlit cell
+        // that follows it is a few pixels tall, which is the complaint this
+        // field answers.
+        seg_bar(
+            s,
+            FULL,
+            FULL,
+            0.5,
+            0.5,
+            4,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            shape,
+            2.0,
+            WARN,
+            2.0,
+            DANGER,
+            false,
+            &[0.1, 0.4, 0.7, 1.0],
+            0,
+            0,
+            false,
+        );
+    }
+
+    /// How many rows of column `x` are the track colour.
+    fn track_rows(s: &MemorySurface, x: usize) -> usize {
+        (0..64).filter(|&y| px(s, x, y) == bgr(OFF)).count()
+    }
+
+    #[test]
+    fn an_unlit_cell_follows_the_lit_shape_by_default() {
+        // The compatibility promise: every scene written before the field
+        // existed keeps the pixels it had. The third cell's envelope is 0.7
+        // of the box and it stands half way up that, so 22 of 64 rows.
+        let mut s = surf();
+        profiled(&mut s, TrackShape::Lit);
+        assert_eq!(track_rows(&s, 36), 22);
+    }
+
+    #[test]
+    fn an_envelope_track_shows_the_shape_the_bank_fills_into() {
+        // The same cell, no longer cut down by `height`: the whole 0.7 of the
+        // box the profile gives it, so the curve it is climbing is visible.
+        let mut s = surf();
+        profiled(&mut s, TrackShape::Envelope);
+        assert_eq!(track_rows(&s, 36), 45);
+    }
+
+    #[test]
+    fn a_box_track_fills_the_whole_cell_whatever_the_curve_says() {
+        // The row of empty boxes: neither the profile nor the height cuts it,
+        // so a steep curve's low cells still read as boxes.
+        let mut s = surf();
+        profiled(&mut s, TrackShape::Box);
+        assert_eq!(track_rows(&s, 36), 64);
+    }
+
+    #[test]
+    fn the_track_shape_leaves_the_lit_cells_alone() {
+        // It says what an *unlit* cell paints. A lit one is still the
+        // envelope cut by the height, whichever shape the track takes.
+        let mut boxed = surf();
+        let mut plain = surf();
+        profiled(&mut boxed, TrackShape::Box);
+        profiled(&mut plain, TrackShape::Lit);
+        let lit_rows = |s: &MemorySurface| (0..64).filter(|&y| px(s, 1, y) == bgr(LIT)).count();
+        assert_eq!(lit_rows(&boxed), lit_rows(&plain), "a lit cell changed");
     }
 
     /// The distinct colours found along the middle row, left to right.
@@ -441,6 +533,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -469,6 +562,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -500,6 +594,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             0.7,
             WARN,
             0.9,
@@ -536,6 +631,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             0.7,
             WARN,
             0.9,
@@ -557,6 +653,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             0.7,
             WARN,
             0.9,
@@ -591,6 +688,7 @@ mod segbar_tests {
             LIT,
             LIT,
             Color::TRANSPARENT,
+            TrackShape::Lit,
             1.0,
             WARN,
             1.0,
@@ -620,6 +718,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             1.0,
             WARN,
             1.0,
@@ -655,6 +754,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             1.0,
             WARN,
             1.0,
@@ -689,6 +789,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             0.7,
             WARN,
             0.9,
@@ -716,6 +817,7 @@ mod segbar_tests {
                 LIT,
                 LIT,
                 OFF,
+                TrackShape::Lit,
                 0.7,
                 WARN,
                 0.9,
@@ -760,6 +862,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             1.0,
             WARN,
             1.0,
@@ -801,6 +904,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             1.0,
             WARN,
             1.0,
@@ -827,6 +931,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             1.0,
             WARN,
             1.0,
@@ -848,6 +953,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             1.0,
             WARN,
             1.0,
@@ -879,6 +985,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -918,6 +1025,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -948,6 +1056,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -976,6 +1085,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1003,6 +1113,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1031,6 +1142,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1065,6 +1177,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1096,6 +1209,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1173,6 +1287,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1209,6 +1324,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1240,6 +1356,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             0.7,
             WARN,
             0.9,
@@ -1267,6 +1384,7 @@ mod segbar_tests {
                 LIT,
                 LIT,
                 OFF,
+                TrackShape::Lit,
                 0.7,
                 WARN,
                 0.9,
@@ -1295,6 +1413,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1330,6 +1449,7 @@ mod segbar_tests {
             LIT,
             LIT,
             Color::TRANSPARENT,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1392,6 +1512,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,
@@ -1413,6 +1534,7 @@ mod segbar_tests {
             LIT,
             LIT,
             OFF,
+            TrackShape::Lit,
             2.0,
             WARN,
             2.0,

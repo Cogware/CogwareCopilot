@@ -488,6 +488,7 @@ mod tests {
             fill: copilot::Color::WHITE,
             fill_to: copilot::Color::WHITE,
             track: copilot::Color::BLACK,
+            track_shape: copilot::widget::TrackShape::Lit,
             warn: 2.0,
             warn_fill: copilot::Color::WHITE,
             danger: 2.0,

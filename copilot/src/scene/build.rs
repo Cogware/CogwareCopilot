@@ -13,7 +13,7 @@ use crate::anim::{Animation, Animator, Easing, Property, Repeat};
 use crate::asset::Scene;
 use crate::color::parse_hex;
 use crate::input::Axis;
-use crate::widget::{Align, Kind, Node, NodeId, ROOT, Tree, VAlign};
+use crate::widget::{Align, Kind, Node, NodeId, ROOT, TrackShape, Tree, VAlign};
 use crate::{Color, Rect};
 
 use super::bind::{self, Binding, Shape};
@@ -780,6 +780,16 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                     None => fill,
                 },
                 track: colour(val, "track", "#12161cff")?,
+                track_shape: match val.get("track_shape") {
+                    None | Some(Value::Null) => TrackShape::Lit,
+                    Some(v) => {
+                        v.as_str()
+                            .and_then(TrackShape::parse)
+                            .ok_or(BuildError::BadField {
+                                field: "track_shape",
+                            })?
+                    }
+                },
                 // Above the top of the scale by default, so a gauge that never
                 // asked for a redline does not get one on its last cell.
                 warn: unbounded(val, "warn", 2.0)?,
@@ -899,6 +909,38 @@ mod tests {
             Kind::Led { off, .. } => off,
             ref other => panic!("expected a lamp, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_bank_that_says_nothing_keeps_its_unlit_cells_the_shape_they_were() {
+        let src = r#"{"type":"segbar","rect":[0,0,10,10]}"#;
+        match top(&go(&doc(src)).expect("a bank must build")).kind {
+            Kind::SegBar { track_shape, .. } => assert_eq!(track_shape, TrackShape::Lit),
+            ref other => panic!("expected a bank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bank_can_ask_for_boxes_instead() {
+        let src = r#"{"type":"segbar","rect":[0,0,10,10],"track_shape":"box"}"#;
+        match top(&go(&doc(src)).expect("a bank must build")).kind {
+            Kind::SegBar { track_shape, .. } => assert_eq!(track_shape, TrackShape::Box),
+            ref other => panic!("expected a bank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_track_shape_nobody_has_heard_of_stops_the_scene_building() {
+        // Rejected rather than defaulted: a misspelt shape that silently drew
+        // the old one is a scene whose author is looking for a bug in the
+        // renderer.
+        let src = r#"{"type":"segbar","rect":[0,0,10,10],"track_shape":"boxes"}"#;
+        assert!(matches!(
+            go(&doc(src)),
+            Err(BuildError::BadField {
+                field: "track_shape"
+            })
+        ));
     }
 
     #[test]

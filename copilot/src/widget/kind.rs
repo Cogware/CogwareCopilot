@@ -34,6 +34,55 @@ pub enum VAlign {
     /// Against the bottom edge.
     Bottom,
 }
+/// How much of its cell an unlit [`Kind::SegBar`] cell paints.
+///
+/// A lit cell is cut twice: `profile` gives it the envelope printed on the
+/// lens, and `height` says how far up that envelope the second reading
+/// stands. An unlit cell has no reading to stand at, so what it should show is
+/// a question the two axes cannot answer between them -- hence a field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TrackShape {
+    /// Exactly what the cell would be if it were lit: envelope and height
+    /// both. The default, and what every scene drew before this existed.
+    #[default]
+    Lit,
+    /// The whole envelope `profile` cuts, whatever `height` says.
+    ///
+    /// The shape the bank fills *into*, so a bank whose lit cells stand part
+    /// way up their envelope still shows the curve they are climbing.
+    Envelope,
+    /// The whole cell, ignoring both `profile` and `height`.
+    ///
+    /// The row of empty boxes that fill up, which is what a plain bargraph
+    /// looks like and what a profiled one cannot otherwise show: its unlit
+    /// cells follow the curve and, near the bottom of a steep one, are too
+    /// small to read as boxes at all.
+    Box,
+}
+
+impl TrackShape {
+    /// Parse the name a scene file uses.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "lit" => Some(Self::Lit),
+            "envelope" => Some(Self::Envelope),
+            "box" => Some(Self::Box),
+            _ => None,
+        }
+    }
+
+    /// The name a scene file uses.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Lit => "lit",
+            Self::Envelope => "envelope",
+            Self::Box => "box",
+        }
+    }
+}
+
 /// The most rectangles [`Kind::reading_damage`] can produce.
 ///
 /// A needle is the widest case: a hub plus one band per radial slice.
@@ -295,6 +344,8 @@ pub enum Kind {
         fill_to: Color,
         /// A cell that is not lit. Transparent leaves it unpainted.
         track: Color,
+        /// How much of its cell an unlit one paints.
+        track_shape: TrackShape,
         /// Cells at or past this fraction light in `warn_fill`. Above 1.0
         /// there is no warning band at all.
         warn: f32,
