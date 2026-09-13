@@ -11,7 +11,7 @@ use copilot::scene::Step;
 use copilot::widget::NodeId;
 
 use crate::canvas::Gesture;
-use crate::{App, alloc_array, rescale, starter_widget};
+use crate::{App, alloc_array, rect_text, rescale, starter_widget};
 
 impl App {
     /// Rescale the whole document to `w` by `h`.
@@ -191,6 +191,25 @@ impl App {
             }
         }
 
+        // A rect is written relative to its parent's origin, so a widget
+        // changing parent has to have one rewritten or it lands the distance
+        // between the two parents away from where the author left it -- which
+        // for a panel anywhere but the top left means off the scene entirely.
+        // Moving inside one parent is a reorder and must not touch the text at
+        // all, so that Raise and Lower stay byte-for-byte edits.
+        let keep_place = (tree.get(id).and_then(|n| n.parent) != Some(into))
+            .then(|| {
+                let abs = tree.absolute_rect(id)?;
+                let anchor = tree.absolute_rect(into)?.origin;
+                Some(rect_text(copilot::Rect::new(
+                    abs.origin.x - anchor.x,
+                    abs.origin.y - anchor.y,
+                    abs.size.w,
+                    abs.size.h,
+                )))
+            })
+            .flatten();
+
         let elem = doc_path(&src);
         let Some(span) = copilot::scene::locate(&self.text, &elem) else {
             self.status = "could not find that widget in the text".into();
@@ -198,6 +217,19 @@ impl App {
         };
         let Some(moved) = self.text.get(span.start..span.end).map(str::to_owned) else {
             return false;
+        };
+        // Rewriting the rect in the widget's own source, before it is spliced
+        // in, rather than as a second edit afterwards: one checkpoint, and the
+        // document is never briefly holding a widget in the wrong place.
+        let moved = match keep_place {
+            Some(rect) => match copilot::scene::set(&moved, &[], "rect", &rect) {
+                Some(text) => text,
+                None => {
+                    self.status = "could not keep that widget where it was".into();
+                    return false;
+                }
+            },
+            None => moved,
         };
         self.checkpoint();
         let Some(without) = copilot::scene::remove(&self.text, &elem) else {

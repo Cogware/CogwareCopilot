@@ -21,6 +21,12 @@ fn names(a: &crate::App) -> Vec<String> {
         .collect()
 }
 
+/// Where `name` sits on the scene, which is what a move must not change.
+fn abs(a: &crate::App, name: &str) -> copilot::Rect {
+    let t = a.preview.tree.as_ref().expect("a tree");
+    t.absolute_rect(t.find(name).expect(name)).expect(name)
+}
+
 fn id(a: &crate::App, name: &str) -> copilot::widget::NodeId {
     a.preview
         .tree
@@ -108,4 +114,45 @@ fn a_move_is_one_undo_step() {
     a.move_node(id(&a, "b"), c, 0);
     a.undo();
     assert_eq!(names(&a), before);
+}
+
+#[test]
+fn a_widget_changing_parent_stays_where_it_was_on_screen() {
+    // The bug this guards: a rect is relative to its parent, so moving `b`
+    // into `c` -- which starts 50 down the scene -- used to carry the numbers
+    // over untouched and drop the widget 50 pixels below where the author
+    // left it. A deep enough panel put it off the scene entirely.
+    let mut a = app(DOC, "b");
+    let before = abs(&a, "b");
+    let c = id(&a, "c");
+    assert!(a.move_node(id(&a, "b"), c, 0), "{}", a.status);
+    assert_eq!(abs(&a, "b"), before, "the widget moved on screen");
+    assert!(a.text.contains("[50, -50, 10, 10]"), "{}", a.text);
+}
+
+#[test]
+fn a_widget_moving_outwards_stays_where_it_was_on_screen() {
+    // The other direction, and the one that hurts: `c1` sits at [1, 1] inside
+    // a panel 50 down, so promoting it to the root has to become [1, 51] or
+    // the widget jumps up the scene.
+    let mut a = app(DOC, "c1");
+    let before = abs(&a, "c1");
+    a.reparent(false);
+    assert_eq!(abs(&a, "c1"), before, "the widget moved on screen");
+    assert!(a.text.contains("[1, 51, 5, 5]"), "{}", a.text);
+}
+
+#[test]
+fn reordering_within_one_parent_leaves_the_rect_alone() {
+    // A reorder changes what a widget is drawn on top of, not where it is.
+    // Rewriting the rect here would churn the text on every Raise and Lower.
+    let mut a = app(DOC, "a1");
+    let parent = id(&a, "a");
+    assert!(a.move_node(id(&a, "a1"), parent, 2), "{}", a.status);
+    assert_eq!(
+        a.text.matches("[1, 1, 5, 5]").count(),
+        3,
+        "a reorder rewrote a rect: {}",
+        a.text
+    );
 }
