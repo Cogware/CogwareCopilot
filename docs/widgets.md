@@ -378,7 +378,9 @@ its own recent past:
 
 `history: 0` is the listed series every scene drew before this existed, and a
 chart with one takes no binding at all -- a picture somebody typed is not a
-window on a gauge, and a binding must not quietly start rewriting it.
+window on a gauge, and a binding must not quietly start rewriting it. Past zero
+it binds like any other reading, from the moment it is built and before a
+single sample has reached it.
 
 The same reading twice is two samples, not nothing happening: a gauge sitting
 still is exactly when a trace has to keep drawing a flat line. The window is

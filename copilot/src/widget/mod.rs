@@ -189,7 +189,7 @@ impl Tree {
         // same value arriving twice is two samples rather than nothing
         // happening. A gauge sitting still is exactly when a trace has to keep
         // drawing a flat line.
-        let tracking = matches!(&node.kind, Kind::Chart { history, .. } if *history > 0);
+        let tracking = node.kind.tracks();
         let old = match node.kind.reading() {
             Some(v) => v,
             None if tracking => value,
@@ -595,6 +595,29 @@ mod tests {
             Kind::Chart { values, .. } => values.clone(),
             ref other => panic!("expected a chart, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_tracking_chart_can_be_bound_before_it_holds_anything() {
+        // What a widget can be bound to is a property of the widget, not of
+        // what has happened to it so far. An empty window has no newest
+        // sample, and a chart that could not be bound until something had
+        // already been written to it could never be bound at all.
+        let empty = tracking(64, &[]);
+        assert_eq!(empty.reading(), None, "an empty window holds nothing");
+        assert!(empty.tracks());
+        assert!(empty.accepts(BindTarget::Reading));
+        assert_eq!(empty.bind_target(), Some(BindTarget::Reading));
+    }
+
+    #[test]
+    fn a_listed_chart_is_still_not_a_window_on_a_gauge() {
+        // A series somebody typed is a picture, and a binding must not
+        // quietly start rewriting it.
+        let listed = tracking(0, &[0.1, 0.2]);
+        assert!(!listed.tracks());
+        assert!(!listed.accepts(BindTarget::Reading));
+        assert_eq!(listed.bind_target(), None);
     }
 
     #[test]

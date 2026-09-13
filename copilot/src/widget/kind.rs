@@ -1008,7 +1008,11 @@ impl Kind {
     #[must_use]
     pub fn accepts(&self, target: BindTarget) -> bool {
         match target {
-            BindTarget::Reading => self.reading().is_some(),
+            // What the kind *can* take, not what it happens to hold. A chart
+            // keeping a window has no newest sample until the first reading
+            // arrives, and a chart that cannot be bound until something has
+            // already been written to it is a chart that can never be bound.
+            BindTarget::Reading => self.reading().is_some() || self.tracks(),
             BindTarget::Text => self.text().is_some(),
             BindTarget::Height => self.height().is_some(),
             // Everything can be hidden, including a pager and a panel with
@@ -1016,6 +1020,16 @@ impl Kind {
             // together on one lamp.
             BindTarget::Visible => true,
         }
+    }
+
+    /// Whether this kind keeps a window of readings rather than one.
+    ///
+    /// A tracking chart answers yes from the moment it is built, before any
+    /// reading has reached it: what a widget can be bound to is a property of
+    /// the widget, not of what has happened to it so far.
+    #[must_use]
+    pub fn tracks(&self) -> bool {
+        matches!(self, Kind::Chart { history, .. } if *history > 0)
     }
 
     /// The text this kind shows, if it shows any: a label or a readout.
@@ -1042,7 +1056,7 @@ impl Kind {
     /// kind that shows neither a reading nor text.
     #[must_use]
     pub fn bind_target(&self) -> Option<BindTarget> {
-        if self.reading().is_some() {
+        if self.reading().is_some() || self.tracks() {
             Some(BindTarget::Reading)
         } else if self.text().is_some() {
             Some(BindTarget::Text)

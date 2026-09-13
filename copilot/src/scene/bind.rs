@@ -533,6 +533,33 @@ mod tests {
     // --- resolving ---
 
     #[test]
+    fn a_tracking_chart_takes_a_gauge_like_any_other_reading() {
+        // The end of the round trip: a chart says it keeps a window, the
+        // binding resolves to its reading, and the scene subscribes to the
+        // frame the gauge arrives on.
+        let src = r##"{ "width": 200, "height": 100, "node": "0x01",
+          "root": { "type": "panel", "rect": [0,0,200,100], "children": [
+            { "type": "chart", "rect": [0,0,200,100], "history": 64,
+              "stroke": "#3fb950",
+              "bind": { "gauge": "MAP", "min": 0.0, "max": 20.0 } } ] } }"##;
+        let doc = crate::scene::parse(src).expect("the scene must parse");
+        let scene = crate::scene::build_scene(&doc).expect("a bound chart must build");
+        assert_eq!(scene.bindings.len(), 1);
+        assert_eq!(scene.bindings[0].target, BindTarget::Reading);
+        assert!(!scene.wanted().is_empty(), "nothing was subscribed to");
+    }
+
+    #[test]
+    fn a_chart_with_no_window_is_not_a_gauge_to_bind_to() {
+        let src = r##"{ "width": 200, "height": 100, "node": "0x01",
+          "root": { "type": "panel", "rect": [0,0,200,100], "children": [
+            { "type": "chart", "rect": [0,0,200,100], "values": [0.1, 0.2],
+              "bind": { "gauge": "MAP", "min": 0.0, "max": 20.0 } } ] } }"##;
+        let doc = crate::scene::parse(src).expect("the scene must parse");
+        assert!(crate::scene::build_scene(&doc).is_err());
+    }
+
+    #[test]
     fn a_reading_binds_in_the_gauges_own_unit() {
         let s = scene(
             r#"{"type":"bar","rect":[0,0,10,10],
