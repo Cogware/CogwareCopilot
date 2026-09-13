@@ -34,6 +34,56 @@ pub enum VAlign {
     /// Against the bottom edge.
     Bottom,
 }
+/// Which cells of a [`Kind::SegBar`] the reading lights.
+///
+/// A bargraph fills to its reading, which is [`Bar`](Self::Bar) and what a
+/// fuel gauge wants. A bank showing two readings at once does not: think of it
+/// as a block of cells with revs across and boost up, where boost lights every
+/// column and the revs say which one of them is the one you are at. The whole
+/// bank stands at the height of one reading and a single column burns brighter
+/// at the other.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Lights {
+    /// The cells up to the reading, and none past it.
+    ///
+    /// The default, and what every scene drew before this existed.
+    #[default]
+    Bar,
+    /// Every cell, with the reading only saying which one is marked.
+    ///
+    /// The second axis then reads across the whole bank rather than stopping
+    /// at the reading, which is what makes the two readings independent: one
+    /// is the height of everything, the other is a position along it.
+    All,
+    /// Only the cell at the reading.
+    ///
+    /// The bare moving line, with nothing lit behind it.
+    One,
+}
+
+impl Lights {
+    /// Parse the name a scene file uses.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "bar" => Some(Self::Bar),
+            "all" => Some(Self::All),
+            "one" => Some(Self::One),
+            _ => None,
+        }
+    }
+
+    /// The name a scene file uses.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Bar => "bar",
+            Self::All => "all",
+            Self::One => "one",
+        }
+    }
+}
+
 /// How much of its cell a [`Kind::SegBar`] cell paints unlit.
 ///
 /// A lit cell is cut twice: `profile` gives it the envelope printed on the
@@ -382,6 +432,8 @@ pub enum Kind {
         /// `warn` and `danger` -- a redline that a marker could cover would be
         /// a redline that disappears at exactly the revs it is there for.
         cursor: Option<Color>,
+        /// Which cells the reading lights.
+        lights: Lights,
         /// Whether cells stack upwards rather than running rightwards.
         vertical: bool,
         /// How far across each cell reaches, 0.0 to 1.0, cut from the base

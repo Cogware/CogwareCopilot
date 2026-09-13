@@ -7,7 +7,7 @@
 //! driver counts them without looking away from the road. It is also what the
 //! instrument being replicated actually has.
 
-use crate::widget::TrackShape;
+use crate::widget::{Lights, TrackShape};
 use crate::{Color, Rect, Surface};
 
 /// How far across a cell reaches, as a fraction, when the caller has given
@@ -61,6 +61,7 @@ pub fn seg_bar<S: Surface + ?Sized>(
     danger: f32,
     danger_fill: Color,
     cursor: Option<Color>,
+    lights: Lights,
     vertical: bool,
     profile: &[f32],
     divisions: u32,
@@ -143,7 +144,14 @@ pub fn seg_bar<S: Surface + ?Sized>(
     let (left, bottom) = (at.left() as f32, at.bottom() as f32);
 
     for i in 0..n {
-        let is_lit = i < lit;
+        // What the reading does to this cell. A bargraph fills up to it; a
+        // bank showing a second reading across the whole block lights every
+        // cell and lets the reading only say which one is marked.
+        let is_lit = match lights {
+            Lights::Bar => i < lit,
+            Lights::All => true,
+            Lights::One => lit > 0 && i == lit - 1,
+        };
         // The band colour comes from where the cell sits on the scale, not
         // from the reading, so the thresholds stay put as the gauge fills.
         let at_frac = (i + 1) as f32 / n as f32;
@@ -343,6 +351,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -371,6 +380,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -407,6 +417,7 @@ mod segbar_tests {
                 2.0,
                 DANGER,
                 None,
+                Lights::Bar,
                 false,
                 &[],
                 0,
@@ -440,6 +451,7 @@ mod segbar_tests {
             0.9,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -471,6 +483,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[0.1, 0.4, 0.7, 1.0],
             0,
@@ -504,6 +517,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             4,
@@ -538,6 +552,7 @@ mod segbar_tests {
             danger,
             DANGER,
             cursor,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -549,6 +564,100 @@ mod segbar_tests {
     /// The colour of cell `i` of eight across a 64-pixel box.
     fn cell(s: &MemorySurface, i: usize) -> [u8; 3] {
         px(s, i * 8 + 3, 32)
+    }
+
+    /// A bank of eight, reading at the middle, lighting `lights`.
+    fn block(s: &mut MemorySurface, lights: Lights) {
+        seg_bar(
+            s,
+            FULL,
+            FULL,
+            0.5,
+            1.0,
+            8,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            TrackShape::Lit,
+            2.0,
+            WARN,
+            2.0,
+            DANGER,
+            Some(MARK),
+            lights,
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+    }
+
+    #[test]
+    fn lighting_all_of_them_leaves_no_cell_dark_behind_the_marker() {
+        // The block the instrument really is: one reading is the height of
+        // every column and the other says which column you are at, so the
+        // cells past the marker are lit exactly like the ones before it.
+        let mut s = surf();
+        block(&mut s, Lights::All);
+        assert_eq!(cell(&s, 3), bgr(MARK), "the marker is missing");
+        assert_eq!(cell(&s, 1), bgr(LIT), "a cell before the marker went dark");
+        assert_eq!(cell(&s, 6), bgr(LIT), "a cell past the marker stayed dark");
+    }
+
+    #[test]
+    fn lighting_one_of_them_leaves_only_the_marker() {
+        // The bare moving line, with nothing lit behind it.
+        let mut s = surf();
+        block(&mut s, Lights::One);
+        assert_eq!(cell(&s, 3), bgr(MARK));
+        assert_eq!(cell(&s, 1), bgr(OFF), "a cell before the marker was lit");
+        assert_eq!(cell(&s, 6), bgr(OFF), "a cell past the marker was lit");
+    }
+
+    #[test]
+    fn a_bar_still_fills_up_to_its_reading() {
+        // The default, unchanged: this is the fuel gauge every scene has.
+        let mut s = surf();
+        block(&mut s, Lights::Bar);
+        assert_eq!(cell(&s, 1), bgr(LIT));
+        assert_eq!(cell(&s, 6), bgr(OFF));
+    }
+
+    #[test]
+    fn a_reading_of_nothing_marks_nothing_however_the_bank_lights() {
+        // `lit - 1` is -1 here, and no cell may match it.
+        for lights in [Lights::Bar, Lights::All, Lights::One] {
+            let mut s = surf();
+            seg_bar(
+                &mut s,
+                FULL,
+                FULL,
+                0.0,
+                1.0,
+                8,
+                2,
+                LIT,
+                LIT,
+                OFF,
+                TrackShape::Lit,
+                2.0,
+                WARN,
+                2.0,
+                DANGER,
+                Some(MARK),
+                lights,
+                false,
+                &[],
+                0,
+                0,
+                false,
+            );
+            for i in 0..8 {
+                assert_ne!(cell(&s, i), bgr(MARK), "{lights:?} marked cell {i}");
+            }
+        }
     }
 
     #[test]
@@ -604,6 +713,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -635,6 +745,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             Some(MARK),
+            Lights::Bar,
             false,
             &[],
             0,
@@ -747,6 +858,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[0.1, 0.4, 0.7, 1.0],
             0,
@@ -896,6 +1008,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             true,
             &[],
             0,
@@ -926,6 +1039,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             true,
             &[],
             0,
@@ -959,6 +1073,7 @@ mod segbar_tests {
             0.9,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -997,6 +1112,7 @@ mod segbar_tests {
             0.9,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1020,6 +1136,7 @@ mod segbar_tests {
             0.9,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1056,6 +1173,7 @@ mod segbar_tests {
             1.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1087,6 +1205,7 @@ mod segbar_tests {
             1.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1124,6 +1243,7 @@ mod segbar_tests {
             1.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1160,6 +1280,7 @@ mod segbar_tests {
             0.9,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1189,6 +1310,7 @@ mod segbar_tests {
                 0.9,
                 DANGER,
                 None,
+                Lights::Bar,
                 false,
                 &[],
                 0,
@@ -1235,6 +1357,7 @@ mod segbar_tests {
             1.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1278,6 +1401,7 @@ mod segbar_tests {
             1.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1306,6 +1430,7 @@ mod segbar_tests {
             1.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1329,6 +1454,7 @@ mod segbar_tests {
             1.0,
             DANGER,
             None,
+            Lights::Bar,
             true,
             &[],
             0,
@@ -1362,6 +1488,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[0.25, 0.5, 0.75, 1.0],
             0,
@@ -1403,6 +1530,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[0.5, 0.5],
             0,
@@ -1435,6 +1563,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1465,6 +1594,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[1.0, 1.0],
             0,
@@ -1494,6 +1624,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[0.0, 1.0],
             0,
@@ -1524,6 +1655,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[-4.0, 9.0, f32::NAN],
             0,
@@ -1560,6 +1692,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             true,
             &[0.5, 1.0],
             0,
@@ -1593,6 +1726,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             divisions,
@@ -1672,6 +1806,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[0.25, 1.0],
             8,
@@ -1710,6 +1845,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             true,
             &[],
             8,
@@ -1743,6 +1879,7 @@ mod segbar_tests {
             0.9,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             9,
@@ -1772,6 +1909,7 @@ mod segbar_tests {
                 0.9,
                 DANGER,
                 None,
+                Lights::Bar,
                 false,
                 &[],
                 9,
@@ -1802,6 +1940,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             u32::MAX,
@@ -1839,6 +1978,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             profile,
             0,
@@ -1903,6 +2043,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,
@@ -1926,6 +2067,7 @@ mod segbar_tests {
             2.0,
             DANGER,
             None,
+            Lights::Bar,
             false,
             &[],
             0,

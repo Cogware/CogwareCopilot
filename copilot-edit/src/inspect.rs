@@ -92,6 +92,9 @@ const AXES: &[&str] = &["horizontal", "vertical"];
 /// How much of its cell an unlit `segbar` cell paints.
 const TRACK_SHAPES: &[&str] = &["lit", "envelope", "box"];
 
+/// Which cells of a `segbar` the reading lights.
+const LIGHTS: &[&str] = &["bar", "all", "one"];
+
 fn valign_word(a: VAlign) -> &'static str {
     match a {
         VAlign::Top => "top",
@@ -269,6 +272,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             danger,
             danger_fill,
             cursor,
+            lights,
             vertical,
             height,
             divisions,
@@ -295,6 +299,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             // row is where an author goes to add one, so it has to be there
             // before there is anything to show.
             ("cursor", Value::Color(cursor.unwrap_or(*fill))),
+            ("lights", Value::Choice(lights.name(), LIGHTS)),
             ("vertical", Value::Flag(*vertical)),
             // The second axis: how far up its envelope each lit cell stands.
             ("height", Value::Frac(*height)),

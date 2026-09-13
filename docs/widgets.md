@@ -23,7 +23,7 @@ agree about where a value sits without the scene file restating it.
 | `image` | A still from the scene's image table, scaled nearest-neighbour. |
 | `anim` | A GIF from the animation table, with play, pause, seek and speed. |
 | `bar` | Horizontal or vertical fill against a track. |
-| `segbar` | The same reading as discrete cells, the way a vacuum-fluorescent panel shows it: colour bands fixed to the scale, colour optionally ramping across the cells, a brighter cell marking the reading, an optional profile cutting each cell to a curve, a say in how much of its cell an unlit one paints, a second axis setting how tall the lit cells stand, and optional divisions breaking each cell into dashes on a grid shared right along the bank. |
+| `segbar` | The same reading as discrete cells, the way a vacuum-fluorescent panel shows it: colour bands fixed to the scale, colour optionally ramping across the cells, a brighter cell marking the reading, a say in which cells the reading lights at all, an optional profile cutting each cell to a curve, a say in how much of its cell an unlit one paints, a second axis setting how tall the lit cells stand, and optional divisions breaking each cell into dashes on a grid shared right along the bank. |
 | `arc` | A ring filled between two angles. Every round gauge starts here. |
 | `needle` | A pointer swinging over a sweep, with a hub over the pivot. |
 | `scale` | Tick marks around a dial's rim, with major divisions longer and thicker. |
@@ -308,21 +308,33 @@ existed.
 
 ```json
 { "type": "segbar", "rect": [60, 100, 1240, 320], "segments": 40,
-  "fill": "#1f6f34", "cursor": "#7ef29a", "track": "#1d2b22",
-  "track_shape": "envelope",
+  "fill": "#1f6f34", "cursor": "#a8f5c0", "lights": "all",
+  "track": "#1d2b22", "track_shape": "envelope",
   "bind": { "gauge": "RPM" } }
 ```
-
-That is how the instrument this replicates shows two readings on one display.
-`value` lights the cells and `height` stands them up, so with the body dim and
-the cursor bright the columns show one reading at half power and a single
-full-brightness line runs across them at the other. A glance reads the line; a
-longer look reads the shape behind it.
 
 One cell, always -- a marker two cells wide cannot say which of them it means.
 It takes the cell from `fill` and from the ramp, but not from `warn` and
 `danger`: a redline a marker could cover would be a redline that disappears at
 exactly the revs it is there for.
+
+### Which cells the reading lights
+
+A bargraph fills to its reading, and that is `lights: "bar"`, the default. A
+bank showing two readings at once does not. Think of it as a block of cells
+with revs across and boost up: boost lights every column, and the revs only say
+which one of them you are at.
+
+| `lights` | The reading lights |
+|---|---|
+| `bar` | The cells up to it, none past it. The default, and the fuel gauge every scene already has. |
+| `all` | Every cell, with the reading only saying which one is marked. |
+| `one` | Only the cell at the reading: the bare moving line, nothing lit behind it. |
+
+With `all`, `height` is the height of the whole bank and `value` is a position
+along it, which is what makes the two readings independent. Set the body dim
+and the cursor bright and the block reads the way the instrument does: a glance
+finds the line, a longer look reads the shape behind it.
 
 ## Ramping a colour
 

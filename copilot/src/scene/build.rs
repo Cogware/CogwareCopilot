@@ -13,7 +13,7 @@ use crate::anim::{Animation, Animator, Easing, Property, Repeat};
 use crate::asset::Scene;
 use crate::color::parse_hex;
 use crate::input::Axis;
-use crate::widget::{Align, Kind, Node, NodeId, ROOT, TrackShape, Tree, VAlign};
+use crate::widget::{Align, Kind, Lights, Node, NodeId, ROOT, TrackShape, Tree, VAlign};
 use crate::{Color, Rect};
 
 use super::bind::{self, Binding, Shape};
@@ -803,6 +803,13 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                     Some(_) => Some(colour(val, "cursor", "#3fb950ff")?),
                     None => None,
                 },
+                lights: match val.get("lights") {
+                    None | Some(Value::Null) => Lights::Bar,
+                    Some(v) => v
+                        .as_str()
+                        .and_then(Lights::parse)
+                        .ok_or(BuildError::BadField { field: "lights" })?,
+                },
                 vertical: flag(val, "vertical", false)?,
                 profile: read_fractions(val, "profile")?,
                 // One by default, so a bank with no second reading stands at its
@@ -916,6 +923,33 @@ mod tests {
             Kind::Led { off, .. } => off,
             ref other => panic!("expected a lamp, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_bank_fills_to_its_reading_unless_it_says_otherwise() {
+        let src = r#"{"type":"segbar","rect":[0,0,10,10]}"#;
+        match top(&go(&doc(src)).expect("a bank must build")).kind {
+            Kind::SegBar { lights, .. } => assert_eq!(lights, Lights::Bar),
+            ref other => panic!("expected a bank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bank_can_light_every_cell_and_let_the_reading_only_mark_one() {
+        let src = r#"{"type":"segbar","rect":[0,0,10,10],"lights":"all"}"#;
+        match top(&go(&doc(src)).expect("a bank must build")).kind {
+            Kind::SegBar { lights, .. } => assert_eq!(lights, Lights::All),
+            ref other => panic!("expected a bank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_lights_nobody_has_heard_of_stops_the_scene_building() {
+        let src = r#"{"type":"segbar","rect":[0,0,10,10],"lights":"every"}"#;
+        assert!(matches!(
+            go(&doc(src)),
+            Err(BuildError::BadField { field: "lights" })
+        ));
     }
 
     #[test]

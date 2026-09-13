@@ -490,6 +490,7 @@ mod tests {
             track: copilot::Color::BLACK,
             track_shape: copilot::widget::TrackShape::Lit,
             cursor: None,
+            lights: copilot::widget::Lights::Bar,
             warn: 2.0,
             warn_fill: copilot::Color::WHITE,
             danger: 2.0,
