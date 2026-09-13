@@ -60,6 +60,7 @@ pub fn seg_bar<S: Surface + ?Sized>(
     warn_fill: Color,
     danger: f32,
     danger_fill: Color,
+    cursor: Option<Color>,
     vertical: bool,
     profile: &[f32],
     divisions: u32,
@@ -150,6 +151,15 @@ pub fn seg_bar<S: Surface + ?Sized>(
             danger_fill
         } else if at_frac >= warn {
             warn_fill
+        } else if let Some(c) = cursor
+            && is_lit
+            && i == lit - 1
+        {
+            // The cell the reading is standing on, which is the line that
+            // moves across the bank. After the bands and not before them: a
+            // redline a marker could cover would be a redline that disappears
+            // at exactly the revs it is there for.
+            c
         } else if fill == fill_to {
             fill
         } else {
@@ -332,6 +342,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -359,6 +370,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -394,6 +406,7 @@ mod segbar_tests {
                 WARN,
                 2.0,
                 DANGER,
+                None,
                 false,
                 &[],
                 0,
@@ -426,6 +439,7 @@ mod segbar_tests {
             WARN,
             0.9,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -456,6 +470,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[0.1, 0.4, 0.7, 1.0],
             0,
@@ -488,6 +503,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[],
             4,
@@ -499,6 +515,135 @@ mod segbar_tests {
     /// Rows of column `x` painted in the fill colour.
     fn lit_rows(s: &MemorySurface, x: usize) -> usize {
         (0..64).filter(|&y| px(s, x, y) == bgr(LIT)).count()
+    }
+
+    const MARK: Color = Color::rgb(255, 255, 255);
+
+    /// A plain bank of eight, half lit, marked or not.
+    fn marked(s: &mut MemorySurface, cursor: Option<Color>, danger: f32) {
+        seg_bar(
+            s,
+            FULL,
+            FULL,
+            0.5,
+            1.0,
+            8,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            TrackShape::Lit,
+            2.0,
+            WARN,
+            danger,
+            DANGER,
+            cursor,
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+    }
+
+    /// The colour of cell `i` of eight across a 64-pixel box.
+    fn cell(s: &MemorySurface, i: usize) -> [u8; 3] {
+        px(s, i * 8 + 3, 32)
+    }
+
+    #[test]
+    fn a_marked_bank_lights_the_cell_the_reading_stands_on_differently() {
+        // The third state: unlit, lit, and *here*. On the instrument this
+        // replicates, the body stands at one reading and a bright line runs
+        // across it at the other.
+        let mut s = surf();
+        marked(&mut s, Some(MARK), 2.0);
+        assert_eq!(cell(&s, 3), bgr(MARK), "the leading cell is not marked");
+        assert_eq!(cell(&s, 2), bgr(LIT), "a cell behind it was marked too");
+        assert_eq!(cell(&s, 4), bgr(OFF), "a cell past it was lit");
+    }
+
+    #[test]
+    fn an_unmarked_bank_is_lit_evenly() {
+        // What every scene written before the marker existed draws.
+        let mut s = surf();
+        marked(&mut s, None, 2.0);
+        assert_eq!(cell(&s, 3), bgr(LIT));
+        assert_eq!(cell(&s, 2), bgr(LIT));
+    }
+
+    #[test]
+    fn a_marker_does_not_cover_a_redline() {
+        // A redline a marker could hide would be a redline that disappears at
+        // exactly the revs it is there for.
+        let mut s = surf();
+        marked(&mut s, Some(MARK), 0.1);
+        assert_eq!(cell(&s, 3), bgr(DANGER), "the marker covered the band");
+    }
+
+    #[test]
+    fn a_marker_does_not_break_a_ramp_on_the_cells_behind_it() {
+        // The reason the marker is an option rather than a colour defaulting
+        // to `fill`: on a ramped bank the leading cell's own colour is
+        // neither end of the ramp, so "the same as fill" would repaint it.
+        let mut s = surf();
+        seg_bar(
+            &mut s,
+            FULL,
+            FULL,
+            1.0,
+            1.0,
+            8,
+            2,
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 0, 255),
+            OFF,
+            TrackShape::Lit,
+            2.0,
+            WARN,
+            2.0,
+            DANGER,
+            None,
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+        let last = cell(&s, 7);
+        assert!(last[0] > last[2], "the ramp did not reach its far colour");
+    }
+
+    #[test]
+    fn an_empty_bank_has_nothing_to_mark() {
+        // `lit - 1` underflows at zero if the marker is reached first.
+        let mut s = surf();
+        seg_bar(
+            &mut s,
+            FULL,
+            FULL,
+            0.0,
+            1.0,
+            8,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            TrackShape::Lit,
+            2.0,
+            WARN,
+            2.0,
+            DANGER,
+            Some(MARK),
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+        for i in 0..8 {
+            assert_eq!(cell(&s, i), bgr(OFF), "cell {i} lit on an empty bank");
+        }
     }
 
     #[test]
@@ -601,6 +746,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[0.1, 0.4, 0.7, 1.0],
             0,
@@ -749,6 +895,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             true,
             &[],
             0,
@@ -778,6 +925,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             true,
             &[],
             0,
@@ -810,6 +958,7 @@ mod segbar_tests {
             WARN,
             0.9,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -847,6 +996,7 @@ mod segbar_tests {
             WARN,
             0.9,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -869,6 +1019,7 @@ mod segbar_tests {
             WARN,
             0.9,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -904,6 +1055,7 @@ mod segbar_tests {
             WARN,
             1.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -934,6 +1086,7 @@ mod segbar_tests {
             WARN,
             1.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -970,6 +1123,7 @@ mod segbar_tests {
             WARN,
             1.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -1005,6 +1159,7 @@ mod segbar_tests {
             WARN,
             0.9,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -1033,6 +1188,7 @@ mod segbar_tests {
                 WARN,
                 0.9,
                 DANGER,
+                None,
                 false,
                 &[],
                 0,
@@ -1078,6 +1234,7 @@ mod segbar_tests {
             WARN,
             1.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -1120,6 +1277,7 @@ mod segbar_tests {
             WARN,
             1.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -1147,6 +1305,7 @@ mod segbar_tests {
             WARN,
             1.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -1169,6 +1328,7 @@ mod segbar_tests {
             WARN,
             1.0,
             DANGER,
+            None,
             true,
             &[],
             0,
@@ -1201,6 +1361,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[0.25, 0.5, 0.75, 1.0],
             0,
@@ -1241,6 +1402,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[0.5, 0.5],
             0,
@@ -1272,6 +1434,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -1301,6 +1464,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[1.0, 1.0],
             0,
@@ -1329,6 +1493,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[0.0, 1.0],
             0,
@@ -1358,6 +1523,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[-4.0, 9.0, f32::NAN],
             0,
@@ -1393,6 +1559,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             true,
             &[0.5, 1.0],
             0,
@@ -1425,6 +1592,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[],
             divisions,
@@ -1503,6 +1671,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[0.25, 1.0],
             8,
@@ -1540,6 +1709,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             true,
             &[],
             8,
@@ -1572,6 +1742,7 @@ mod segbar_tests {
             WARN,
             0.9,
             DANGER,
+            None,
             false,
             &[],
             9,
@@ -1600,6 +1771,7 @@ mod segbar_tests {
                 WARN,
                 0.9,
                 DANGER,
+                None,
                 false,
                 &[],
                 9,
@@ -1629,6 +1801,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[],
             u32::MAX,
@@ -1665,6 +1838,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             profile,
             0,
@@ -1728,6 +1902,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[],
             0,
@@ -1750,6 +1925,7 @@ mod segbar_tests {
             WARN,
             2.0,
             DANGER,
+            None,
             false,
             &[],
             0,

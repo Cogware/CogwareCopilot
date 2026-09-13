@@ -268,6 +268,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             warn_fill,
             danger,
             danger_fill,
+            cursor,
             vertical,
             height,
             divisions,
@@ -290,6 +291,10 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("warn_fill", Value::Color(*warn_fill)),
             ("danger", Value::Ratio(*danger)),
             ("danger_fill", Value::Color(*danger_fill)),
+            // The marker's colour, shown as the body's until one is set: the
+            // row is where an author goes to add one, so it has to be there
+            // before there is anything to show.
+            ("cursor", Value::Color(cursor.unwrap_or(*fill))),
             ("vertical", Value::Flag(*vertical)),
             // The second axis: how far up its envelope each lit cell stands.
             ("height", Value::Frac(*height)),

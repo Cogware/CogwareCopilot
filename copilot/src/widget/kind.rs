@@ -359,6 +359,29 @@ pub enum Kind {
         danger: f32,
         /// The colour those cells light in.
         danger_fill: Color,
+        /// The colour of the cell the reading is standing on.
+        ///
+        /// `None` is the evenly lit bar every scene drew before this existed.
+        /// Set it brighter and the bank gains a third state: unlit, lit, and
+        /// *here* -- a line at the reading that moves across a body lit
+        /// behind it.
+        ///
+        /// An `Option` rather than a colour defaulting to `fill`, because on
+        /// a bank ramping from `fill` to `fill_to` the leading cell's own
+        /// colour is neither of them, and "the same as `fill`" would repaint
+        /// it and break the ramp at exactly the cell being looked at.
+        ///
+        /// That is how the instrument this replicates shows two readings at
+        /// once. The columns stand at the height of one, dimly, and a single
+        /// full-brightness line runs across them at the other, so a glance
+        /// reads the moving line and a longer look reads the shape behind it.
+        /// One cell, always: a marker two cells wide is a marker that cannot
+        /// say which of them it means.
+        ///
+        /// It takes the cell from `fill` and from the ramp, but not from
+        /// `warn` and `danger` -- a redline that a marker could cover would be
+        /// a redline that disappears at exactly the revs it is there for.
+        cursor: Option<Color>,
         /// Whether cells stack upwards rather than running rightwards.
         vertical: bool,
         /// How far across each cell reaches, 0.0 to 1.0, cut from the base

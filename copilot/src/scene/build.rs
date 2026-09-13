@@ -796,6 +796,13 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                 warn_fill: colour(val, "warn_fill", "#d29922ff")?,
                 danger: unbounded(val, "danger", 2.0)?,
                 danger_fill: colour(val, "danger_fill", "#f85149ff")?,
+                // Absent rather than defaulted: a bank with no marker leaves
+                // every cell the colour it would otherwise have had, which on
+                // a ramped bar is not `fill`.
+                cursor: match val.get("cursor") {
+                    Some(_) => Some(colour(val, "cursor", "#3fb950ff")?),
+                    None => None,
+                },
                 vertical: flag(val, "vertical", false)?,
                 profile: read_fractions(val, "profile")?,
                 // One by default, so a bank with no second reading stands at its
@@ -908,6 +915,26 @@ mod tests {
         match top(&go(&doc(src)).expect("a lamp must build")).kind {
             Kind::Led { off, .. } => off,
             ref other => panic!("expected a lamp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bank_with_no_cursor_has_none_rather_than_its_fill_colour() {
+        // Not defaulted to `fill`: on a ramped bank the leading cell's own
+        // colour is neither end of the ramp.
+        let src = r#"{"type":"segbar","rect":[0,0,10,10]}"#;
+        match top(&go(&doc(src)).expect("a bank must build")).kind {
+            Kind::SegBar { cursor, .. } => assert_eq!(cursor, None),
+            ref other => panic!("expected a bank, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_bank_can_name_the_colour_of_the_cell_the_reading_stands_on() {
+        let src = r##"{"type":"segbar","rect":[0,0,10,10],"cursor":"#ffffff"}"##;
+        match top(&go(&doc(src)).expect("a bank must build")).kind {
+            Kind::SegBar { cursor, .. } => assert_eq!(cursor, Some(Color::WHITE)),
+            ref other => panic!("expected a bank, got {other:?}"),
         }
     }
 
