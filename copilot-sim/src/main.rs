@@ -353,6 +353,7 @@ fn run(path: &Path, damage_only: bool, rig_path: Option<&Path>) -> Result<(), St
         let now_us = started.elapsed().as_micros() as u64;
         anims.tick(&mut tree, now_us);
         copilot::anim::tick_playback(&mut tree, &clips, now_us.saturating_sub(last_us));
+        copilot::anim::tick_charts(&mut tree, now_us.saturating_sub(last_us));
         last_us = now_us;
 
         if swap.is_some() {

@@ -627,3 +627,75 @@ fn a_property_edit_reaches_every_selected_widget_of_the_kind() {
     assert_eq!(a.text.matches("\"value\": 0.25").count(), 2, "{}", a.text);
     assert_eq!(a.undo.len(), 1);
 }
+
+/// A scene holding one chart that keeps a window on its reading.
+const TRACE: &str = r##"{
+  "width": 100, "height": 60,
+  "root": { "type": "panel", "rect": [0, 0, 100, 60], "name": "root",
+    "children": [
+      { "type": "chart", "rect": [0, 0, 100, 60], "name": "boost",
+        "history": 8, "period_ms": 10, "stroke": "#3fb950" },
+    ] } }"##;
+
+/// The samples the chart called `boost` is holding.
+fn trace(a: &App) -> Vec<f32> {
+    let t = a.preview.tree.as_ref().expect("a tree");
+    let id = t.find("boost").expect("the chart");
+    match &t.get(id).expect("the node").kind {
+        copilot::widget::Kind::Chart { values, .. } => values.clone(),
+        other => panic!("expected a chart, got {other:?}"),
+    }
+}
+
+/// One editor frame: drive the tree, draw it, put it back.
+fn frame(a: &mut App, delta_us: u64) {
+    let driven = match a.preview.tree.as_mut() {
+        Some(t) => a.driver.apply(t, &a.preview.bindings),
+        None => Vec::new(),
+    };
+    a.preview.frame(delta_us, delta_us, None, 6);
+    if let Some(t) = a.preview.tree.as_mut() {
+        crate::drive::Driver::restore(t, driven);
+    }
+}
+
+#[test]
+fn a_driven_trace_keeps_what_it_was_shown_frame_after_frame() {
+    // The bug this guards: the driver put the widget back as the file wrote
+    // it after every frame, so the newest point moved and nothing stayed
+    // behind it. A chart that never scrolls is not a trace of anything.
+    let mut a = app(TRACE, "boost");
+    a.driver.enabled = true;
+    let ch = a
+        .driver
+        .channels
+        .get_mut("boost")
+        .expect("a slider for the trace");
+    ch.value = 0.5;
+    ch.sweep = false;
+    for _ in 0..6 {
+        frame(&mut a, 20_000);
+    }
+    assert!(
+        trace(&a).len() > 1,
+        "the trace kept nothing: {:?}",
+        trace(&a)
+    );
+}
+
+#[test]
+fn a_driven_trace_stops_growing_at_its_window() {
+    let mut a = app(TRACE, "boost");
+    a.driver.enabled = true;
+    let ch = a
+        .driver
+        .channels
+        .get_mut("boost")
+        .expect("a slider for the trace");
+    ch.value = 0.5;
+    ch.sweep = false;
+    for _ in 0..40 {
+        frame(&mut a, 20_000);
+    }
+    assert_eq!(trace(&a).len(), 8, "the window did not hold");
+}

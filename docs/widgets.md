@@ -386,6 +386,15 @@ The same reading twice is two samples, not nothing happening: a gauge sitting
 still is exactly when a trace has to keep drawing a flat line. The window is
 reserved when the scene builds, so pushing never allocates once it has settled.
 
+`period_ms` puts the trace on a clock of its own. A bus sending twenty readings
+a second fills a hundred-sample window in five, which whips past rather than
+being a history anyone can read; past zero the newest point follows the gauge
+live and the trace only *steps* this often, so the window covers
+`history * period_ms` of driving however fast the readings arrive. A host
+advances it by calling `anim::tick_charts` with its frame time, beside the
+`tick_playback` it already calls. `period_ms: 0` samples on the readings
+themselves and needs no tick at all.
+
 ### Two gradients
 
 `warn` and `danger` colour by what a reading **means**, and the line and the

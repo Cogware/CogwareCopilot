@@ -164,6 +164,12 @@ impl Driver {
             };
             if let Some(v) = node.kind.reading() {
                 seen_channels.insert(name.to_string(), v);
+            } else if node.kind.tracks() {
+                // A window with nothing in it yet still gets a slider: the
+                // slider is what puts something in it, and a trace that
+                // cannot be driven until it has already been driven is one
+                // nobody can see move.
+                seen_channels.insert(name.to_string(), 0.0);
             }
             // Labels only: a seven-segment readout shows text too, but the
             // pane offers it a numeric reading through its binding instead.
@@ -362,7 +368,15 @@ impl Driver {
             let Some(node) = tree.get(b.node) else {
                 continue;
             };
-            saved.push(Saved::of(b.node, node));
+            // A trace is not saved and restored. Its history is what it has
+            // been shown, built up over many frames, and putting the widget
+            // back as the file wrote it after every frame would leave the
+            // newest sample moving and nothing behind it -- which is a chart
+            // that never scrolls. The preview is rebuilt from the text on
+            // every reload, so nothing accumulated here reaches the document.
+            if !node.kind.tracks() {
+                saved.push(Saved::of(b.node, node));
+            }
             let v = from_canonical(b, ch.current(self.sweep, sweep));
             b.apply_value(tree, v);
         }
@@ -370,6 +384,11 @@ impl Driver {
         for (name, ch) in &self.channels {
             let Some(id) = tree.find(name) else { continue };
             let Some(node) = tree.get(id) else { continue };
+            if node.kind.tracks() {
+                let v = ch.current(self.sweep, sweep);
+                tree.set_reading(id, v);
+                continue;
+            }
             let v = ch.current(self.sweep, sweep);
             let Some(new_kind) = node.kind.with_reading(v) else {
                 continue;

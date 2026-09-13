@@ -587,6 +587,8 @@ mod tests {
             danger_fill: Color::WHITE,
             fade_to: None,
             newest: crate::widget::Newest::Right,
+            period_ms: 0,
+            elapsed_us: 0,
         }
     }
 
@@ -595,6 +597,72 @@ mod tests {
             Kind::Chart { values, .. } => values.clone(),
             ref other => panic!("expected a chart, got {other:?}"),
         }
+    }
+
+    /// A chart on its own clock, seeded with `values`.
+    fn clocked(history: u32, period_ms: u32, values: &[f32]) -> Kind {
+        let mut k = tracking(history, values);
+        if let Kind::Chart { period_ms: p, .. } = &mut k {
+            *p = period_ms;
+        }
+        k
+    }
+
+    fn tree_of(kind: Kind) -> (Tree, NodeId) {
+        let mut t = Tree::new(Rect::new(0, 0, 100, 100));
+        let mut n = panel(0, 0, 100, 100);
+        n.kind = kind;
+        let id = t.push(ROOT, n).expect("a node");
+        (t, id)
+    }
+
+    #[test]
+    fn a_clocked_chart_moves_its_newest_point_rather_than_pushing() {
+        // Between samples the live end follows the gauge, so a trace does not
+        // sit still for a second and then jump.
+        let k = clocked(8, 500, &[0.1, 0.2])
+            .with_reading(0.9)
+            .expect("a reading");
+        assert_eq!(samples(&k), alloc::vec![0.1, 0.9], "it pushed instead");
+    }
+
+    #[test]
+    fn a_clocked_chart_steps_along_when_its_period_is_up() {
+        let (mut t, id) = tree_of(clocked(8, 100, &[0.4]));
+        crate::anim::tick_charts(&mut t, 99_000);
+        assert_eq!(samples(&t.get(id).unwrap().kind).len(), 1, "stepped early");
+        crate::anim::tick_charts(&mut t, 2_000);
+        // The new slot carries the last reading on: nothing has been read
+        // into it yet, and dropping to zero would trace the clock.
+        assert_eq!(samples(&t.get(id).unwrap().kind), alloc::vec![0.4, 0.4]);
+    }
+
+    #[test]
+    fn a_clocked_chart_keeps_the_time_it_has_not_spent() {
+        // Or one slower than the frame rate would never reach its period.
+        let (mut t, id) = tree_of(clocked(8, 100, &[0.4]));
+        for _ in 0..4 {
+            crate::anim::tick_charts(&mut t, 30_000);
+        }
+        assert_eq!(samples(&t.get(id).unwrap().kind).len(), 2, "time was lost");
+    }
+
+    #[test]
+    fn a_chart_with_no_period_is_left_alone_by_the_clock() {
+        // It samples on its readings, and a host that never ticks still draws
+        // every trace it drew before the clock existed.
+        let (mut t, id) = tree_of(clocked(8, 0, &[0.4]));
+        crate::anim::tick_charts(&mut t, 10_000_000);
+        assert_eq!(samples(&t.get(id).unwrap().kind), alloc::vec![0.4]);
+    }
+
+    #[test]
+    fn a_long_stall_steps_the_trace_across_at_most_once() {
+        // A host coming back from a stall must not walk thousands of samples
+        // it would immediately drop again.
+        let (mut t, id) = tree_of(clocked(8, 10, &[0.4]));
+        crate::anim::tick_charts(&mut t, 60_000_000);
+        assert_eq!(samples(&t.get(id).unwrap().kind).len(), 8);
     }
 
     #[test]

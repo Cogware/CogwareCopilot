@@ -202,6 +202,8 @@ impl Preview {
         let tree = self.tree.as_mut()?;
         self.anims.tick(tree, now_us);
         copilot::anim::tick_playback(tree, &self.clips, delta_us);
+        // A trace steps on its own clock, not on the readings arriving.
+        copilot::anim::tick_charts(tree, delta_us);
 
         compose_all(
             &mut self.surface,

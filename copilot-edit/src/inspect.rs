@@ -374,6 +374,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             danger_fill,
             fade_to,
             newest,
+            period_ms,
             ..
         } => vec![
             // `values` is absent for the reason a line's `points` are: a
@@ -383,6 +384,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("stroke", Value::Color(*stroke)),
             ("fill", Value::Color(*fill)),
             ("history", Value::Count(*history)),
+            ("period_ms", Value::Count(*period_ms)),
             ("warn", Value::Ratio(*warn)),
             ("warn_stroke", Value::Color(*warn_stroke)),
             ("warn_fill", Value::Color(*warn_fill)),

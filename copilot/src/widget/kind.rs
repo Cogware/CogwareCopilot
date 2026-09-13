@@ -513,6 +513,24 @@ pub enum Kind {
         fade_to: Option<Color>,
         /// Which end the newest sample is at.
         newest: Newest,
+        /// Milliseconds between samples, or 0 to take one per reading.
+        ///
+        /// A bus sending twenty readings a second fills a hundred-sample
+        /// window in five, which is a trace that whips past rather than a
+        /// history anyone can read. Past zero the newest point follows the
+        /// gauge live and the trace only *steps* this often, so the window
+        /// covers `history * period_ms` of driving however fast the readings
+        /// arrive.
+        ///
+        /// Advanced by [`crate::anim::tick_charts`], which a host calls with
+        /// its frame time the way it already calls `tick_playback`.
+        period_ms: u32,
+        /// Microseconds accumulated towards the next sample.
+        ///
+        /// Playback state in the kind, as [`Kind::Anim`]'s `elapsed_us` is and
+        /// for the same reason: it belongs to the widget that is running, and
+        /// there is nowhere else per-widget to keep it.
+        elapsed_us: u64,
     },
     /// A number in seven-segment cells.
     SevenSeg {
@@ -948,13 +966,26 @@ impl Kind {
             // index, because a scene that lists more samples than its
             // `history` has to settle to the window's size rather than being
             // truncated to it in one jump and losing the newest.
+            //
+            // On its own clock it is the newest point that moves instead, so
+            // the live end of the trace follows the gauge between samples and
+            // `tick_charts` is what opens the next slot. Otherwise a trace
+            // would sit still for a second and then jump.
             Kind::Chart {
-                values, history, ..
+                values,
+                history,
+                period_ms,
+                ..
             } => {
                 if *history == 0 {
                     return None;
                 }
-                values.push(v);
+                if *period_ms > 0 && !values.is_empty() {
+                    let last = values.len() - 1;
+                    values[last] = v;
+                } else {
+                    values.push(v);
+                }
                 while values.len() > *history as usize {
                     values.remove(0);
                 }

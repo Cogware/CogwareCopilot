@@ -843,6 +843,8 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                     Some(_) => Some(colour(val, "fade_to", "#00000000")?),
                     None => None,
                 },
+                period_ms: count(val, "period_ms", 0)?,
+                elapsed_us: 0,
                 newest: match val.get("newest") {
                     None | Some(Value::Null) => Newest::Right,
                     Some(v) => v

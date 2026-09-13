@@ -339,6 +339,83 @@ fn apply(tree: &mut Tree, node: NodeId, property: Property, value: f32) {
     }
 }
 
+/// Step every tracking chart's trace along by `delta_us`.
+///
+/// Here beside [`tick_playback`] because it is the same idea -- a widget with
+/// a clock of its own, advanced by the host's frame time -- and a host that
+/// already calls one has somewhere obvious to call the other.
+///
+/// A chart with no `period_ms` samples on its readings instead and is left
+/// alone, so a host that never calls this still draws every trace it did
+/// before this existed.
+pub fn tick_charts(tree: &mut Tree, delta_us: u64) {
+    use crate::widget::Kind;
+
+    // Collected first because advancing one widget borrows the tree mutably,
+    // and a scene can hold several traces.
+    let ids: alloc::vec::Vec<NodeId> = (0..tree.len())
+        .filter_map(|i| u32::try_from(i).ok().map(NodeId))
+        .filter(|id| {
+            matches!(
+                tree.get(*id).map(|n| &n.kind),
+                Some(Kind::Chart { period_ms, history, .. }) if *period_ms > 0 && *history > 0
+            )
+        })
+        .collect();
+
+    for id in ids {
+        let Some(node) = tree.get(id) else { continue };
+        let Kind::Chart {
+            ref values,
+            history,
+            period_ms,
+            elapsed_us,
+            ..
+        } = node.kind
+        else {
+            continue;
+        };
+        let period = u64::from(period_ms).saturating_mul(1_000).max(1);
+        let mut acc = elapsed_us.saturating_add(delta_us);
+        let mut next = values.clone();
+
+        // Bounded by the window, so a host coming back from a long stall
+        // steps the trace across at most once rather than walking thousands
+        // of samples it would immediately drop again.
+        let mut steps = 0;
+        while acc >= period && steps < history {
+            acc -= period;
+            steps += 1;
+            // The new slot starts where the last sample left off: nothing has
+            // been read yet, and a trace that dropped to zero between samples
+            // would be a trace of the clock rather than of the gauge.
+            next.push(next.last().copied().unwrap_or(0.0));
+        }
+        if steps == 0 {
+            // Only the clock moved. Written back so the time is not lost, or
+            // a chart slower than the frame rate would never reach its period.
+            let mut k = node.kind.clone();
+            if let Kind::Chart { elapsed_us, .. } = &mut k {
+                *elapsed_us = acc;
+            }
+            tree.set_kind(id, k);
+            continue;
+        }
+        while next.len() > history as usize {
+            next.remove(0);
+        }
+        let mut k = node.kind.clone();
+        if let Kind::Chart {
+            values, elapsed_us, ..
+        } = &mut k
+        {
+            *values = next;
+            *elapsed_us = acc;
+        }
+        tree.set_kind(id, k);
+    }
+}
+
 /// Advance every playing [`Kind::Anim`] widget in `tree` by `delta_us`.
 ///
 /// Separate from [`Animator::tick`] because the two are different kinds of
