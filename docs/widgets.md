@@ -31,7 +31,7 @@ agree about where a value sits without the scene file restating it.
 | `roundrect` | A panel with rounded corners. |
 | `led` | A telltale lamp: on, off, or dim, with an unlit colour so the symbol still reads. |
 | `line` | A polyline through listed points, given as fractions of the box so a curve survives a change of screen, optionally ramping colour along its length. |
-| `chart` | A series across the box, as a trace or a filled area. |
+| `chart` | A series across the box, as a trace or a filled area, optionally tracking a reading as it arrives and colouring by value and by age. |
 | `sevenseg` | Digits drawn from the seven bars a real display has, unlit segments included, with a decimal point and an optional fixed number of cells. |
 | `gradient` | A fill ramping between two colours, down or across. |
 | `grid` | Lines ruled across the box, for the etched grid a real panel's glass carries. |
@@ -317,6 +317,46 @@ One cell, always -- a marker two cells wide cannot say which of them it means.
 It takes the cell from `fill` and from the ramp, but not from `warn` and
 `danger`: a redline a marker could cover would be a redline that disappears at
 exactly the revs it is there for.
+
+## A chart that follows a reading
+
+`history` turns a chart from a picture into a window. Past zero a reading
+pushes a sample onto the end and the oldest falls off, so a bound gauge draws
+its own recent past:
+
+```json
+{ "type": "chart", "rect": [20, 20, 640, 110], "history": 120,
+  "width": 3, "stroke": "#3fb950", "fill": "#12301c",
+  "warn": 0.6, "warn_stroke": "#d29922", "warn_fill": "#3a2f10",
+  "danger": 0.85, "danger_stroke": "#f85149", "danger_fill": "#3d1512",
+  "fade_to": "#05070a", "newest": "right",
+  "bind": { "gauge": "BOOST" } }
+```
+
+`history: 0` is the listed series every scene drew before this existed, and a
+chart with one takes no binding at all -- a picture somebody typed is not a
+window on a gauge, and a binding must not quietly start rewriting it.
+
+The same reading twice is two samples, not nothing happening: a gauge sitting
+still is exactly when a trace has to keep drawing a flat line. The window is
+reserved when the scene builds, so pushing never allocates once it has settled.
+
+### Two gradients
+
+`warn` and `danger` colour by what a reading **means**, and the line and the
+area band separately: `warn_fill` and `danger_fill` default to `fill`, so a
+band changes the trace and leaves the area alone. Giving both the same colour
+turns a dim area bright at the threshold, which reads as the chart changing
+rather than the reading crossing.
+
+`fade_to` colours by **how old** a sample is, ramping the oldest end towards
+whatever is named -- the panel behind the chart, usually. A colour rather than
+an alpha, for the reason in *A trap worth knowing*: these surfaces write
+colours instead of blending them, so a trace at low alpha lands at full alpha
+and a fade has to say what it is fading into.
+
+`newest` says which end new samples arrive at, `right` or `left`, and the
+history runs away from it.
 
 ### A dial cut into segments
 

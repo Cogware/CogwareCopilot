@@ -34,6 +34,43 @@ pub enum VAlign {
     /// Against the bottom edge.
     Bottom,
 }
+/// Which end of a [`Kind::Chart`] the newest sample is at.
+///
+/// The old samples run away from it, so a chart's history reads the way the
+/// instrument it is on does: some scroll right to left and some the other way,
+/// and which one a dash uses is a house style rather than a fact about data.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Newest {
+    /// The newest sample is at the right edge and the history runs left.
+    ///
+    /// The default, and where a chart's last value has always been drawn.
+    #[default]
+    Right,
+    /// The newest sample is at the left edge and the history runs right.
+    Left,
+}
+
+impl Newest {
+    /// Parse the name a scene file uses.
+    #[must_use]
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "right" => Some(Self::Right),
+            "left" => Some(Self::Left),
+            _ => None,
+        }
+    }
+
+    /// The name a scene file uses.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Right => "right",
+            Self::Left => "left",
+        }
+    }
+}
+
 /// Which cells of a [`Kind::SegBar`] the reading lights.
 ///
 /// A bargraph fills to its reading, which is [`Bar`](Self::Bar) and what a
@@ -357,6 +394,42 @@ pub enum Kind {
         stroke: Color,
         /// Colour of the area beneath it. Transparent leaves only the line.
         fill: Color,
+        /// How many samples to keep, or 0 to hold whatever the scene listed.
+        ///
+        /// Past zero the chart is a rolling window rather than a fixed
+        /// picture: a reading pushes a sample onto the end and the oldest one
+        /// falls off, so a gauge bound to it draws its own recent history.
+        /// That is the whole of what makes this a trace of something rather
+        /// than a shape somebody typed.
+        history: u32,
+        /// Samples at or past this fraction take the caution colours. Above
+        /// 1.0 there is no caution band at all, which is the default.
+        warn: f32,
+        /// The line's colour there.
+        warn_stroke: Color,
+        /// The area's colour there.
+        ///
+        /// Defaults to `fill`, so a band changes the line and leaves the area
+        /// alone. The area is usually a dark version of the line, and giving
+        /// both the same band colour turns a dim area bright at the threshold,
+        /// which reads as the chart changing rather than the reading crossing.
+        warn_fill: Color,
+        /// Samples at or past this fraction take the danger colours.
+        danger: f32,
+        /// The line's colour there.
+        danger_stroke: Color,
+        /// The area's colour there. Defaults to `fill`, like `warn_fill`.
+        danger_fill: Color,
+        /// The colour the oldest sample fades towards, or `None` to hold one
+        /// colour the whole way.
+        ///
+        /// A colour rather than an alpha because the surfaces this targets
+        /// write colours instead of blending them: a trace at low alpha lands
+        /// as a trace at full alpha, so a fade has to name what it is fading
+        /// *into* -- the panel behind it, usually.
+        fade_to: Option<Color>,
+        /// Which end the newest sample is at.
+        newest: Newest,
     },
     /// A number in seven-segment cells.
     SevenSeg {
@@ -629,6 +702,11 @@ impl Kind {
             | Kind::Needle { value, .. }
             | Kind::SegBar { value, .. } => Some(*value),
             Kind::Led { level, .. } => Some(*level),
+            // The newest sample, which is what a chart's reading means: the
+            // rest of it is the history of readings gone by.
+            Kind::Chart {
+                values, history, ..
+            } if *history > 0 => values.last().copied(),
             _ => None,
         }
     }
@@ -774,6 +852,23 @@ impl Kind {
             | Kind::Needle { value, .. }
             | Kind::SegBar { value, .. } => *value = v,
             Kind::Led { level, .. } => *level = v,
+            // A reading pushes rather than replaces: the chart is a window on
+            // the readings that have been, so the new one goes on the end and
+            // the oldest falls off. Trimming in a loop rather than to an
+            // index, because a scene that lists more samples than its
+            // `history` has to settle to the window's size rather than being
+            // truncated to it in one jump and losing the newest.
+            Kind::Chart {
+                values, history, ..
+            } => {
+                if *history == 0 {
+                    return None;
+                }
+                values.push(v);
+                while values.len() > *history as usize {
+                    values.remove(0);
+                }
+            }
             _ => return None,
         }
         Some(k)

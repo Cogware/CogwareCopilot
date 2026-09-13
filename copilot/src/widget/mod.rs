@@ -16,7 +16,7 @@ use crate::{Color, Point, Rect};
 mod hit;
 mod kind;
 pub use hit::hit_test;
-pub use kind::{Align, BindTarget, Kind, Lights, MAX_READING_RECTS, TrackShape, VAlign};
+pub use kind::{Align, BindTarget, Kind, Lights, MAX_READING_RECTS, Newest, TrackShape, VAlign};
 
 /// Index of a node within a [`Tree`].
 ///
@@ -181,8 +181,19 @@ impl Tree {
     /// times a second must not repaint sixty times a second.
     pub fn set_reading(&mut self, id: NodeId, value: f32) -> Option<()> {
         let node = self.nodes.get(id.0 as usize)?;
-        let old = node.kind.reading()?;
-        if old == value {
+        // A chart keeping a window is a reading over *time*, so neither of the
+        // shortcuts below is true of it: an empty one has no previous reading
+        // to compare against and still has to take its first sample, and the
+        // same value arriving twice is two samples rather than nothing
+        // happening. A gauge sitting still is exactly when a trace has to keep
+        // drawing a flat line.
+        let tracking = matches!(&node.kind, Kind::Chart { history, .. } if *history > 0);
+        let old = match node.kind.reading() {
+            Some(v) => v,
+            None if tracking => value,
+            None => return None,
+        };
+        if old == value && !tracking {
             return Some(());
         }
         let kind = node.kind.with_reading(value)?;
@@ -556,6 +567,94 @@ mod tests {
         let mut t = Tree::new(Rect::new(0, 0, 200, 100));
         t.clear_damage(); // ignore the initial full-screen mark
         t
+    }
+
+    /// A chart keeping `history` samples, seeded with `values`.
+    fn tracking(history: u32, values: &[f32]) -> Kind {
+        Kind::Chart {
+            values: values.to_vec(),
+            width: 1,
+            stroke: Color::WHITE,
+            fill: Color::TRANSPARENT,
+            history,
+            warn: 2.0,
+            warn_stroke: Color::WHITE,
+            warn_fill: Color::WHITE,
+            danger: 2.0,
+            danger_stroke: Color::WHITE,
+            danger_fill: Color::WHITE,
+            fade_to: None,
+            newest: crate::widget::Newest::Right,
+        }
+    }
+
+    fn samples(k: &Kind) -> alloc::vec::Vec<f32> {
+        match k {
+            Kind::Chart { values, .. } => values.clone(),
+            ref other => panic!("expected a chart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tracking_chart_pushes_a_reading_rather_than_replacing_its_series() {
+        // The whole of what makes this a trace of something: the reading goes
+        // on the end and what was there stays as the history behind it.
+        let k = tracking(4, &[0.1, 0.2]).with_reading(0.3).expect("a push");
+        assert_eq!(samples(&k), alloc::vec![0.1, 0.2, 0.3]);
+    }
+
+    #[test]
+    fn a_full_window_drops_its_oldest_sample() {
+        let k = tracking(3, &[0.1, 0.2, 0.3])
+            .with_reading(0.4)
+            .expect("a push");
+        assert_eq!(samples(&k), alloc::vec![0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn a_window_seeded_over_its_size_settles_rather_than_truncating() {
+        // A scene may list more samples than its window holds. Dropping the
+        // oldest one at a time keeps the newest, where truncating to an index
+        // would throw exactly those away.
+        let k = tracking(2, &[0.1, 0.2, 0.3, 0.4])
+            .with_reading(0.5)
+            .expect("a push");
+        assert_eq!(samples(&k), alloc::vec![0.4, 0.5]);
+    }
+
+    #[test]
+    fn a_chart_with_no_history_takes_no_reading_at_all() {
+        // A listed series is a picture somebody drew, not a window on a
+        // gauge, and a binding must not quietly start rewriting it.
+        assert!(tracking(0, &[0.1]).with_reading(0.5).is_none());
+        assert_eq!(tracking(0, &[0.1]).reading(), None);
+    }
+
+    #[test]
+    fn a_tracking_charts_reading_is_its_newest_sample() {
+        assert_eq!(tracking(4, &[0.1, 0.7]).reading(), Some(0.7));
+    }
+
+    #[test]
+    fn pushing_into_a_settled_window_does_not_reallocate() {
+        // A bare-metal target cannot have a reading allocate every frame, so
+        // the window has to settle at a capacity and stay there.
+        let mut k = tracking(4, &[]);
+        if let Kind::Chart { values, .. } = &mut k {
+            values.reserve(5);
+        }
+        for i in 0..12 {
+            k = k.with_reading(i as f32 / 12.0).expect("a push");
+        }
+        let cap = match &k {
+            Kind::Chart { values, .. } => values.capacity(),
+            _ => unreachable!(),
+        };
+        let after = k.with_reading(1.0).expect("a push");
+        match &after {
+            Kind::Chart { values, .. } => assert_eq!(values.capacity(), cap),
+            _ => unreachable!(),
+        }
     }
 
     fn panel(x: i32, y: i32, w: u32, h: u32) -> Node {

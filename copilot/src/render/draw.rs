@@ -579,8 +579,30 @@ pub fn draw_kind<S: Surface + ?Sized>(
             width,
             stroke,
             fill,
+            warn,
+            warn_stroke,
+            warn_fill,
+            danger,
+            danger_stroke,
+            danger_fill,
+            fade_to,
+            newest,
+            ..
         } => {
-            super::plot::chart(surface, at, clip, values, *width, *stroke, *fill, antialias);
+            let style = super::plot::ChartStyle {
+                width: *width,
+                stroke: *stroke,
+                fill: *fill,
+                warn: *warn,
+                warn_stroke: *warn_stroke,
+                warn_fill: *warn_fill,
+                danger: *danger,
+                danger_stroke: *danger_stroke,
+                danger_fill: *danger_fill,
+                fade_to: *fade_to,
+                newest: *newest,
+            };
+            super::plot::chart(surface, at, clip, values, style, antialias);
         }
         Kind::SevenSeg {
             text,

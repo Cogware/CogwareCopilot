@@ -6,6 +6,7 @@
 //! across a 320-pixel panel or a 1080-pixel one, and a scene file that said
 //! pixels would have to be rewritten for every display it ran on.
 
+use crate::widget::Newest;
 use crate::{Color, Point, Rect, Surface};
 
 use super::fill_rect;
@@ -106,16 +107,94 @@ fn walk(at: Rect, points: &[(f32, f32)], closed: bool) -> i64 {
     total.max(1)
 }
 
+/// Which of a chart's two colours a band is being asked for.
+///
+/// The line and the area band separately: the area is usually a dark version
+/// of the line, and giving both the same band colour turns a dim area bright
+/// at the threshold, which reads as the chart changing rather than the reading
+/// crossing.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Band {
+    /// The line along the top of the series.
+    Stroke,
+    /// The area beneath it.
+    Fill,
+}
+
+impl Band {
+    /// Whichever of the pair this band wants.
+    const fn pick(self, stroke: Color, fill: Color) -> Color {
+        match self {
+            Self::Stroke => stroke,
+            Self::Fill => fill,
+        }
+    }
+}
+
+/// Everything a chart draws beyond the series itself.
+///
+/// A struct rather than eight more arguments, for the reason [`Resources`]
+/// is one: the alternative is a signature that grows every time the scene
+/// format learns another thing a trace can do, and every call site changing
+/// with it.
+///
+/// [`Resources`]: super::Resources
+#[derive(Clone, Copy)]
+pub struct ChartStyle {
+    /// Thickness of the line along the top of the series.
+    pub width: u32,
+    /// Colour of that line.
+    pub stroke: Color,
+    /// Colour of the area beneath it.
+    pub fill: Color,
+    /// Samples at or past this fraction take the caution colours.
+    pub warn: f32,
+    /// The line's colour there.
+    pub warn_stroke: Color,
+    /// The area's colour there.
+    pub warn_fill: Color,
+    /// Samples at or past this fraction take the danger colours.
+    pub danger: f32,
+    /// The line's colour there.
+    pub danger_stroke: Color,
+    /// The area's colour there.
+    pub danger_fill: Color,
+    /// What the oldest sample fades towards, if anything.
+    pub fade_to: Option<Color>,
+    /// Which end the newest sample is at.
+    pub newest: Newest,
+}
+
+impl ChartStyle {
+    /// The colour a sample of `v` takes, `age` steps back out of `span`.
+    ///
+    /// Two gradients meeting: the bands say what a reading means and the fade
+    /// says how long ago it was, so a sample over the redline an instant ago
+    /// is red and the same sample at the far end of the window is on its way
+    /// to whatever is behind the chart.
+    fn colour(self, band: Band, v: f32, age: i32, span: i32) -> Color {
+        let banded = if v >= self.danger {
+            band.pick(self.danger_stroke, self.danger_fill)
+        } else if v >= self.warn {
+            band.pick(self.warn_stroke, self.warn_fill)
+        } else {
+            band.pick(self.stroke, self.fill)
+        };
+        match self.fade_to {
+            // `span - age` so the newest sample is the undiluted colour.
+            Some(old) => super::gradient::mix(old, banded, span - age, span),
+            None => banded,
+        }
+    }
+}
+
 /// Renders a filled area chart with a crisp stroke along the top edge.
-#[allow(clippy::too_many_arguments)] // A series, a stroke, a fill and a finish.
 pub fn chart<S: Surface + ?Sized>(
     surface: &mut S,
     at: Rect,
     clip: Rect,
     values: &[f32],
-    width: u32,
-    stroke: Color,
-    fill: Color,
+    style: ChartStyle,
     antialias: bool,
 ) {
     if at.is_empty() || at.intersection(clip).is_none() {
@@ -127,11 +206,18 @@ pub fn chart<S: Surface + ?Sized>(
 
     let w = at.size.w as i32;
     let n = values.len();
+    // How far along the series a fraction of the width lands. The newest
+    // sample sits at whichever end the chart says, so the history runs the
+    // other way and one flip here turns the whole picture round.
+    let along = |t: f32| match style.newest {
+        Newest::Right => t,
+        Newest::Left => 1.0 - t,
+    };
 
     // Fill the area beneath the curve, column by column, so that the
     // shape follows the interpolated value at every pixel rather than
     // stepping between discrete sample points.
-    if !fill.is_transparent() {
+    if !style.fill.is_transparent() {
         let left = at.left();
         let right = at.right();
         let bottom = at.bottom();
@@ -150,7 +236,7 @@ pub fn chart<S: Surface + ?Sized>(
             let pos = if n == 1 {
                 0.0
             } else {
-                col_frac * (n - 1) as f32
+                along(col_frac) * (n - 1) as f32
             };
 
             let idx = pos as usize;
@@ -159,11 +245,20 @@ pub fn chart<S: Surface + ?Sized>(
             let v0 = values[idx.min(n - 1)];
             let v1 = if idx + 1 < n { values[idx + 1] } else { v0 };
             let interp = v0 + (v1 - v0) * frac;
+            // Age is counted along the series, not across the box, so a
+            // chart drawn right to left fades the same samples either way.
+            let colour = style.colour(
+                Band::Fill,
+                interp,
+                (n - 1) as i32 - idx as i32,
+                (n - 1).max(1) as i32,
+            );
+            if colour.is_transparent() {
+                continue;
+            }
 
             // Map the interpolated value to a y pixel; 0.0 is the bottom,
             // 1.0 is the top, so we invert the fraction.
-            // Inverted: a value of 1.0 belongs at the top of the box, but the
-            // mapping counts downwards from it.
             if antialias {
                 // The column's top lands at a fraction of a pixel, so the
                 // filled area follows the curve rather than a staircase of
@@ -177,7 +272,7 @@ pub fn chart<S: Surface + ?Sized>(
                     top,
                     x as f32 + 1.0,
                     bottom as f32,
-                    fill,
+                    colour,
                     true,
                 );
                 continue;
@@ -188,33 +283,41 @@ pub fn chart<S: Surface + ?Sized>(
             if let Some(inter) = col_rect.intersection(clip)
                 && !inter.is_empty()
             {
-                fill_rect(surface, inter, fill);
+                fill_rect(surface, inter, colour);
             }
         }
     }
 
     // Draw the stroke on top so the line edge stays crisp against the
     // fill, which would otherwise bleed over the stroke's upper pixels.
-    if !stroke.is_transparent() && n >= 2 {
+    if !style.stroke.is_transparent() && n >= 2 {
+        let span = (n - 1) as i32;
         let mut prev: Option<Point> = None;
         // `n >= 2` above, so the divisor is never zero.
         for (i, &v) in values.iter().enumerate() {
-            let pt = map(at, i as f32 / (n - 1) as f32, 1.0 - clamp_frac(v));
+            let t = i as f32 / (n - 1) as f32;
+            let pt = map(at, along(t), 1.0 - clamp_frac(v));
 
             if let Some(p) = prev {
-                if antialias {
-                    let c = |p: Point| (p.x as f32 + 0.5, p.y as f32 + 0.5);
-                    super::aa::line(
-                        surface,
-                        clip,
-                        c(p),
-                        c(pt),
-                        width.max(1) as f32,
-                        stroke,
-                        true,
-                    );
-                } else {
-                    line(surface, p, pt, width, stroke, clip);
+                // The segment takes the colour of the sample it arrives at,
+                // so the band changes where the trace crosses the threshold
+                // rather than one sample after it.
+                let colour = style.colour(Band::Stroke, v, span - i as i32, span.max(1));
+                if !colour.is_transparent() {
+                    if antialias {
+                        let c = |p: Point| (p.x as f32 + 0.5, p.y as f32 + 0.5);
+                        super::aa::line(
+                            surface,
+                            clip,
+                            c(p),
+                            c(pt),
+                            style.width.max(1) as f32,
+                            colour,
+                            true,
+                        );
+                    } else {
+                        line(surface, p, pt, style.width, colour, clip);
+                    }
                 }
             }
             prev = Some(pt);
@@ -416,6 +519,98 @@ mod tests {
     fn rgb(s: &MemorySurface, x: usize, y: usize) -> (u8, u8, u8) {
         let o = y * s.stride() + x * 4;
         (s.pixels()[o + 2], s.pixels()[o + 1], s.pixels()[o])
+    }
+
+    /// A style drawing a bare trace in `stroke`, with no bands and no fade.
+    fn plain(stroke: Color) -> ChartStyle {
+        ChartStyle {
+            width: 1,
+            stroke,
+            fill: Color::TRANSPARENT,
+            warn: 2.0,
+            warn_stroke: Color::WHITE,
+            warn_fill: Color::WHITE,
+            danger: 2.0,
+            danger_stroke: Color::WHITE,
+            danger_fill: Color::WHITE,
+            fade_to: None,
+            newest: Newest::Right,
+        }
+    }
+
+    #[test]
+    fn a_banded_trace_changes_colour_where_it_crosses_the_threshold() {
+        // The vertical gradient: what a reading *means* rather than how old
+        // it is. A trace that runs over the redline is red where it is over
+        // it and not before.
+        let mut s = surf();
+        let style = ChartStyle {
+            warn: 0.5,
+            warn_stroke: Color::rgb(255, 0, 0),
+            ..plain(Color::rgb(0, 255, 0))
+        };
+        chart(&mut s, FULL, FULL, &[0.1, 0.2, 0.9, 0.95], style, false);
+        let red = (0..64).any(|y| (0..64).any(|x| rgb(&s, x, y) == (255, 0, 0)));
+        let green = (0..64).any(|y| (0..64).any(|x| rgb(&s, x, y) == (0, 255, 0)));
+        assert!(
+            red && green,
+            "the trace did not band: red {red}, green {green}"
+        );
+    }
+
+    #[test]
+    fn a_faded_trace_is_weakest_at_its_oldest_end() {
+        // The horizontal gradient: how old a sample is. The newest keeps the
+        // colour it was given and the oldest is on its way to the panel.
+        let mut s = surf();
+        let style = ChartStyle {
+            fade_to: Some(Color::BLACK),
+            ..plain(Color::rgb(0, 255, 0))
+        };
+        chart(&mut s, FULL, FULL, &[0.5; 8], style, false);
+        let strongest = |x: usize| (0..64).map(|y| rgb(&s, x, y).1).max().unwrap_or(0);
+        assert!(
+            strongest(60) > strongest(3),
+            "the oldest end was not the faintest"
+        );
+    }
+
+    #[test]
+    fn a_chart_drawn_the_other_way_puts_its_newest_sample_at_the_left() {
+        // Same series, same fade, mirrored: which end the history runs to is
+        // a house style, not a fact about the data.
+        let (mut right, mut left) = (surf(), surf());
+        let style = ChartStyle {
+            fade_to: Some(Color::BLACK),
+            ..plain(Color::rgb(0, 255, 0))
+        };
+        chart(&mut right, FULL, FULL, &[0.5; 8], style, false);
+        chart(
+            &mut left,
+            FULL,
+            FULL,
+            &[0.5; 8],
+            ChartStyle {
+                newest: Newest::Left,
+                ..style
+            },
+            false,
+        );
+        let strongest =
+            |s: &MemorySurface, x: usize| (0..64).map(|y| rgb(s, x, y).1).max().unwrap_or(0);
+        assert!(strongest(&right, 60) > strongest(&right, 3));
+        assert!(
+            strongest(&left, 3) > strongest(&left, 60),
+            "it did not flip"
+        );
+    }
+
+    #[test]
+    fn an_unbanded_unfaded_trace_is_what_it_always_was() {
+        // The defaults every scene written before this existed carries.
+        let mut s = surf();
+        chart(&mut s, FULL, FULL, &[0.2, 0.8], plain(Color::WHITE), false);
+        assert!(count(&s) > 0, "the plain trace stopped drawing");
     }
 
     #[test]
@@ -729,9 +924,19 @@ mod tests {
             FULL,
             FULL,
             &[0.5; 8],
-            1,
-            Color::WHITE,
-            Color::TRANSPARENT,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::TRANSPARENT,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         let tops: alloc::vec::Vec<_> = (0..64).filter_map(|x| top_of(&s, x)).collect();
@@ -751,9 +956,19 @@ mod tests {
             FULL,
             FULL,
             &[0.0, 0.25, 0.5, 0.75, 1.0],
-            1,
-            Color::WHITE,
-            Color::TRANSPARENT,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::TRANSPARENT,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         let left = top_of(&s, 2).expect("a left-hand column");
@@ -769,9 +984,19 @@ mod tests {
             FULL,
             FULL,
             &[1.0, 1.0],
-            1,
-            Color::WHITE,
-            Color::TRANSPARENT,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::TRANSPARENT,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         assert!((0..2).any(|y| lit(&s, 32, y)), "1.0 sits on the top edge");
@@ -785,9 +1010,19 @@ mod tests {
             FULL,
             FULL,
             &[0.0, 0.0],
-            1,
-            Color::WHITE,
-            Color::TRANSPARENT,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::TRANSPARENT,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         assert!(lit(&s, 32, 63), "0.0 sits on the bottom edge");
@@ -803,9 +1038,19 @@ mod tests {
             FULL,
             FULL,
             &[0.5; 4],
-            1,
-            Color::WHITE,
-            Color::TRANSPARENT,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::TRANSPARENT,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         chart(
@@ -813,9 +1058,19 @@ mod tests {
             FULL,
             FULL,
             &[0.5; 4],
-            1,
-            Color::WHITE,
-            Color::WHITE,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::WHITE,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         assert!(
@@ -834,9 +1089,19 @@ mod tests {
             FULL,
             FULL,
             &[],
-            2,
-            Color::WHITE,
-            Color::WHITE,
+            ChartStyle {
+                width: 2,
+                stroke: Color::WHITE,
+                fill: Color::WHITE,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         assert_eq!(count(&s), 0);
@@ -850,9 +1115,19 @@ mod tests {
             FULL,
             FULL,
             &[0.5],
-            1,
-            Color::WHITE,
-            Color::WHITE,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::WHITE,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         assert!(count(&s) > 0, "one value is a flat area, not nothing");
@@ -866,9 +1141,19 @@ mod tests {
             FULL,
             Rect::new(0, 0, 16, 16),
             &[0.2, 0.9, 0.4, 0.7],
-            2,
-            Color::WHITE,
-            Color::WHITE,
+            ChartStyle {
+                width: 2,
+                stroke: Color::WHITE,
+                fill: Color::WHITE,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         for y in 0..64 {
@@ -887,9 +1172,19 @@ mod tests {
             at,
             FULL,
             &[0.0, 1.0, 0.0, 1.0],
-            1,
-            Color::WHITE,
-            Color::WHITE,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::WHITE,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         for y in 0..64 {
@@ -911,9 +1206,19 @@ mod tests {
             at,
             FULL,
             &[f32::NAN, 40.0, -3.0, f32::INFINITY],
-            1,
-            Color::WHITE,
-            Color::WHITE,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::WHITE,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         for y in 0..64 {
@@ -934,9 +1239,19 @@ mod tests {
             FULL,
             FULL,
             &[0.5; 4],
-            1,
-            Color::TRANSPARENT,
-            Color::WHITE,
+            ChartStyle {
+                width: 1,
+                stroke: Color::TRANSPARENT,
+                fill: Color::WHITE,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         assert!(count(&s) > 0, "the fill still paints");
@@ -952,9 +1267,19 @@ mod tests {
             FULL,
             FULL,
             &many,
-            1,
-            Color::WHITE,
-            Color::WHITE,
+            ChartStyle {
+                width: 1,
+                stroke: Color::WHITE,
+                fill: Color::WHITE,
+                warn: 2.0,
+                warn_stroke: Color::WHITE,
+                warn_fill: Color::WHITE,
+                danger: 2.0,
+                danger_stroke: Color::WHITE,
+                danger_fill: Color::WHITE,
+                fade_to: None,
+                newest: Newest::Right,
+            },
             false,
         );
         assert!(count(&s) > 0);

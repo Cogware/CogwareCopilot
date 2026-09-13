@@ -13,7 +13,7 @@ use crate::anim::{Animation, Animator, Easing, Property, Repeat};
 use crate::asset::Scene;
 use crate::color::parse_hex;
 use crate::input::Axis;
-use crate::widget::{Align, Kind, Lights, Node, NodeId, ROOT, TrackShape, Tree, VAlign};
+use crate::widget::{Align, Kind, Lights, Newest, Node, NodeId, ROOT, TrackShape, Tree, VAlign};
 use crate::{Color, Rect};
 
 use super::bind::{self, Binding, Shape};
@@ -740,13 +740,48 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                     values.push(if f.is_nan() { 0.0 } else { f.clamp(0.0, 1.0) });
                 }
             }
+            let stroke = colour(val, "stroke", "#ffffffff")?;
+            // No fill by default: a bare trace is the honest reading of
+            // "chart", and an area nobody asked for hides what is behind it.
+            let area = colour(val, "fill", "#00000000")?;
+            let history = count(val, "history", 0)?;
+            // Room for the window and the sample that pushes the oldest out,
+            // taken once here so that a reading arriving on a bare-metal
+            // target never reallocates.
+            if history > 0 {
+                values.reserve(history as usize + 1);
+            }
             Ok(Kind::Chart {
                 values,
                 width: count(val, "width", 2)?,
-                stroke: colour(val, "stroke", "#ffffffff")?,
-                // No fill by default: a bare trace is the honest reading of
-                // "chart", and an area nobody asked for hides what is behind it.
-                fill: colour(val, "fill", "#00000000")?,
+                stroke,
+                fill: area,
+                history,
+                // Above the top of the scale by default, like a bank's, so a
+                // trace that never asked for a redline does not get one.
+                warn: unbounded(val, "warn", 2.0)?,
+                warn_stroke: colour(val, "warn_stroke", "#d29922ff")?,
+                warn_fill: match val.get("warn_fill") {
+                    Some(_) => colour(val, "warn_fill", "#00000000")?,
+                    None => area,
+                },
+                danger: unbounded(val, "danger", 2.0)?,
+                danger_stroke: colour(val, "danger_stroke", "#f85149ff")?,
+                danger_fill: match val.get("danger_fill") {
+                    Some(_) => colour(val, "danger_fill", "#00000000")?,
+                    None => area,
+                },
+                fade_to: match val.get("fade_to") {
+                    Some(_) => Some(colour(val, "fade_to", "#00000000")?),
+                    None => None,
+                },
+                newest: match val.get("newest") {
+                    None | Some(Value::Null) => Newest::Right,
+                    Some(v) => v
+                        .as_str()
+                        .and_then(Newest::parse)
+                        .ok_or(BuildError::BadField { field: "newest" })?,
+                },
             })
         }
         "sevenseg" => Ok(Kind::SevenSeg {
@@ -936,6 +971,65 @@ mod tests {
             Kind::Led { off, .. } => off,
             ref other => panic!("expected a lamp, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn a_chart_holds_the_series_it_was_given_unless_it_asks_to_track() {
+        let src = r#"{"type":"chart","rect":[0,0,10,10],"values":[0.1,0.2]}"#;
+        match top(&go(&doc(src)).expect("a chart must build")).kind {
+            Kind::Chart {
+                history,
+                fade_to,
+                newest,
+                ..
+            } => {
+                assert_eq!(history, 0);
+                assert_eq!(fade_to, None);
+                assert_eq!(newest, Newest::Right);
+            }
+            ref other => panic!("expected a chart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_tracking_chart_reserves_the_window_it_asked_for() {
+        // So a reading arriving on a bare-metal target never reallocates.
+        let src = r#"{"type":"chart","rect":[0,0,10,10],"history":64}"#;
+        match top(&go(&doc(src)).expect("a chart must build")).kind {
+            Kind::Chart {
+                history,
+                ref values,
+                ..
+            } => {
+                assert_eq!(history, 64);
+                assert!(values.capacity() > 64, "the window was not reserved");
+            }
+            ref other => panic!("expected a chart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_charts_bands_leave_its_area_alone_unless_told_otherwise() {
+        // The area is a dark version of the line, and a band that brightened
+        // it would read as the chart changing rather than the reading
+        // crossing.
+        let src = r##"{"type":"chart","rect":[0,0,10,10],"fill":"#102030",
+                       "warn":0.5,"warn_stroke":"#ffffff"}"##;
+        match top(&go(&doc(src)).expect("a chart must build")).kind {
+            Kind::Chart {
+                fill, warn_fill, ..
+            } => assert_eq!(fill, warn_fill),
+            ref other => panic!("expected a chart, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_newest_end_nobody_has_heard_of_stops_the_scene_building() {
+        let src = r#"{"type":"chart","rect":[0,0,10,10],"newest":"middle"}"#;
+        assert!(matches!(
+            go(&doc(src)),
+            Err(BuildError::BadField { field: "newest" })
+        ));
     }
 
     #[test]

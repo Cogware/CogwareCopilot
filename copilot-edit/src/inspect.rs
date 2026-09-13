@@ -95,6 +95,9 @@ const TRACK_SHAPES: &[&str] = &["lit", "envelope", "box"];
 /// Which cells of a `segbar` the reading lights.
 const LIGHTS: &[&str] = &["bar", "all", "one"];
 
+/// Which end of a `chart` the newest sample is at.
+const NEWEST: &[&str] = &["right", "left"];
+
 fn valign_word(a: VAlign) -> &'static str {
     match a {
         VAlign::Top => "top",
@@ -364,11 +367,32 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             width,
             stroke,
             fill,
+            history,
+            warn,
+            warn_stroke,
+            warn_fill,
+            danger,
+            danger_stroke,
+            danger_fill,
+            fade_to,
+            newest,
             ..
         } => vec![
+            // `values` is absent for the reason a line's `points` are: a
+            // series is dozens of numbers and the text pane edits them better
+            // than a row of boxes would. A tracking chart writes its own.
             ("width", Value::Count(*width)),
             ("stroke", Value::Color(*stroke)),
             ("fill", Value::Color(*fill)),
+            ("history", Value::Count(*history)),
+            ("warn", Value::Ratio(*warn)),
+            ("warn_stroke", Value::Color(*warn_stroke)),
+            ("warn_fill", Value::Color(*warn_fill)),
+            ("danger", Value::Ratio(*danger)),
+            ("danger_stroke", Value::Color(*danger_stroke)),
+            ("danger_fill", Value::Color(*danger_fill)),
+            ("fade_to", Value::Color(fade_to.unwrap_or(*stroke))),
+            ("newest", Value::Choice(newest.name(), NEWEST)),
         ],
         // `Kind` is `#[non_exhaustive]`, so a newer copilot can carry a widget
         // this editor has never heard of. Showing no properties beats refusing

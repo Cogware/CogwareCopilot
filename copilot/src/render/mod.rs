@@ -52,7 +52,7 @@ pub use gradient::gradient;
 pub use grid::grid;
 pub use menu::menu;
 pub use picture::{blit, image};
-pub use plot::{chart, polygon, polyline};
+pub use plot::{ChartStyle, chart, polygon, polyline};
 pub use raster::{clip, fill_rect, stroke_rect};
 pub use scale::scale_nearest;
 pub use segbar::seg_bar;
