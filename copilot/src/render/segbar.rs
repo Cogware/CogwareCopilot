@@ -146,9 +146,7 @@ pub fn seg_bar<S: Surface + ?Sized>(
         // The band colour comes from where the cell sits on the scale, not
         // from the reading, so the thresholds stay put as the gauge fills.
         let at_frac = (i + 1) as f32 / n as f32;
-        let colour = if !is_lit {
-            track
-        } else if at_frac >= danger {
+        let colour = if at_frac >= danger {
             danger_fill
         } else if at_frac >= warn {
             warn_fill
@@ -162,58 +160,94 @@ pub fn seg_bar<S: Surface + ?Sized>(
             // thing this widget could do.
             super::gradient::mix(fill, fill_to, i, n - 1)
         };
-        if colour.is_transparent() {
-            continue;
-        }
 
-        // Where this cell starts and ends along the axis, from the origin
-        // end, and how far across the box it reaches.
+        // Where this cell starts and ends along the axis, from the origin end.
         let c0 = i as f32 * (pitch + g);
         let c1 = c0 + pitch;
         // The two axes meet here: `profile` is the envelope printed on the
         // lens, and `height` is how far up it the reading stands. On the
         // instrument this replicates the columns light with the revs and
         // their height is boost, so the top row is full boost.
-        //
-        // An unlit cell has no reading to stand at, so it says how much of
-        // its cell to paint instead: the same as a lit one, the envelope it
-        // would fill into, or the whole box.
-        let reach = if is_lit {
-            across * shaped(profile, i) * tall
-        } else {
-            match track_shape {
-                TrackShape::Lit => across * shaped(profile, i) * tall,
-                TrackShape::Envelope => across * shaped(profile, i),
-                TrackShape::Box => across,
-            }
-        };
-        if reach <= 0.0 {
-            continue;
-        }
-        // Cells stack from the bottom for a vertical gauge and run from the
-        // left for a horizontal one; a profile is cut from the bottom, the
-        // edge a bargraph is read from and a printed envelope drawn against.
-        let (x0, y0, x1, y1) = if vertical {
-            (left, bottom - c1, left + reach, bottom - c0)
-        } else {
-            (left + c0, bottom - reach, left + c1, bottom)
+        let envelope = across * shaped(profile, i);
+        let lit_to = if is_lit { envelope * tall } else { 0.0 };
+        // How much of the cell is drawn at all, lit or not. The part above
+        // `lit_to` is the cell's unlit remainder, and drawing it is what makes
+        // a column that is only part full read as a full column part lit
+        // rather than as a shorter column. A bank with no second axis has no
+        // remainder, which is why a plain bargraph never needed this.
+        let drawn_to = match track_shape {
+            TrackShape::Lit => envelope * tall,
+            TrackShape::Envelope => envelope,
+            TrackShape::Box => across,
         };
 
-        if !divided {
-            super::aa::frac_rect(surface, clip, x0, y0, x1, y1, colour, antialias);
+        // The lit part and the unlit remainder above it. They do not overlap,
+        // so an antialiased edge between them is blended once, not twice.
+        paint(
+            surface, clip, vertical, left, bottom, c0, c1, 0.0, lit_to, colour, divided, divs,
+            dpitch, dg, antialias,
+        );
+        paint(
+            surface, clip, vertical, left, bottom, c0, c1, lit_to, drawn_to, track, divided, divs,
+            dpitch, dg, antialias,
+        );
+    }
+}
+
+/// Paint one cell between `lo` and `hi` across the box, in bands if the bank
+/// is divided.
+///
+/// Taken out of the loop because a cell is painted twice now -- once for what
+/// is lit and once for what is not -- and the two differ only in their extent
+/// and their colour.
+#[allow(clippy::too_many_arguments)] // The cell's geometry, and it has a lot.
+fn paint<S: Surface + ?Sized>(
+    surface: &mut S,
+    clip: Rect,
+    vertical: bool,
+    left: f32,
+    bottom: f32,
+    c0: f32,
+    c1: f32,
+    lo: f32,
+    hi: f32,
+    colour: Color,
+    divided: bool,
+    divs: i32,
+    dpitch: f32,
+    dg: f32,
+    antialias: bool,
+) {
+    if hi <= lo || colour.is_transparent() {
+        return;
+    }
+    // Cells stack from the bottom for a vertical gauge and run from the left
+    // for a horizontal one; a profile is cut from the bottom, the edge a
+    // bargraph is read from and a printed envelope drawn against.
+    let (x0, y0, x1, y1) = if vertical {
+        (left + lo, bottom - c1, left + hi, bottom - c0)
+    } else {
+        (left + c0, bottom - hi, left + c1, bottom - lo)
+    };
+
+    if !divided {
+        super::aa::frac_rect(surface, clip, x0, y0, x1, y1, colour, antialias);
+        return;
+    }
+    for j in 0..divs {
+        let b0 = j as f32 * (dpitch + dg);
+        let b1 = b0 + dpitch;
+        // The band's extent across, cut down to what this piece covers. A
+        // band wholly outside it comes back inside out and is skipped.
+        let (bx0, by0, bx1, by1) = if vertical {
+            ((left + b0).max(x0), y0, (left + b1).min(x1), y1)
+        } else {
+            (x0, (bottom - b1).max(y0), x1, (bottom - b0).min(y1))
+        };
+        if bx1 <= bx0 || by1 <= by0 {
             continue;
         }
-        for j in 0..divs {
-            let b0 = j as f32 * (dpitch + dg);
-            let b1 = b0 + dpitch;
-            // The band's extent across, cut down to what this cell reaches.
-            let (bx0, by0, bx1, by1) = if vertical {
-                ((left + b0).max(x0), y0, (left + b1).min(x1), y1)
-            } else {
-                (x0, (bottom - b1).max(y0), x1, (bottom - b0).min(y1))
-            };
-            super::aa::frac_rect(surface, clip, bx0, by0, bx1, by1, colour, antialias);
-        }
+        super::aa::frac_rect(surface, clip, bx0, by0, bx1, by1, colour, antialias);
     }
 }
 
@@ -398,6 +432,72 @@ mod segbar_tests {
     /// How many rows of column `x` are the track colour.
     fn track_rows(s: &MemorySurface, x: usize) -> usize {
         (0..64).filter(|&y| px(s, x, y) == bgr(OFF)).count()
+    }
+
+    #[test]
+    fn a_lit_cell_that_does_not_fill_its_envelope_shows_the_rest_unlit() {
+        // The bug this guards, and the one a plain bargraph never had: with a
+        // second axis a lit column stops part way up, and what is above it
+        // used to be nothing at all. The column then read as a short column
+        // rather than as a full one part lit, so the bank looked like it was
+        // drawing cells as the reading reached them.
+        let mut s = surf();
+        profiled(&mut s, TrackShape::Envelope);
+        // Cell 0's envelope is a tenth of the box and it stands half way up
+        // it, so there is track above the fill and inside the envelope.
+        let lit_rows = (0..64).filter(|&y| px(&s, 1, y) == bgr(LIT)).count();
+        let track_rows = (0..64).filter(|&y| px(&s, 1, y) == bgr(OFF)).count();
+        assert!(lit_rows > 0, "the cell is not lit at all");
+        assert!(
+            track_rows > 0,
+            "a part-full lit cell drew nothing above its reading"
+        );
+    }
+
+    #[test]
+    fn the_unlit_remainder_sits_above_the_lit_part_not_below_it() {
+        // A bargraph is read from its base: the fill grows from the bottom
+        // and the remainder is what is left at the top.
+        let mut s = surf();
+        profiled(&mut s, TrackShape::Envelope);
+        let lowest_lit = (0..64).filter(|&y| px(&s, 1, y) == bgr(LIT)).max();
+        let highest_track = (0..64).filter(|&y| px(&s, 1, y) == bgr(OFF)).min();
+        let (Some(lit), Some(track)) = (lowest_lit, highest_track) else {
+            panic!("expected both a lit part and a remainder");
+        };
+        assert!(track < lit, "the remainder is below the fill");
+    }
+
+    #[test]
+    fn a_full_height_reading_leaves_no_remainder() {
+        // At full the fill reaches the envelope, so there is nothing above it
+        // and the cell is solid -- which is what a bank with no second axis
+        // draws, and what every scene written before this did.
+        let mut s = surf();
+        seg_bar(
+            &mut s,
+            FULL,
+            FULL,
+            1.0,
+            1.0,
+            4,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            TrackShape::Envelope,
+            2.0,
+            WARN,
+            2.0,
+            DANGER,
+            false,
+            &[0.1, 0.4, 0.7, 1.0],
+            0,
+            0,
+            false,
+        );
+        let track_rows = (0..64).filter(|&y| px(&s, 1, y) == bgr(OFF)).count();
+        assert_eq!(track_rows, 0, "a full cell drew a remainder anyway");
     }
 
     #[test]

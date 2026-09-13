@@ -276,19 +276,23 @@ pager owns that flag and wins the moment the page turns.
 ## What an unlit cell paints
 
 A lit cell is cut twice: `profile` gives it the envelope printed on the lens,
-and `height` says how far up that envelope the reading stands. An unlit cell
-has no reading to stand at, so `track_shape` says what it shows instead.
+and `height` says how far up that envelope the reading stands. That leaves two
+parts of the bank undrawn -- the cells past the reading, and the part of a lit
+cell *above* where its reading stands -- and `track_shape` fills both.
 
-| `track_shape` | An unlit cell paints |
+| `track_shape` | A cell is painted unlit up to |
 |---|---|
-| `lit` | Exactly what it would if it were lit: envelope and height both. The default, and what every scene drew before this existed. |
+| `lit` | Exactly what it would be if it were lit: envelope and height both. The default, and what every scene drew before this existed. |
 | `envelope` | The whole envelope `profile` cuts, whatever `height` says -- the shape the bank fills *into*. |
 | `box` | The whole cell, ignoring both. The row of empty boxes that fills up. |
 
-`box` is what a profiled bank wants if its curve starts low: an unlit cell that
-follows a steep envelope is a few pixels tall at the bottom end and does not
-read as a box at all. It is also the only one of the three that looks the same
-on a bank with a profile and one without.
+The second part is the one that catches people. A bank with no `height` has no
+remainder -- a cell is lit or it is not, which is why a plain bargraph never
+needed this -- but give it a second axis and every lit column stops part way
+up. Under `lit` nothing is drawn above it and the column reads as a short
+column rather than a full one part lit, so the bank looks like it is drawing
+cells as the reading reaches them. `envelope` draws the curve the reading is
+filling into; `box` draws the whole cell.
 
 ## Ramping a colour
 

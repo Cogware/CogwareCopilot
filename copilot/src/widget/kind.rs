@@ -34,16 +34,20 @@ pub enum VAlign {
     /// Against the bottom edge.
     Bottom,
 }
-/// How much of its cell an unlit [`Kind::SegBar`] cell paints.
+/// How much of its cell a [`Kind::SegBar`] cell paints unlit.
 ///
 /// A lit cell is cut twice: `profile` gives it the envelope printed on the
 /// lens, and `height` says how far up that envelope the second reading
-/// stands. An unlit cell has no reading to stand at, so what it should show is
-/// a question the two axes cannot answer between them -- hence a field.
+/// stands. That leaves two things undrawn -- the cells past the reading, and
+/// the part of a lit cell above where its reading stands -- and what should
+/// fill them is a question the two axes cannot answer between them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TrackShape {
     /// Exactly what the cell would be if it were lit: envelope and height
     /// both. The default, and what every scene drew before this existed.
+    ///
+    /// A lit cell then has no remainder to draw, so a bank whose `height` is
+    /// less than one shows its columns stopping in mid-air.
     #[default]
     Lit,
     /// The whole envelope `profile` cuts, whatever `height` says.
