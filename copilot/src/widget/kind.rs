@@ -61,29 +61,47 @@ pub struct Zone {
     pub at: f32,
     /// The colour a reading takes from here up to wherever the next begins.
     pub color: Color,
+    /// The colour the marker takes inside this band.
+    ///
+    /// `None` leaves the marker the band's own colour, which is what a band
+    /// without one drew before this existed -- and which loses the marker
+    /// exactly where it matters most, since a band and a marker the same
+    /// colour is a marker nobody can see. Naming one keeps both: the band
+    /// still says the reading is in the redline and the marker still says
+    /// where in it, usually the same hue a shade or two brighter.
+    pub cursor: Option<Color>,
 }
 
 impl Zone {
     /// The band `frac` falls in, or `None` below the first one.
     ///
-    /// `None` rather than a fallback colour so a caller can tell "no band
-    /// applies" from "a band that happens to be the same colour", which is
-    /// what lets a marker take a cell no band has claimed and leave a redline
-    /// alone.
+    /// The whole band rather than its colour, so a caller can ask for the
+    /// marker's colour inside it as well; and `None` rather than a fallback,
+    /// so "no band applies" is distinguishable from "a band that happens to
+    /// be the same colour".
     ///
     /// The bands are held in ascending order by the builder, so the last one
     /// the fraction has reached is the one it is in.
     #[must_use]
-    pub fn pick(zones: &[Zone], frac: f32) -> Option<Color> {
+    pub fn pick(zones: &[Zone], frac: f32) -> Option<Zone> {
         let mut out = None;
         for z in zones {
             if frac >= z.at {
-                out = Some(z.color);
+                out = Some(*z);
             } else {
                 break;
             }
         }
         out
+    }
+
+    /// What the marker looks like inside this band.
+    #[must_use]
+    pub const fn mark(self) -> Color {
+        match self.cursor {
+            Some(c) => c,
+            None => self.color,
+        }
     }
 }
 

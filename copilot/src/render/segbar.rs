@@ -157,19 +157,18 @@ pub fn seg_bar<S: Surface + ?Sized>(
         // The band colour comes from where the cell sits on the scale, not
         // from the reading, so the thresholds stay put as the gauge fills.
         let at_frac = (i + 1) as f32 / n as f32;
+        // Whether this is one of the cells the reading is standing on, which
+        // is the line that moves across the bank.
+        let is_mark = cursor.is_some() && is_lit && lit > 0 && i > lit - 1 - marked && i < lit;
         let colour = if let Some(z) = Zone::pick(zones, at_frac) {
-            // A band wins over everything below it. A redline a marker or a
-            // ramp could cover would be a redline that disappears at exactly
-            // the revs it is there for.
-            z
+            // A band wins over the ramp, and over the marker's own colour: a
+            // redline either could cover would be a redline that disappears
+            // at exactly the revs it is there for. The band says what the
+            // marker looks like inside it instead, so both survive.
+            if is_mark { z.mark() } else { z.color }
         } else if let Some(c) = cursor
-            && is_lit
-            && lit > 0
-            && i > lit - 1 - marked
-            && i < lit
+            && is_mark
         {
-            // The cell the reading is standing on, which is the line that
-            // moves across the bank.
             c
         } else if fill == fill_to {
             fill
@@ -446,6 +445,7 @@ mod segbar_tests {
             &[Zone {
                 at: 0.9,
                 color: DANGER,
+                cursor: None,
             }],
             None,
             0,
@@ -534,6 +534,7 @@ mod segbar_tests {
         let band = [Zone {
             at: danger,
             color: DANGER,
+            cursor: None,
         }];
         let zones: &[Zone] = if danger <= 1.0 { &band } else { &[] };
         seg_bar(
@@ -674,6 +675,112 @@ mod segbar_tests {
         marked(&mut s, None, 2.0);
         assert_eq!(cell(&s, 3), bgr(LIT));
         assert_eq!(cell(&s, 2), bgr(LIT));
+    }
+
+    #[test]
+    fn a_marker_inside_a_band_takes_the_bands_own_marker_colour() {
+        // The thing a band without one loses: a marker the same colour as the
+        // band it is standing in is a marker nobody can see, and the redline
+        // is exactly where knowing the reading matters most.
+        let bright = Color::rgb(255, 170, 165);
+        let mut s = surf();
+        let band = [Zone {
+            at: 0.25,
+            color: DANGER,
+            cursor: Some(bright),
+        }];
+        seg_bar(
+            &mut s,
+            FULL,
+            FULL,
+            0.5,
+            1.0,
+            8,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            TrackShape::Lit,
+            &band,
+            Some(MARK),
+            0,
+            Lights::Bar,
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+        assert_eq!(cell(&s, 3), bgr(bright), "the marker lost its colour");
+        assert_eq!(cell(&s, 2), bgr(DANGER), "a cell behind it changed");
+    }
+
+    #[test]
+    fn a_band_with_no_marker_colour_still_swallows_the_marker() {
+        // What a band drew before this existed, and still the right answer
+        // for a gauge that never asked for the distinction.
+        let mut s = surf();
+        let band = [Zone {
+            at: 0.25,
+            color: DANGER,
+            cursor: None,
+        }];
+        seg_bar(
+            &mut s,
+            FULL,
+            FULL,
+            0.5,
+            1.0,
+            8,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            TrackShape::Lit,
+            &band,
+            Some(MARK),
+            0,
+            Lights::Bar,
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+        assert_eq!(cell(&s, 3), bgr(DANGER));
+    }
+
+    #[test]
+    fn a_marker_outside_every_band_is_still_its_own_colour() {
+        let mut s = surf();
+        let band = [Zone {
+            at: 0.9,
+            color: DANGER,
+            cursor: Some(Color::rgb(1, 2, 3)),
+        }];
+        seg_bar(
+            &mut s,
+            FULL,
+            FULL,
+            0.5,
+            1.0,
+            8,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            TrackShape::Lit,
+            &band,
+            Some(MARK),
+            0,
+            Lights::Bar,
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+        assert_eq!(cell(&s, 3), bgr(MARK));
     }
 
     #[test]
@@ -1119,10 +1226,12 @@ mod segbar_tests {
                 Zone {
                     at: 0.7,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 0.9,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1165,10 +1274,12 @@ mod segbar_tests {
                 Zone {
                     at: 0.7,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 0.9,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1196,10 +1307,12 @@ mod segbar_tests {
                 Zone {
                     at: 0.7,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 0.9,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1240,10 +1353,12 @@ mod segbar_tests {
                 Zone {
                     at: 1.0,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 1.0,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1279,10 +1394,12 @@ mod segbar_tests {
                 Zone {
                     at: 1.0,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 1.0,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1324,10 +1441,12 @@ mod segbar_tests {
                 Zone {
                     at: 1.0,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 1.0,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1368,10 +1487,12 @@ mod segbar_tests {
                 Zone {
                     at: 0.7,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 0.9,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1405,10 +1526,12 @@ mod segbar_tests {
                     Zone {
                         at: 0.7,
                         color: WARN,
+                        cursor: None,
                     },
                     Zone {
                         at: 0.9,
                         color: DANGER,
+                        cursor: None,
                     },
                 ],
                 None,
@@ -1459,10 +1582,12 @@ mod segbar_tests {
                 Zone {
                     at: 1.0,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 1.0,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1510,10 +1635,12 @@ mod segbar_tests {
                 Zone {
                     at: 1.0,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 1.0,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1546,10 +1673,12 @@ mod segbar_tests {
                 Zone {
                     at: 1.0,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 1.0,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1577,10 +1706,12 @@ mod segbar_tests {
                 Zone {
                     at: 1.0,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 1.0,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -1989,10 +2120,12 @@ mod segbar_tests {
                 Zone {
                     at: 0.7,
                     color: WARN,
+                    cursor: None,
                 },
                 Zone {
                     at: 0.9,
                     color: DANGER,
+                    cursor: None,
                 },
             ],
             None,
@@ -2026,10 +2159,12 @@ mod segbar_tests {
                     Zone {
                         at: 0.7,
                         color: WARN,
+                        cursor: None,
                     },
                     Zone {
                         at: 0.9,
                         color: DANGER,
+                        cursor: None,
                     },
                 ],
                 None,

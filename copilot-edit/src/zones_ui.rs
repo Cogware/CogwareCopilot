@@ -52,6 +52,22 @@ pub(crate) fn fill_of(kind: &Kind) -> Color {
     }
 }
 
+/// Whether a kind carries a marker at all, since a band's marker colour is
+/// only worth offering where there is one to colour.
+pub(crate) fn has_cursor(kind: &Kind) -> bool {
+    match kind {
+        Kind::Arc { cursor, .. } | Kind::SegBar { cursor, .. } => cursor.is_some(),
+        _ => false,
+    }
+}
+
+/// A lighter version of a band's colour, which is what a marker inside it
+/// nearly always wants: the same hue, bright enough to pick out.
+fn brighter(c: Color) -> Color {
+    let up = |v: u8| v.saturating_add((255 - v) / 2);
+    Color::rgba(up(c.r), up(c.g), up(c.b), c.a)
+}
+
 /// A band's colour as the file writes it.
 fn hex(c: Color) -> String {
     format!("#{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a)
@@ -65,10 +81,14 @@ fn to_json(zones: &[Zone]) -> String {
     let mut out = String::from("[\n");
     for z in zones {
         out.push_str(&format!(
-            "        {{ \"at\": {:.2}, \"color\": \"{}\" }},\n",
+            "        {{ \"at\": {:.2}, \"color\": \"{}\"",
             z.at,
             hex(z.color)
         ));
+        if let Some(c) = z.cursor {
+            out.push_str(&format!(", \"cursor\": \"{}\"", hex(c)));
+        }
+        out.push_str(" },\n");
     }
     out.push_str("      ]");
     out
@@ -79,7 +99,12 @@ fn to_json(zones: &[Zone]) -> String {
 /// `fill` is the gauge's own colour, which a new band starts at: a band that
 /// arrived in some unrelated colour would have to be fixed before it could be
 /// judged, and the interesting edit is nearly always where it starts.
-pub(crate) fn zone_rows(ui: &mut egui::Ui, zones: &[Zone], fill: Color) -> Option<ZoneAsk> {
+pub(crate) fn zone_rows(
+    ui: &mut egui::Ui,
+    zones: &[Zone],
+    fill: Color,
+    marked: bool,
+) -> Option<ZoneAsk> {
     let mut out = None;
     let mut edited: Vec<Zone> = zones.to_vec();
     let mut changed: Option<Option<Gesture>> = None;
@@ -110,10 +135,38 @@ pub(crate) fn zone_rows(ui: &mut egui::Ui, zones: &[Zone], fill: Color) -> Optio
                 }
                 ui.horizontal(|ui| {
                     let mut rgba = [z.color.r, z.color.g, z.color.b, z.color.a];
-                    let r = ui.color_edit_button_srgba_unmultiplied(&mut rgba);
+                    let r = ui
+                        .color_edit_button_srgba_unmultiplied(&mut rgba)
+                        .on_hover_text("The reading's colour in this band");
                     if r.changed() {
                         z.color = Color::rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
                         changed = Some(gesture(&r));
+                    }
+                    // The marker's colour inside the band, offered only where
+                    // there is a marker to colour. Off means it takes the
+                    // band's own colour, which is a marker that disappears
+                    // into the band -- the thing worth being able to fix.
+                    if marked {
+                        let mut on = z.cursor.is_some();
+                        if ui
+                            .checkbox(&mut on, "mark")
+                            .on_hover_text(
+                                "Give the marker its own colour here, so it \
+                                 stays visible inside the band",
+                            )
+                            .changed()
+                        {
+                            z.cursor = on.then_some(brighter(z.color));
+                            changed = Some(None);
+                        }
+                        if let Some(c) = z.cursor {
+                            let mut m = [c.r, c.g, c.b, c.a];
+                            let r = ui.color_edit_button_srgba_unmultiplied(&mut m);
+                            if r.changed() {
+                                z.cursor = Some(Color::rgba(m[0], m[1], m[2], m[3]));
+                                changed = Some(gesture(&r));
+                            }
+                        }
                     }
                     if ui.button("×").on_hover_text("Remove this band").clicked() {
                         remove = Some(i);
@@ -132,6 +185,7 @@ pub(crate) fn zone_rows(ui: &mut egui::Ui, zones: &[Zone], fill: Color) -> Optio
             edited.push(Zone {
                 at: 1.0,
                 color: fill,
+                cursor: None,
             });
             changed = Some(None);
         }
@@ -169,6 +223,7 @@ mod tests {
         let z = [Zone {
             at: 0.75,
             color: Color::rgba(255, 0, 0, 255),
+            cursor: None,
         }];
         let text = to_json(&z);
         assert!(text.contains(r#""at": 0.75"#), "{text}");
@@ -183,10 +238,12 @@ mod tests {
             Zone {
                 at: 0.0,
                 color: Color::rgb(248, 81, 73),
+                cursor: Some(Color::rgb(255, 170, 165)),
             },
             Zone {
                 at: 0.6,
                 color: Color::rgb(63, 185, 80),
+                cursor: None,
             },
         ];
         let src = format!(

@@ -307,11 +307,11 @@ and it runs until the next one begins:
 
 ```jsonc
 "zones": [
-  { "at": 0.00, "color": "#f85149" },  // danger, low
-  { "at": 0.15, "color": "#d29922" },  // caution, low
-  { "at": 0.30, "color": "#3fb950" },  // normal
-  { "at": 0.80, "color": "#d29922" },  // caution, high
-  { "at": 0.92, "color": "#f85149" },  // danger, high
+  { "at": 0.00, "color": "#8a2a26", "cursor": "#ffb4ae" },  // danger, low
+  { "at": 0.20, "color": "#7a5a12", "cursor": "#ffd97a" },  // caution, low
+  { "at": 0.35, "color": "#1f6f34", "cursor": "#a8f5c0" },  // normal
+  { "at": 0.82, "color": "#7a5a12", "cursor": "#ffd97a" },  // caution, high
+  { "at": 0.93, "color": "#8a2a26", "cursor": "#ffb4ae" },  // danger, high
 ]
 ```
 
@@ -323,6 +323,13 @@ A band colours the **reading**, not the track: where a gauge has got to is what
 the colour is about, and an unlit segment sitting in the redline is still
 unlit. Bands are held in ascending order whatever order they are written in, so
 a list that reads out of order still draws what it says.
+
+A band's `cursor` is what the marker looks like inside it. Without one the
+marker takes the band's own colour, which is a marker nobody can see -- and the
+redline is exactly where knowing the reading matters most. With one, both
+survive: the band still says the reading is in the redline and the marker still
+says where in it. Usually the same hue a shade or two brighter, which is what
+the editor's **mark** box fills in when it is ticked.
 
 `warn`, `warn_fill`, `danger` and `danger_fill` are the two-band shorthand and
 still mean exactly what they did, so no scene written before this needs an

@@ -222,6 +222,13 @@ fn arc<S: Surface + ?Sized>(
         // own width sitting at the reading -- the leading edge of the fill,
         // which is where a bank's marked cell is too.
         if let Some(mark) = cursor {
+            // The band the reading is standing in says what the mark looks
+            // like there, so a marker running into the redline stays a marker
+            // rather than vanishing into it.
+            let mark = match Zone::pick(zones, value) {
+                Some(z) => z.mark(),
+                None => mark,
+            };
             let wide = if cursor_size > 0 {
                 deg_to_brad(cursor_size)
             } else {
@@ -303,14 +310,13 @@ fn arc<S: Surface + ?Sized>(
         // Where this segment sits on the scale, which is what a band is about
         // rather than where the reading has got to.
         let at_frac = (i + 1) as f32 / n as f32;
+        let is_mark = cursor.is_some() && count > 0 && i > count - 1 - marked && i < count;
         let colour = if !is_lit {
             track
         } else if let Some(z) = Zone::pick(zones, at_frac) {
-            z
+            if is_mark { z.mark() } else { z.color }
         } else if let Some(c) = cursor
-            && count > 0
-            && i > count - 1 - marked
-            && i < count
+            && is_mark
         {
             c
         } else {
@@ -1811,23 +1817,28 @@ mod widget_tests {
         alloc::vec![
             Zone {
                 at: 0.00,
-                color: Color::rgb(255, 0, 0)
+                color: Color::rgb(255, 0, 0),
+                cursor: None
             },
             Zone {
                 at: 0.15,
-                color: Color::rgb(255, 255, 0)
+                color: Color::rgb(255, 255, 0),
+                cursor: None
             },
             Zone {
                 at: 0.30,
-                color: Color::rgb(0, 255, 0)
+                color: Color::rgb(0, 255, 0),
+                cursor: None
             },
             Zone {
                 at: 0.80,
-                color: Color::rgb(255, 255, 0)
+                color: Color::rgb(255, 255, 0),
+                cursor: None
             },
             Zone {
                 at: 0.92,
-                color: Color::rgb(255, 0, 0)
+                color: Color::rgb(255, 0, 0),
+                cursor: None
             },
         ]
     }

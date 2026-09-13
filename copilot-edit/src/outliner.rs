@@ -271,8 +271,9 @@ impl App {
         let mut zone_edit = None;
         if let Some(zones) = crate::zones_ui::zones_of(&node.kind) {
             let fill = crate::zones_ui::fill_of(&node.kind);
+            let marked = crate::zones_ui::has_cursor(&node.kind);
             ui.separator();
-            zone_edit = crate::zones_ui::zone_rows(ui, zones, fill);
+            zone_edit = crate::zones_ui::zone_rows(ui, zones, fill, marked);
         }
 
         // A curve is a row of numbers, and the place to shape one is on the

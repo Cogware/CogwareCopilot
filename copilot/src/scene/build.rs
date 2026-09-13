@@ -346,9 +346,14 @@ fn zones(
                 .get("color")
                 .and_then(Value::as_str)
                 .ok_or(BuildError::BadField { field })?;
+            let mark = match z.get("cursor").and_then(Value::as_str) {
+                Some(h) => Some(parse_hex(h).ok_or(BuildError::BadColor { field })?),
+                None => None,
+            };
             out.push(Zone {
                 at: if at.is_nan() { 0.0 } else { at },
                 color: parse_hex(hex).ok_or(BuildError::BadColor { field })?,
+                cursor: mark,
             });
         }
         // `total_cmp` rather than `partial_cmp`: a NaN is already gone above,
@@ -366,6 +371,7 @@ fn zones(
         out.push(Zone {
             at: warn,
             color: colour(val, "warn_fill", warn_fill)?,
+            cursor: None,
         });
     }
     let danger = unbounded(val, "danger", 2.0)?;
@@ -373,6 +379,7 @@ fn zones(
         out.push(Zone {
             at: danger,
             color: colour(val, "danger_fill", danger_fill)?,
+            cursor: None,
         });
     }
     out.sort_by(|a, b| a.at.total_cmp(&b.at));
@@ -1116,6 +1123,24 @@ mod tests {
         assert_eq!(z.len(), 5);
         assert_eq!(z[0].at, 0.0);
         assert_eq!(z[4].color, Color::rgb(248, 81, 73));
+    }
+
+    #[test]
+    fn a_band_can_say_what_the_marker_looks_like_inside_it() {
+        let src = r##"{"type":"segbar","rect":[0,0,10,10],"zones":[
+            {"at":0.9,"color":"#f85149","cursor":"#ffaaa5"}]}"##;
+        let z = bands(src);
+        assert_eq!(z[0].cursor, Some(Color::rgb(255, 170, 165)));
+        assert_eq!(z[0].mark(), Color::rgb(255, 170, 165));
+    }
+
+    #[test]
+    fn a_band_with_no_marker_colour_marks_in_its_own() {
+        let src = r##"{"type":"segbar","rect":[0,0,10,10],"zones":[
+            {"at":0.9,"color":"#f85149"}]}"##;
+        let z = bands(src);
+        assert_eq!(z[0].cursor, None);
+        assert_eq!(z[0].mark(), z[0].color);
     }
 
     #[test]
