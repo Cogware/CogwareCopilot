@@ -13,7 +13,7 @@ use copilot::anim::Animator;
 use copilot::asset::{AnimTable, Image, ImageTable};
 use copilot::font::{Font, default_font};
 use copilot::render::{Resources, compose_all};
-use copilot::scene::{Binding, Shape};
+use copilot::scene::{Binding, Hotspot, Shape};
 use copilot::widget::{ROOT, Tree};
 use copilot::{MemorySurface, PixelFormat, Size};
 
@@ -29,6 +29,8 @@ pub struct Preview {
     pub anims: Animator,
     /// Widgets bound to gauges, resolved against the bus spec at load.
     pub bindings: Vec<Binding>,
+    /// Widgets a finger can press, resolved against the tree at load.
+    pub hotspots: Vec<Hotspot>,
     /// The CAN node the scene says it is for, if it says.
     pub node: Option<u8>,
     /// The outline of the panel the scene is drawn on.
@@ -58,6 +60,7 @@ impl Preview {
             clips: AnimTable::new(),
             anims: Animator::new(),
             bindings: Vec::new(),
+            hotspots: Vec::new(),
             node: None,
             shape: Shape::Rect,
             error: None,
@@ -138,6 +141,7 @@ impl Preview {
         self.tree = Some(scene.tree);
         self.anims = scene.anims;
         self.bindings = scene.bindings;
+        self.hotspots = scene.hotspots;
         self.node = scene.node;
         self.shape = scene.shape;
         self.error = None;

@@ -9,7 +9,9 @@
 //! line, and splicing a key inside it would need the editor to know where
 //! inside the widget's text it sits.
 
+use copilot::cogware_can::indicators::{ALL_INDICATORS, Indicator};
 use copilot::cogware_can::{ALL_GAUGES, GaugeData, Quantity, Unit};
+use copilot::scene::bind::indicator_bank;
 use copilot::scene::{Binding, units_for};
 use copilot::widget::BindTarget;
 
@@ -24,11 +26,33 @@ pub(crate) enum BindEdit {
     Unset,
 }
 
+/// What the picker at the top of an axis is set to.
+///
+/// An enum rather than the name as a string, because a lamp and a gauge are
+/// two different things that both have names and the row has to write two
+/// different keys for them.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Pick {
+    /// Bound to nothing.
+    None,
+    /// A reading off the bus.
+    Gauge(&'static GaugeData),
+    /// One tell-tale: one bit of one of the two bitfield gauges.
+    Lamp(Indicator),
+}
+
 /// A binding as the rows edit it: the fields of a [`Binding`] without the
 /// node, so a fresh one can exist before it is written anywhere.
 #[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Draft {
     gauge: &'static GaugeData,
+    /// The tell-tale, when the binding names one rather than a gauge.
+    ///
+    /// A lamp is one *bit*, and `gauge` is only the bank it lives in. Holding
+    /// the bank alone was enough to draw the pane and not enough to write it
+    /// back: the widget came out bound to the whole of `INDICATORS1`, lit
+    /// whenever any of its thirty-two lamps was.
+    indicator: Option<Indicator>,
     unit: Unit,
     divide: f32,
     offset: f32,
@@ -43,6 +67,7 @@ impl Draft {
     fn of(b: &Binding) -> Self {
         Self {
             gauge: b.gauge,
+            indicator: b.indicator,
             unit: b.unit,
             divide: b.divide,
             offset: b.offset,
@@ -60,6 +85,7 @@ impl Draft {
         let (min, max) = default_span(gauge.unit.quantity);
         Self {
             gauge,
+            indicator: None,
             unit: gauge.unit,
             divide: 1.0,
             offset: 0.0,
@@ -71,12 +97,52 @@ impl Draft {
         }
     }
 
+    /// A new binding to one tell-tale.
+    ///
+    /// Lit is 1 and out is 0, so there is no range to choose and no unit to
+    /// convert; the bank the bit lives in is the spec's business and is
+    /// worked out rather than asked for.
+    pub(crate) fn fresh_lamp(ind: Indicator, target: BindTarget) -> Self {
+        Self {
+            gauge: indicator_bank(ind),
+            indicator: Some(ind),
+            unit: Unit::RAW,
+            divide: 1.0,
+            offset: 0.0,
+            min: 0.0,
+            max: 1.0,
+            decimals: 0,
+            pad: 0,
+            target,
+        }
+    }
+
+    /// What this binding reads, for the picker and the rows below it.
+    fn pick(&self) -> Pick {
+        match self.indicator {
+            Some(i) => Pick::Lamp(i),
+            None => Pick::Gauge(self.gauge),
+        }
+    }
+
     /// The `bind` object as the scene format wants it. Defaults are left out,
     /// so a file says only what its author chose.
     ///
     /// `natural` is the axis this kind drives when a block does not say, so
     /// the `property` key is written only when it carries information.
     pub(crate) fn json(&self, natural: BindTarget) -> String {
+        // A lamp names itself and nothing else. Its range is a bit, its unit
+        // is the bank's raw one, and a transform over a 0 or a 1 is not a
+        // thing anyone wants -- so none of the keys below apply and writing
+        // them would only be a second place for the file to be wrong.
+        if let Some(ind) = self.indicator {
+            let mut s = format!(r#"{{ "indicator": "{}""#, ind.name());
+            if self.target != natural {
+                s.push_str(&format!(r#", "property": "{}""#, self.target.name()));
+            }
+            s.push_str(" }");
+            return s;
+        }
         let mut s = format!(r#"{{ "gauge": "{}""#, self.gauge.name);
         if self.target != natural {
             s.push_str(&format!(r#", "property": "{}""#, self.target.name()));
@@ -155,6 +221,9 @@ fn default_span(q: Quantity) -> (f32, f32) {
         Quantity::Voltage => (8.0, 16.0),
         Quantity::Mixture => (10.0, 20.0),
         Quantity::Speed => (0.0, 300.0),
+        // An odometer's whole life, not a trip: a range that ends at a few
+        // thousand km makes the bar on a 200,000 km car sit pinned.
+        Quantity::Distance => (0.0, 500_000.0),
         Quantity::Angle => (-10.0, 50.0),
         Quantity::Duration => (0.0, 20.0),
         Quantity::Time => (0.0, 3600.0),
@@ -168,6 +237,15 @@ fn default_span(q: Quantity) -> (f32, f32) {
     }
 }
 
+/// What the picker shows for a choice.
+fn pick_name(p: Pick) -> &'static str {
+    match p {
+        Pick::None => "none",
+        Pick::Gauge(g) => g.name,
+        Pick::Lamp(i) => i.name(),
+    }
+}
+
 /// The symbol a unit is shown by. The raw unit's is empty, which on a button
 /// reads as broken rather than as raw.
 fn symbol(u: Unit) -> &'static str {
@@ -175,11 +253,25 @@ fn symbol(u: Unit) -> &'static str {
 }
 
 /// The axes a kind can be bound on, in the order a person meets them.
-fn axes(kind: &copilot::widget::Kind) -> Vec<BindTarget> {
-    [BindTarget::Reading, BindTarget::Height, BindTarget::Text]
+fn axes(kind: &copilot::widget::Kind, current: &[&Binding]) -> Vec<BindTarget> {
+    // The kind's own axes, plus any the widget is actually bound on.
+    //
+    // `Visible` is not offered on its own account: every kind accepts it, so
+    // listing it always would put a near-identical group under every widget
+    // in the editor. But an axis the pane does not list is an axis the pane
+    // drops -- the blocks it writes back are built from this list -- so a
+    // `visible` binding somebody authored by hand has to appear here or
+    // editing the widget's colour would silently delete it.
+    let mut out: Vec<BindTarget> = [BindTarget::Reading, BindTarget::Height, BindTarget::Text]
         .into_iter()
         .filter(|t| kind.accepts(*t))
-        .collect()
+        .collect();
+    for b in current {
+        if !out.contains(&b.target) {
+            out.push(b.target);
+        }
+    }
+    out
 }
 
 /// What an axis is called in the pane when a widget has more than one.
@@ -188,6 +280,7 @@ fn axis_name(t: BindTarget) -> &'static str {
         BindTarget::Reading => "along",
         BindTarget::Height => "up",
         BindTarget::Text => "text",
+        BindTarget::Visible => "shown",
     }
 }
 
@@ -203,7 +296,7 @@ pub(crate) fn bind_rows(
     kind: &copilot::widget::Kind,
     current: &[&Binding],
 ) -> Option<(BindEdit, Option<Gesture>)> {
-    let targets = axes(kind);
+    let targets = axes(kind, current);
     let natural = kind.bind_target()?;
     let mut drafts: Vec<Option<Draft>> = targets
         .iter()
@@ -225,6 +318,7 @@ pub(crate) fn bind_rows(
                     BindTarget::Reading => "How far along its scale the reading has got",
                     BindTarget::Height => "How tall the lit cells stand within their envelope",
                     BindTarget::Text => "The number the readout shows",
+                    BindTarget::Visible => "Whether the widget is on the screen at all",
                 });
             ui.label("");
             ui.end_row();
@@ -258,28 +352,49 @@ fn axis_rows(
     current: Option<&Draft>,
 ) -> Option<(Option<Draft>, Option<Gesture>)> {
     let salt = target.name();
-    ui.label("gauge");
-    let now = current.map_or("none", |d| d.gauge.name);
+    ui.label("reads");
+    let now = current.map_or(Pick::None, Draft::pick);
     let mut picked = now;
     egui::ComboBox::from_id_salt(("bind-gauge", salt))
-        .selected_text(now)
+        .selected_text(pick_name(now))
         .width(180.0)
+        .height(360.0)
         .show_ui(ui, |ui| {
-            ui.selectable_value(&mut picked, "none", "none");
+            ui.selectable_value(&mut picked, Pick::None, "none");
+            ui.separator();
             for g in ALL_GAUGES {
-                ui.selectable_value(&mut picked, g.name, g.name)
+                ui.selectable_value(&mut picked, Pick::Gauge(g), g.name)
                     .on_hover_text(format!("{} · {:?}", symbol(g.unit), g.source));
+            }
+            // The tell-tales below the gauges, in the spec's own table order.
+            // They are bits rather than readings, so they are picked by name
+            // and never by the bank they happen to sit in -- which is why
+            // INDICATORS1 and INDICATORS2 are in the list above as well and
+            // mean something quite different.
+            ui.separator();
+            ui.label(egui::RichText::new("tell-tales").small().weak());
+            for ind in ALL_INDICATORS {
+                ui.selectable_value(&mut picked, Pick::Lamp(*ind), ind.name())
+                    .on_hover_text("One bit. Lit is 1, out is 0.");
             }
         });
     ui.end_row();
     if picked != now {
-        let d = ALL_GAUGES
-            .iter()
-            .find(|g| g.name == picked)
-            .map(|g| Draft::fresh(g, target));
+        let d = match picked {
+            Pick::None => None,
+            Pick::Gauge(g) => Some(Draft::fresh(g, target)),
+            Pick::Lamp(i) => Some(Draft::fresh_lamp(i, target)),
+        };
         return Some((d, None));
     }
     let b = current?;
+
+    // A lamp has no unit to convert, no range to set and no transform worth
+    // applying to a 0 or a 1, so the rows below are not drawn for one. The
+    // picker above is the whole of editing a tell-tale.
+    if b.indicator.is_some() {
+        return None;
+    }
 
     let mut d = b.clone();
     let mut g: Option<Option<Gesture>> = None;
@@ -339,7 +454,7 @@ fn axis_rows(
     // text, where the reading is shown whole and the ends only say how far
     // the dummy values travel.
     ui.label(match target {
-        BindTarget::Reading | BindTarget::Height => "range",
+        BindTarget::Reading | BindTarget::Height | BindTarget::Visible => "range",
         BindTarget::Text => "sweep",
     });
     ui.horizontal(|ui| {
@@ -371,6 +486,7 @@ fn axis_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use copilot::cogware_can::indicators::Indicator;
     use copilot::cogware_can::{BAT_VOL, CLNT, GEAR, MAP, RPM};
 
     /// The binding a `bind` object produces on a widget of `kind`.
@@ -400,9 +516,130 @@ mod tests {
     }
 
     #[test]
+    fn a_tell_tale_binding_survives_the_pane() {
+        // The bug this catches: a binding to one lamp is a binding to one
+        // *bit*, and the pane held only the bank that bit lives in. Opening a
+        // led bound to OIL_PRESSURE and touching any row rewrote it as
+        // `{"gauge": "INDICATORS1"}` -- which lights the widget whenever any
+        // of that bank's thirty-two lamps is on, not when that one is.
+        let b = bound("led", r#"{ "indicator": "OIL_PRESSURE" }"#);
+        assert_eq!(b.indicator, Some(Indicator::OilPressure));
+
+        let d = Draft::of(&b);
+        let written = d.json(BindTarget::Reading);
+        assert!(
+            !written.contains("INDICATORS"),
+            "the pane wrote the bank instead of the lamp: {written}"
+        );
+        let back = bound("led", &written);
+        assert_eq!(
+            back.indicator,
+            Some(Indicator::OilPressure),
+            "the lamp did not survive: {written}"
+        );
+        assert_eq!(Draft::of(&back), d, "what was written is what is read");
+    }
+
+    #[test]
+    fn a_lamp_writes_its_name_and_nothing_it_has_no_use_for() {
+        // A bit has no unit, no range and no transform. Writing them would
+        // only be a second place for the file to disagree with itself.
+        let d = Draft::fresh_lamp(Indicator::LowFuel, BindTarget::Reading);
+        assert_eq!(
+            d.json(BindTarget::Reading),
+            r#"{ "indicator": "LOW_FUEL" }"#
+        );
+        // The bank is worked out, never asked for.
+        assert_eq!(d.gauge.name, "INDICATORS1");
+        assert_eq!(
+            bound("led", &d.json(BindTarget::Reading)).gauge.name,
+            "INDICATORS1"
+        );
+
+        // A lamp on a second bank lands on the second gauge, still by name.
+        let two = Draft::fresh_lamp(Indicator::PitLimiter, BindTarget::Reading);
+        assert_eq!(two.gauge.name, "INDICATORS2");
+        assert_eq!(
+            bound("led", &two.json(BindTarget::Reading)).indicator,
+            Some(Indicator::PitLimiter)
+        );
+    }
+
+    #[test]
+    fn a_lamp_that_shows_a_widget_keeps_saying_so() {
+        // The property is the one key a lamp still needs: it is what makes a
+        // printed symbol appear rather than a rectangle brighten.
+        let b = bound(
+            "led",
+            r#"{ "indicator": "OVERHEAT", "property": "visible" }"#,
+        );
+        let written = Draft::of(&b).json(BindTarget::Reading);
+        assert_eq!(
+            written,
+            r#"{ "indicator": "OVERHEAT", "property": "visible" }"#
+        );
+        let back = bound("led", &written);
+        assert_eq!(back.target, BindTarget::Visible);
+        assert_eq!(back.indicator, Some(Indicator::Overheat));
+    }
+
+    #[test]
+    fn every_lamp_the_spec_has_survives_being_written_and_read() {
+        // Sixty-four bits across two banks, each of which has to come back as
+        // itself rather than as its neighbour or as its bank.
+        for ind in copilot::cogware_can::indicators::ALL_INDICATORS {
+            let d = Draft::fresh_lamp(*ind, BindTarget::Reading);
+            let b = bound("led", &d.json(BindTarget::Reading));
+            assert_eq!(b.indicator, Some(*ind), "{}", ind.name());
+            assert_eq!((b.min, b.max), (0.0, 1.0), "{}", ind.name());
+        }
+    }
+
+    #[test]
+    fn an_axis_the_widget_is_bound_on_is_never_dropped() {
+        // The other half of the same bug: the blocks written back are built
+        // from the axis list, so an axis missing from it is an axis deleted.
+        // A led's own axis is `value`; a `visible` binding is not, and used
+        // to vanish the moment anything else on the widget was edited.
+        let led = copilot::widget::Kind::Led {
+            color: copilot::Color::WHITE,
+            level: 0.0,
+            glow: 0.0,
+            off: copilot::Color::TRANSPARENT,
+        };
+        let b = bound(
+            "led",
+            r#"{ "indicator": "LOW_FUEL", "property": "visible" }"#,
+        );
+        assert_eq!(
+            axes(&led, &[&b]),
+            vec![BindTarget::Reading, BindTarget::Visible],
+            "the visible binding had nowhere to be written back from"
+        );
+        // And a widget bound the ordinary way grows no extra group.
+        let plain = bound("led", r#"{ "indicator": "ABS" }"#);
+        assert_eq!(axes(&led, &[&plain]), vec![BindTarget::Reading]);
+        assert_eq!(axes(&led, &[]), vec![BindTarget::Reading]);
+    }
+
+    #[test]
+    fn a_gauge_and_a_lamp_are_two_different_choices() {
+        // `INDICATORS1` is a real gauge and a legitimate thing to bind to --
+        // it is just not what "the oil lamp" means. The picker has to be able
+        // to say both, which a bare name cannot.
+        let bank = Draft::fresh(&copilot::cogware_can::INDICATORS1, BindTarget::Reading);
+        let lamp = Draft::fresh_lamp(Indicator::OilPressure, BindTarget::Reading);
+        assert_ne!(bank.pick(), lamp.pick());
+        assert_eq!(bank.gauge.name, lamp.gauge.name, "same bank, all the same");
+        assert!(bank.json(BindTarget::Reading).contains(r#""gauge""#));
+        assert!(lamp.json(BindTarget::Reading).contains(r#""indicator""#));
+    }
+
+    #[test]
     fn json_leaves_defaults_out_and_round_trips() {
         let d = Draft {
             gauge: &CLNT,
+            indicator: None,
             unit: Unit::FAHRENHEIT,
             divide: 1.0,
             offset: 0.0,

@@ -52,6 +52,7 @@ pub fn seg_bar<S: Surface + ?Sized>(
     segments: u32,
     gap: u32,
     fill: Color,
+    fill_to: Color,
     track: Color,
     warn: f32,
     warn_fill: Color,
@@ -149,8 +150,15 @@ pub fn seg_bar<S: Surface + ?Sized>(
             danger_fill
         } else if at_frac >= warn {
             warn_fill
-        } else {
+        } else if fill == fill_to {
             fill
+        } else {
+            // Across the whole bank, not across the lit part of it, so a cell
+            // keeps its colour as the reading passes it. A ramp measured
+            // against the reading would repaint every lit cell on every
+            // change, which is both wrong to look at and the most expensive
+            // thing this widget could do.
+            super::gradient::mix(fill, fill_to, i, n - 1)
         };
         if colour.is_transparent() {
             continue;
@@ -234,6 +242,7 @@ mod segbar_tests {
             segments,
             gap,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -245,6 +254,98 @@ mod segbar_tests {
             0,
             false,
         );
+    }
+
+    #[test]
+    fn a_lit_bar_ramps_across_its_cells_when_given_a_second_colour() {
+        let mut s = surf();
+        seg_bar(
+            &mut s,
+            FULL,
+            FULL,
+            1.0,
+            1.0,
+            8,
+            2,
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 0, 255),
+            OFF,
+            2.0,
+            WARN,
+            2.0,
+            DANGER,
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+        let (first, last) = (px(&s, 1, 32), px(&s, 62, 32));
+        assert!(first[2] > first[0], "the first cell is not the near colour");
+        assert!(last[0] > last[2], "the last cell is not the far colour");
+    }
+
+    #[test]
+    fn a_cell_keeps_its_ramp_colour_as_the_reading_passes_it() {
+        // The ramp is across the bank, not across the lit part of it. Were it
+        // the latter, every lit cell would change colour on every reading --
+        // wrong to look at, and the most expensive thing this widget could do.
+        let mut low = surf();
+        let mut high = surf();
+        for (s, value) in [(&mut low, 0.5f32), (&mut high, 1.0)] {
+            seg_bar(
+                s,
+                FULL,
+                FULL,
+                value,
+                1.0,
+                8,
+                2,
+                Color::rgb(255, 0, 0),
+                Color::rgb(0, 0, 255),
+                OFF,
+                2.0,
+                WARN,
+                2.0,
+                DANGER,
+                false,
+                &[],
+                0,
+                0,
+                false,
+            );
+        }
+        assert_eq!(px(&low, 1, 32), px(&high, 1, 32), "the first cell moved");
+    }
+
+    #[test]
+    fn a_redline_still_wins_over_the_ramp() {
+        // The two ways of showing where on the scale a reading sits have to
+        // compose: a gauge can ramp green to amber and still have a hard
+        // redline at the top.
+        let mut s = surf();
+        seg_bar(
+            &mut s,
+            FULL,
+            FULL,
+            1.0,
+            1.0,
+            8,
+            2,
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 0, 255),
+            OFF,
+            2.0,
+            WARN,
+            0.9,
+            DANGER,
+            false,
+            &[],
+            0,
+            0,
+            false,
+        );
+        assert_eq!(px(&s, 62, 32), bgr(DANGER), "the last cell lost its band");
     }
 
     /// The distinct colours found along the middle row, left to right.
@@ -338,6 +439,7 @@ mod segbar_tests {
             10,
             1,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -364,6 +466,7 @@ mod segbar_tests {
             1.0,
             4,
             2,
+            LIT,
             LIT,
             OFF,
             2.0,
@@ -394,6 +497,7 @@ mod segbar_tests {
             1.0,
             10,
             1,
+            LIT,
             LIT,
             OFF,
             0.7,
@@ -430,6 +534,7 @@ mod segbar_tests {
             10,
             1,
             LIT,
+            LIT,
             OFF,
             0.7,
             WARN,
@@ -449,6 +554,7 @@ mod segbar_tests {
             1.0,
             10,
             1,
+            LIT,
             LIT,
             OFF,
             0.7,
@@ -483,6 +589,7 @@ mod segbar_tests {
             10,
             1,
             LIT,
+            LIT,
             Color::TRANSPARENT,
             1.0,
             WARN,
@@ -510,6 +617,7 @@ mod segbar_tests {
             1.0,
             4,
             3,
+            LIT,
             LIT,
             OFF,
             1.0,
@@ -545,6 +653,7 @@ mod segbar_tests {
             8,
             1,
             LIT,
+            LIT,
             OFF,
             1.0,
             WARN,
@@ -578,6 +687,7 @@ mod segbar_tests {
             7,
             2,
             LIT,
+            LIT,
             OFF,
             0.7,
             WARN,
@@ -603,6 +713,7 @@ mod segbar_tests {
                 1.0,
                 7,
                 2,
+                LIT,
                 LIT,
                 OFF,
                 0.7,
@@ -647,6 +758,7 @@ mod segbar_tests {
             4,
             1,
             LIT,
+            LIT,
             OFF,
             1.0,
             WARN,
@@ -687,6 +799,7 @@ mod segbar_tests {
             u32::MAX,
             0,
             LIT,
+            LIT,
             OFF,
             1.0,
             WARN,
@@ -712,6 +825,7 @@ mod segbar_tests {
             8,
             1,
             LIT,
+            LIT,
             OFF,
             1.0,
             WARN,
@@ -731,6 +845,7 @@ mod segbar_tests {
             1.0,
             8,
             1,
+            LIT,
             LIT,
             OFF,
             1.0,
@@ -761,6 +876,7 @@ mod segbar_tests {
             1.0,
             4,
             0,
+            LIT,
             LIT,
             OFF,
             2.0,
@@ -800,6 +916,7 @@ mod segbar_tests {
             2,
             0,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -829,6 +946,7 @@ mod segbar_tests {
             8,
             2,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -856,6 +974,7 @@ mod segbar_tests {
             4,
             0,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -881,6 +1000,7 @@ mod segbar_tests {
             1.0,
             2,
             0,
+            LIT,
             LIT,
             OFF,
             2.0,
@@ -908,6 +1028,7 @@ mod segbar_tests {
             1.0,
             3,
             0,
+            LIT,
             LIT,
             OFF,
             2.0,
@@ -942,6 +1063,7 @@ mod segbar_tests {
             2,
             0,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -971,6 +1093,7 @@ mod segbar_tests {
             1.0,
             2,
             0,
+            LIT,
             LIT,
             OFF,
             2.0,
@@ -1048,6 +1171,7 @@ mod segbar_tests {
             2,
             0,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -1083,6 +1207,7 @@ mod segbar_tests {
             2,
             0,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -1113,6 +1238,7 @@ mod segbar_tests {
             7,
             2,
             LIT,
+            LIT,
             OFF,
             0.7,
             WARN,
@@ -1138,6 +1264,7 @@ mod segbar_tests {
                 1.0,
                 7,
                 2,
+                LIT,
                 LIT,
                 OFF,
                 0.7,
@@ -1165,6 +1292,7 @@ mod segbar_tests {
             1.0,
             4,
             1,
+            LIT,
             LIT,
             OFF,
             2.0,
@@ -1199,6 +1327,7 @@ mod segbar_tests {
             height,
             4,
             2,
+            LIT,
             LIT,
             Color::TRANSPARENT,
             2.0,
@@ -1261,6 +1390,7 @@ mod segbar_tests {
             8,
             2,
             LIT,
+            LIT,
             OFF,
             2.0,
             WARN,
@@ -1280,6 +1410,7 @@ mod segbar_tests {
             1.0,
             8,
             2,
+            LIT,
             LIT,
             OFF,
             2.0,

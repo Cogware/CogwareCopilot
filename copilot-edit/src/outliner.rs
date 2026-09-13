@@ -13,6 +13,7 @@ use crate::bind_ui::{self, BindEdit};
 use crate::canvas::{Gesture, committed, gesture};
 use crate::menu::{self, Command};
 use crate::select::toggle_in;
+use crate::touch_ui::TouchEdit;
 use crate::{App, describe_node, inspect, kind_name};
 
 /// Where a dragged row is about to land, relative to the row under it.
@@ -244,6 +245,27 @@ impl App {
                     bind_edit = bind_ui::bind_rows(ui, &node.kind, &current)
                 });
         }
+        // What the widget does when a finger lands on it. Below the binding
+        // because a widget is far more often something that shows a reading
+        // than something that is pressed, and above the curve because it is
+        // part of what the widget *is* rather than a tool for shaping it.
+        let mut touch_edit = None;
+        {
+            let current = self
+                .preview
+                .hotspots
+                .iter()
+                .find(|h| h.node == id)
+                .map(|h| h.action.clone());
+            ui.separator();
+            egui::Grid::new("props-touch")
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    touch_edit = crate::touch_ui::touch_rows(ui, current.as_ref());
+                });
+        }
+
         // A curve is a row of numbers, and the place to shape one is on the
         // widget rather than in a column of drag boxes or the text pane.
         let mut shape_curve = None;
@@ -274,6 +296,13 @@ impl App {
             match b {
                 BindEdit::Set(v) => self.set_field_of(id, g, "bind", &v),
                 BindEdit::Unset => self.unset_field_of(id, "bind"),
+            }
+            return;
+        }
+        if let Some(t) = touch_edit {
+            match t {
+                TouchEdit::Set(v) => self.set_field_of(id, None, "touch", &v),
+                TouchEdit::Unset => self.unset_field_of(id, "touch"),
             }
             return;
         }

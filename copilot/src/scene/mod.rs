@@ -16,6 +16,8 @@ pub mod edit;
 pub mod lex;
 pub mod locate;
 pub mod parse;
+/// What a widget does when a finger touches it.
+pub mod touch;
 pub mod value;
 pub mod write;
 
@@ -24,5 +26,6 @@ pub use build::{BuildError, build, build_scene};
 pub use edit::{append, insert, remove, replace, set, unset};
 pub use locate::{Step, locate};
 pub use parse::{ParseError, parse};
+pub use touch::{Action, Event, Hotspot, Page, dispatch};
 pub use value::Value;
 pub use write::to_string;

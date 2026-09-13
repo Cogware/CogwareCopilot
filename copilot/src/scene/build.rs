@@ -12,10 +12,12 @@ use alloc::vec::Vec;
 use crate::anim::{Animation, Animator, Easing, Property, Repeat};
 use crate::asset::Scene;
 use crate::color::parse_hex;
+use crate::input::Axis;
 use crate::widget::{Align, Kind, Node, NodeId, ROOT, Tree, VAlign};
 use crate::{Color, Rect};
 
 use super::bind::{self, Binding, Shape};
+use super::touch::{self, Hotspot};
 use super::value::Value;
 
 /// Why a scene document could not be turned into a tree.
@@ -53,6 +55,10 @@ pub enum BuildError {
     },
     /// `node` named an address the bus reserves: the gateway or broadcast.
     ReservedNode(u8),
+    /// `touch.action` named something a widget cannot do.
+    UnknownAction(String),
+    /// `bind.indicator` named a tell-tale the bus spec does not have.
+    UnknownIndicator(String),
 }
 
 /// Maximum node nesting depth.
@@ -121,10 +127,12 @@ pub fn build_scene(doc: &Value) -> Result<Scene, BuildError> {
             .ok_or(BuildError::BadField { field: "shape" })?,
     };
     let mut bindings = Vec::new();
+    let mut hotspots = Vec::new();
     insert(
         &mut tree,
         &mut anims,
         &mut bindings,
+        &mut hotspots,
         ROOT,
         root_val,
         1,
@@ -136,16 +144,19 @@ pub fn build_scene(doc: &Value) -> Result<Scene, BuildError> {
         anim_requests,
         anims,
         bindings,
+        hotspots,
         node,
         shape,
     })
 }
 
 /// Build one node, push it under `parent`, then recurse into its children.
+#[allow(clippy::too_many_arguments)]
 fn insert(
     tree: &mut Tree,
     anims: &mut Animator,
     bindings: &mut Vec<Binding>,
+    hotspots: &mut Vec<Hotspot>,
     parent: NodeId,
     val: &Value,
     depth: u32,
@@ -171,6 +182,10 @@ fn insert(
         bind::bindings(id, kind, spec, bindings)?;
     }
 
+    if let Some(spec) = val.get("touch") {
+        hotspots.push(touch::hotspot(id, spec)?);
+    }
+
     match val.get("children") {
         None | Some(Value::Null) => {}
         Some(v) => {
@@ -178,9 +193,19 @@ fn insert(
                 .as_array()
                 .ok_or(BuildError::BadField { field: "children" })?;
             for child in kids {
-                insert(tree, anims, bindings, id, child, depth + 1, None)?;
+                insert(tree, anims, bindings, hotspots, id, child, depth + 1, None)?;
             }
         }
+    }
+
+    // After the children, because a pager cannot settle which of its pages is
+    // showing until it has some. An authored page past the last one falls
+    // back to the first rather than leaving the pager showing nothing: a
+    // blank screen is indistinguishable from a crashed display.
+    if let Some(page) = tree.get(id).and_then(|n| n.kind.page())
+        && tree.set_page(id, page).is_none()
+    {
+        tree.set_page(id, 0);
     }
     Ok(id)
 }
@@ -274,6 +299,25 @@ fn colour(val: &Value, field: &'static str, default: &str) -> Result<Color, Buil
         // only way this fails is a typo in the source, which the tests catch.
         None => parse_hex(default).ok_or(BuildError::BadColor { field }),
     }
+}
+
+/// `color` scaled towards black by `f`, the unlit look a scene gets when it
+/// names a `glow` and no `off` colour.
+///
+/// The components are scaled and the alpha is not: a surface fill overwrites
+/// rather than blending, and a framebuffer has no alpha channel to blend
+/// against, so a dimmed lamp has to be a darker colour rather than a more
+/// transparent one.
+fn dim(color: Color, f: f32) -> Color {
+    let f = if f.is_nan() { 0.0 } else { f.clamp(0.0, 1.0) };
+    // No glow at all means invisible when off, not black: scaling to zero
+    // would paint a lamp-shaped hole rather than nothing, and a hole is the
+    // one thing an unlit telltale must not leave.
+    if f <= 0.0 {
+        return Color::TRANSPARENT;
+    }
+    let scale = |v: u8| (f32::from(v) * f) as u8;
+    Color::rgba(scale(color.r), scale(color.g), scale(color.b), color.a)
 }
 
 /// Read an optional 0.0..=1.0 field, clamping rather than rejecting.
@@ -453,6 +497,27 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                 None => parse_hex("#00000000").unwrap(),
             };
             Ok(Kind::Panel { background: bg })
+        }
+        "pager" => {
+            let axis = match val.get("axis") {
+                None | Some(Value::Null) => Axis::Horizontal,
+                Some(v) => v
+                    .as_str()
+                    .and_then(Axis::parse)
+                    .ok_or(BuildError::BadField { field: "axis" })?,
+            };
+            Ok(Kind::Pager {
+                // Which page is up at build time, so a scene can open on the
+                // one that matters rather than always on the first. Out of
+                // range is left to `apply_pages`, which is where the child
+                // count is known.
+                page: count(val, "page", 0)?,
+                axis,
+                wrap: flag(val, "wrap", false)?,
+                // On by default: a pager nobody can swipe is the unusual
+                // case, and a scene that meant one says so.
+                swipe: flag(val, "swipe", true)?,
+            })
         }
         "menu" => {
             let menu = val
@@ -635,12 +700,22 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
             points: read_points(val)?,
             color: colour(val, "color", "#ffffffff")?,
         }),
-        "line" => Ok(Kind::Line {
-            points: read_points(val)?,
-            width: count(val, "width", 2)?,
-            color: colour(val, "color", "#ffffffff")?,
-            closed: flag(val, "closed", false)?,
-        }),
+        "line" => {
+            let color = colour(val, "color", "#ffffffff")?;
+            Ok(Kind::Line {
+                points: read_points(val)?,
+                width: count(val, "width", 2)?,
+                color,
+                // Defaulting to the near end rather than to a literal makes
+                // the flat stroke and the ramp the same code path: a scene
+                // that says nothing ramps from a colour to itself.
+                color_to: match val.get("color_to") {
+                    Some(_) => colour(val, "color_to", "#ffffffff")?,
+                    None => color,
+                },
+                closed: flag(val, "closed", false)?,
+            })
+        }
         "chart" => {
             let mut values = alloc::vec::Vec::new();
             if let Some(v) = val.get("values") {
@@ -693,26 +768,33 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
             major_color: colour(val, "major_color", "#ffffffff")?,
             vertical: flag(val, "vertical", false)?,
         }),
-        "segbar" => Ok(Kind::SegBar {
-            value: fraction(val, "value", 0.0)?,
-            segments: count(val, "segments", 10)?,
-            gap: count(val, "gap", 2)?,
-            fill: colour(val, "fill", "#3fb950ff")?,
-            track: colour(val, "track", "#12161cff")?,
-            // Above the top of the scale by default, so a gauge that never
-            // asked for a redline does not get one on its last cell.
-            warn: unbounded(val, "warn", 2.0)?,
-            warn_fill: colour(val, "warn_fill", "#d29922ff")?,
-            danger: unbounded(val, "danger", 2.0)?,
-            danger_fill: colour(val, "danger_fill", "#f85149ff")?,
-            vertical: flag(val, "vertical", false)?,
-            profile: read_fractions(val, "profile")?,
-            // One by default, so a bank with no second reading stands at its
-            // full envelope and draws as it always did.
-            height: fraction(val, "height", 1.0)?,
-            divisions: count(val, "divisions", 0)?,
-            div_gap: count(val, "div_gap", 1)?,
-        }),
+        "segbar" => {
+            let fill = colour(val, "fill", "#3fb950ff")?;
+            Ok(Kind::SegBar {
+                value: fraction(val, "value", 0.0)?,
+                segments: count(val, "segments", 10)?,
+                gap: count(val, "gap", 2)?,
+                fill,
+                fill_to: match val.get("fill_to") {
+                    Some(_) => colour(val, "fill_to", "#3fb950ff")?,
+                    None => fill,
+                },
+                track: colour(val, "track", "#12161cff")?,
+                // Above the top of the scale by default, so a gauge that never
+                // asked for a redline does not get one on its last cell.
+                warn: unbounded(val, "warn", 2.0)?,
+                warn_fill: colour(val, "warn_fill", "#d29922ff")?,
+                danger: unbounded(val, "danger", 2.0)?,
+                danger_fill: colour(val, "danger_fill", "#f85149ff")?,
+                vertical: flag(val, "vertical", false)?,
+                profile: read_fractions(val, "profile")?,
+                // One by default, so a bank with no second reading stands at its
+                // full envelope and draws as it always did.
+                height: fraction(val, "height", 1.0)?,
+                divisions: count(val, "divisions", 0)?,
+                div_gap: count(val, "div_gap", 1)?,
+            })
+        }
         "grid" => Ok(Kind::Grid {
             pitch_x: count(val, "pitch_x", 0)?,
             pitch_y: count(val, "pitch_y", 0)?,
@@ -725,7 +807,19 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
             // A default glow rather than zero: an unlit telltale that draws
             // nothing is indistinguishable from one the author forgot.
             let glow = fraction(val, "glow", 0.12)?;
-            Ok(Kind::Led { color, level, glow })
+            // Resolved here rather than at draw time so the renderer has one
+            // unlit colour to reach for and never has to know which of the
+            // two spellings a scene used.
+            let off = match val.get("off") {
+                Some(_) => colour(val, "off", "#00000000")?,
+                None => dim(color, glow),
+            };
+            Ok(Kind::Led {
+                color,
+                level,
+                glow,
+                off,
+            })
         }
         "roundrect" => {
             let background = colour(val, "background", "#00000000")?;
@@ -797,6 +891,40 @@ mod tests {
     fn top(t: &Tree) -> &crate::widget::Node {
         let id = t.get(ROOT).unwrap().children[0];
         t.get(id).unwrap()
+    }
+
+    /// The unlit colour the builder resolved for a lamp.
+    fn led_off(src: &str) -> Color {
+        match top(&go(&doc(src)).expect("a lamp must build")).kind {
+            Kind::Led { off, .. } => off,
+            ref other => panic!("expected a lamp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_lamp_naming_only_a_glow_is_unlit_at_the_colour_it_always_was() {
+        // The compatibility promise: every scene written before `off` existed
+        // keeps the exact pixels it had, so the field costs them no edit.
+        let off = led_off(r##"{"type":"led","rect":[0,0,10,10],"color":"#ff0000","glow":0.5}"##);
+        assert_eq!((off.r, off.g, off.b, off.a), (127, 0, 0, 255));
+    }
+
+    #[test]
+    fn a_lamp_with_no_glow_is_invisible_when_off_rather_than_black() {
+        // Scaling to zero would paint a lamp-shaped hole, which is the one
+        // thing an unlit telltale must not leave.
+        let off = led_off(r##"{"type":"led","rect":[0,0,10,10],"color":"#ffffff","glow":0}"##);
+        assert_eq!(off, Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn a_named_off_colour_supersedes_the_glow() {
+        // The point of the field: an unlit lamp that is paler than a lit one,
+        // which no multiplier on the lit colour can reach.
+        let off = led_off(
+            r##"{"type":"led","rect":[0,0,10,10],"color":"#ffa000","glow":0.5,"off":"#bebebe"}"##,
+        );
+        assert_eq!((off.r, off.g, off.b), (190, 190, 190));
     }
 
     // --- the happy path ---

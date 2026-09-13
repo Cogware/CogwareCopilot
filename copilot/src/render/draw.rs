@@ -318,6 +318,11 @@ pub fn draw_kind<S: Surface + ?Sized>(
             }
             fill_rect(surface, area, *background);
         }
+        // A pager is a grouping element and nothing else: which of its pages
+        // is up is carried entirely by the children's `visible` flag, which
+        // the compositor already honours, so there is nothing to draw here
+        // and no page for the renderer to know about.
+        Kind::Pager { .. } => {}
         Kind::Menu {
             menu,
             color,
@@ -497,10 +502,11 @@ pub fn draw_kind<S: Surface + ?Sized>(
             points,
             width,
             color,
+            color_to,
             closed,
         } => {
             super::plot::polyline(
-                surface, at, clip, points, *width, *color, *closed, antialias,
+                surface, at, clip, points, *width, *color, *color_to, *closed, antialias,
             );
         }
         Kind::Polygon { points, color } => {
@@ -553,6 +559,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
             segments,
             gap,
             fill,
+            fill_to,
             track,
             warn,
             warn_fill,
@@ -573,6 +580,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
                 *segments,
                 *gap,
                 *fill,
+                *fill_to,
                 *track,
                 *warn,
                 *warn_fill,
@@ -593,24 +601,20 @@ pub fn draw_kind<S: Surface + ?Sized>(
         } => {
             super::grid::grid(surface, at, clip, *pitch_x, *pitch_y, *width, *color);
         }
-        Kind::Led { color, level, glow } => {
-            // A lamp is drawn even when dark, at its glow level: a hole where
-            // a symbol should be tells the driver nothing, while a faint one
-            // tells them the lamp exists and is currently off.
-            let lit = clamp01(*level);
-            let dim = clamp01(*glow);
-            let mix = dim + (1.0 - dim) * lit;
-            // Scaling to zero would paint opaque black, which is a lamp-shaped
-            // hole rather than nothing. `glow: 0` means invisible when off.
-            if mix <= 0.0 {
-                return;
-            }
-            // The components are scaled, not the alpha. A surface fill
-            // overwrites rather than blending, and a framebuffer has no alpha
-            // channel to blend against anyway, so a dimmed lamp has to be a
-            // darker colour rather than a more transparent one.
-            let scale = |v: u8| (f32::from(v) * mix) as u8;
-            let c = Color::rgba(scale(color.r), scale(color.g), scale(color.b), color.a);
+        Kind::Led {
+            color, level, off, ..
+        } => {
+            // A lamp is drawn even when dark, in its unlit colour: a hole
+            // where a symbol should be tells the driver nothing, while a faint
+            // one tells them the lamp exists and is currently off.
+            //
+            // Lighting is a ramp from that colour to the lit one rather than a
+            // scaling of the lit one, so a lamp can be paler when off than on
+            // -- which a grey lens behind an amber bulb is, and which no
+            // amount of dimming `color` can produce. A scene that named only a
+            // `glow` had `off` computed from it and lands on exactly the
+            // colours it drew before.
+            let c = super::gradient::mix(*off, *color, (clamp01(*level) * 255.0) as i32, 255);
             if !c.is_transparent() {
                 fill_clipped(surface, at, clip, c);
             }
@@ -1492,6 +1496,7 @@ mod widget_tests {
                 color: Color::rgb(255, 0, 0),
                 level: 0.0,
                 glow: 0.3,
+                off: Color::rgb(76, 0, 0),
             },
             Rect::new(2, 2, 8, 8),
         );
@@ -1509,6 +1514,7 @@ mod widget_tests {
                     color: Color::rgb(255, 0, 0),
                     level,
                     glow: 0.2,
+                    off: Color::rgb(51, 0, 0),
                 },
                 Rect::new(0, 0, 8, 8),
             );
@@ -1525,6 +1531,7 @@ mod widget_tests {
                 color: Color::WHITE,
                 level: 0.0,
                 glow: 0.0,
+                off: Color::TRANSPARENT,
             },
             Rect::new(0, 0, 8, 8),
         );
@@ -1540,10 +1547,50 @@ mod widget_tests {
                 color: Color::WHITE,
                 level: f32::NAN,
                 glow: 0.0,
+                off: Color::TRANSPARENT,
             },
             Rect::new(0, 0, 8, 8),
         );
         assert_eq!(count(&s, 16, 16), 0);
+    }
+
+    #[test]
+    fn an_unlit_lamp_can_be_paler_than_a_lit_one() {
+        // The case scaling the lit colour cannot reach, and the reason `off`
+        // exists: a grey lens over an amber bulb is *lighter* when dark. A
+        // multiplier only ever travels towards black, so this used to be
+        // unsayable.
+        let mut s = surf(16, 16);
+        draw(
+            &mut s,
+            &Kind::Led {
+                color: Color::rgb(255, 160, 0),
+                level: 0.0,
+                glow: 0.12,
+                off: Color::rgb(190, 190, 190),
+            },
+            Rect::new(0, 0, 8, 8),
+        );
+        assert_eq!(px(&s, 2, 2)[0], 190, "the unlit lamp is not its own colour");
+    }
+
+    #[test]
+    fn a_lamp_part_way_up_sits_between_its_two_colours() {
+        // Half lit is half way along the ramp, not half the lit colour: the
+        // unlit colour is where the ramp starts.
+        let mut s = surf(16, 16);
+        draw(
+            &mut s,
+            &Kind::Led {
+                color: Color::rgb(200, 0, 0),
+                level: 0.5,
+                glow: 0.0,
+                off: Color::rgb(100, 100, 100),
+            },
+            Rect::new(0, 0, 8, 8),
+        );
+        let p = px(&s, 2, 2);
+        assert_eq!((p[2], p[1]), (150, 50), "not half way between the two");
     }
 
     // --- roundrect ---

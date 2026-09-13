@@ -23,6 +23,7 @@ pub fn polyline<S: Surface + ?Sized>(
     points: &[(f32, f32)],
     width: u32,
     color: Color,
+    color_to: Color,
     closed: bool,
     antialias: bool,
 ) {
@@ -32,28 +33,77 @@ pub fn polyline<S: Surface + ?Sized>(
     if points.len() < 2 {
         return;
     }
-    let segment = |surface: &mut S, a: Point, b: Point| {
+    let segment = |surface: &mut S, a: Point, b: Point, c: Color| {
         if antialias {
-            let c = |p: Point| (p.x as f32 + 0.5, p.y as f32 + 0.5);
-            super::aa::line(surface, clip, c(a), c(b), width.max(1) as f32, color, true);
+            let m = |p: Point| (p.x as f32 + 0.5, p.y as f32 + 0.5);
+            super::aa::line(surface, clip, m(a), m(b), width.max(1) as f32, c, true);
         } else {
-            line(surface, a, b, width, color, clip);
+            line(surface, a, b, width, c, clip);
         }
     };
 
+    // Along the path rather than per segment, so an uneven curve changes
+    // colour at an even rate instead of racing through its short hops. Walked
+    // twice -- once to total it, once to draw -- because the core crate does
+    // not allocate and there is nowhere to keep the running lengths.
+    let flat = color == color_to;
+    let total = if flat { 0 } else { walk(at, points, closed) };
+    let mut run = 0i64;
+
     // Mapped on the fly rather than collected first: the core crate does not
     // allocate, and a segment needs only its own two endpoints.
+    let draw = |surface: &mut S, a: Point, b: Point, run: &mut i64| {
+        let c = if flat {
+            color
+        } else {
+            // The middle of the segment, not its start: a segment coloured by
+            // where it begins ends on the wrong side of the ramp, and the last
+            // one never reaches the far colour at all.
+            let half = span(a, b) / 2;
+            let c = super::gradient::mix(color, color_to, (*run + half) as i32, total as i32);
+            *run += span(a, b);
+            c
+        };
+        segment(surface, a, b, c);
+    };
+
     for pair in points.windows(2) {
         let a = map(at, pair[0].0, pair[0].1);
         let b = map(at, pair[1].0, pair[1].1);
-        segment(surface, a, b);
+        draw(surface, a, b, &mut run);
     }
     // Two points closed would be the same segment drawn back over itself.
     if closed && points.len() >= 3 {
         let last = points[points.len() - 1];
         let first = points[0];
-        segment(surface, map(at, last.0, last.1), map(at, first.0, first.1));
+        let (a, b) = (map(at, last.0, last.1), map(at, first.0, first.1));
+        draw(surface, a, b, &mut run);
     }
+}
+
+/// How long the segment from `a` to `b` is, in whole pixels.
+///
+/// Integer throughout, `isqrt` rather than a float root: the core crate has no
+/// `sqrt` to reach for, and a ramp only needs to know the proportions.
+fn span(a: Point, b: Point) -> i64 {
+    let dx = i64::from(b.x - a.x);
+    let dy = i64::from(b.y - a.y);
+    (dx * dx + dy * dy).isqrt()
+}
+
+/// The whole length of the path, which is what the ramp is measured against.
+fn walk(at: Rect, points: &[(f32, f32)], closed: bool) -> i64 {
+    let mut total = 0;
+    for pair in points.windows(2) {
+        total += span(map(at, pair[0].0, pair[0].1), map(at, pair[1].0, pair[1].1));
+    }
+    if closed && points.len() >= 3 {
+        let last = points[points.len() - 1];
+        let first = points[0];
+        total += span(map(at, last.0, last.1), map(at, first.0, first.1));
+    }
+    // A path of zero length still has to divide by something.
+    total.max(1)
 }
 
 /// Renders a filled area chart with a crisp stroke along the top edge.
@@ -362,6 +412,73 @@ mod tests {
         s.pixels()[o..o + 4] != [0, 0, 0, 0]
     }
 
+    /// The (b, g, r) at a pixel.
+    fn rgb(s: &MemorySurface, x: usize, y: usize) -> (u8, u8, u8) {
+        let o = y * s.stride() + x * 4;
+        (s.pixels()[o + 2], s.pixels()[o + 1], s.pixels()[o])
+    }
+
+    #[test]
+    fn a_stroke_ramps_from_one_colour_to_the_other_along_its_length() {
+        let mut s = surf();
+        polyline(
+            &mut s,
+            FULL,
+            FULL,
+            &[(0.0, 0.0), (0.25, 0.0), (0.5, 0.0), (0.75, 0.0), (1.0, 0.0)],
+            1,
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 0, 255),
+            false,
+            false,
+        );
+        let (near, far) = (rgb(&s, 1, 0), rgb(&s, 62, 0));
+        assert!(near.0 > near.2, "the near end is not the first colour");
+        assert!(far.2 > far.0, "the far end is not the second colour");
+    }
+
+    #[test]
+    fn a_stroke_given_one_colour_twice_is_flat() {
+        // The default every scene written before the ramp existed gets: the
+        // two ends are the same colour, so nothing about it may vary.
+        let mut s = surf();
+        polyline(
+            &mut s,
+            FULL,
+            FULL,
+            &[(0.0, 0.0), (0.5, 0.0), (1.0, 0.0)],
+            1,
+            Color::rgb(200, 100, 50),
+            Color::rgb(200, 100, 50),
+            false,
+            false,
+        );
+        assert_eq!(rgb(&s, 1, 0), rgb(&s, 62, 0), "a flat stroke varied");
+    }
+
+    #[test]
+    fn a_ramp_follows_the_path_rather_than_the_segment_count() {
+        // One long hop and one short one: colouring per segment would put the
+        // halfway colour at the join, which is three quarters of the way
+        // along. Measuring the path puts it where the eye expects.
+        let mut s = surf();
+        polyline(
+            &mut s,
+            FULL,
+            FULL,
+            &[(0.0, 0.0), (0.75, 0.0), (1.0, 0.0)],
+            1,
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 0, 255),
+            false,
+            false,
+        );
+        // The long first segment is centred at 37% along, so it must still be
+        // mostly the starting colour rather than the midpoint of the ramp.
+        let long = rgb(&s, 30, 0);
+        assert!(long.0 > long.2, "the long segment jumped ahead of the ramp");
+    }
+
     fn count(s: &MemorySurface) -> usize {
         (0..64)
             .flat_map(|y| (0..64).map(move |x| (x, y)))
@@ -386,6 +503,7 @@ mod tests {
             &[(0.0, 0.0), (1.0, 1.0)],
             1,
             Color::WHITE,
+            Color::WHITE,
             false,
             false,
         );
@@ -404,6 +522,7 @@ mod tests {
             FULL,
             &[(0.0, 0.0), (1.0, 1.0)],
             1,
+            Color::WHITE,
             Color::WHITE,
             false,
             false,
@@ -430,6 +549,7 @@ mod tests {
             &[(0.0, 1.0), (0.5, 0.0), (1.0, 1.0)],
             1,
             Color::WHITE,
+            Color::WHITE,
             false,
             false,
         );
@@ -446,8 +566,28 @@ mod tests {
         let pts = [(0.1, 0.1), (0.9, 0.1), (0.5, 0.9)];
         let mut open = surf();
         let mut shut = surf();
-        polyline(&mut open, FULL, FULL, &pts, 1, Color::WHITE, false, false);
-        polyline(&mut shut, FULL, FULL, &pts, 1, Color::WHITE, true, false);
+        polyline(
+            &mut open,
+            FULL,
+            FULL,
+            &pts,
+            1,
+            Color::WHITE,
+            Color::WHITE,
+            false,
+            false,
+        );
+        polyline(
+            &mut shut,
+            FULL,
+            FULL,
+            &pts,
+            1,
+            Color::WHITE,
+            Color::WHITE,
+            true,
+            false,
+        );
         assert!(
             count(&shut) > count(&open),
             "the closing segment adds pixels"
@@ -459,8 +599,28 @@ mod tests {
         let pts = [(0.1, 0.1), (0.9, 0.9)];
         let mut open = surf();
         let mut shut = surf();
-        polyline(&mut open, FULL, FULL, &pts, 1, Color::WHITE, false, false);
-        polyline(&mut shut, FULL, FULL, &pts, 1, Color::WHITE, true, false);
+        polyline(
+            &mut open,
+            FULL,
+            FULL,
+            &pts,
+            1,
+            Color::WHITE,
+            Color::WHITE,
+            false,
+            false,
+        );
+        polyline(
+            &mut shut,
+            FULL,
+            FULL,
+            &pts,
+            1,
+            Color::WHITE,
+            Color::WHITE,
+            true,
+            false,
+        );
         assert_eq!(
             count(&shut),
             count(&open),
@@ -471,13 +631,24 @@ mod tests {
     #[test]
     fn a_polyline_of_fewer_than_two_points_draws_nothing() {
         let mut s = surf();
-        polyline(&mut s, FULL, FULL, &[], 1, Color::WHITE, true, false);
+        polyline(
+            &mut s,
+            FULL,
+            FULL,
+            &[],
+            1,
+            Color::WHITE,
+            Color::WHITE,
+            true,
+            false,
+        );
         polyline(
             &mut s,
             FULL,
             FULL,
             &[(0.5, 0.5)],
             1,
+            Color::WHITE,
             Color::WHITE,
             true,
             false,
@@ -494,6 +665,7 @@ mod tests {
             Rect::new(0, 0, 12, 12),
             &[(0.0, 0.0), (1.0, 1.0)],
             3,
+            Color::WHITE,
             Color::WHITE,
             false,
             false,
@@ -515,6 +687,7 @@ mod tests {
             &[(0.0, 0.0), (1.0, 1.0)],
             1,
             Color::WHITE,
+            Color::WHITE,
             false,
             false,
         );
@@ -531,6 +704,7 @@ mod tests {
             FULL,
             &[(-9.0, 40.0), (f32::NAN, f32::NAN), (2.0, -2.0)],
             1,
+            Color::WHITE,
             Color::WHITE,
             true,
             false,

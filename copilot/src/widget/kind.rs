@@ -49,6 +49,37 @@ pub enum Kind {
         /// Fill colour. [`Color::TRANSPARENT`] draws nothing.
         background: Color,
     },
+    /// A stack of pages, one of which is showing.
+    ///
+    /// Each child is a whole page; the pager itself draws nothing and only
+    /// positions them. Turning a page is [`super::Tree::set_page`], which
+    /// hides the page that was up and shows the one coming, so a page change
+    /// costs exactly the damage a change of visibility costs and the
+    /// compositor, the hit test and the transitions all need to learn nothing.
+    ///
+    /// What it is for is the screen a driver swipes between without leaving
+    /// the drive mode they are in: trip, then the GPS readout, then the
+    /// tell-tales, all on one scene, on one display, with the bus none the
+    /// wiser. A mode change is the rig's business and switches scene files;
+    /// this is inside one.
+    Pager {
+        /// Which child is showing, by index. Past the last child nothing is.
+        page: u32,
+        /// Which way the pages are ordered, and therefore which swipes turn
+        /// them: a horizontal pager answers left and right.
+        axis: crate::input::Axis,
+        /// Whether turning past the last page comes back to the first.
+        ///
+        /// Off by default, because a driver who has swiped to the end of four
+        /// screens is better told so by nothing happening than by landing
+        /// back where they started and not knowing it.
+        wrap: bool,
+        /// Whether a swipe over this pager turns it at all.
+        ///
+        /// A pager driven entirely by buttons -- or by the bus -- sets this
+        /// false, and a swipe across it goes to whatever encloses it instead.
+        swipe: bool,
+    },
     /// A view onto one of the rig's menus.
     ///
     /// The menu itself lives in the rig, not here, so a setting survives a
@@ -163,8 +194,23 @@ pub enum Kind {
         points: Vec<(f32, f32)>,
         /// Stroke thickness in pixels.
         width: u32,
-        /// Stroke colour.
+        /// Stroke colour, and the colour at the start of the ramp when
+        /// [`color_to`](Self::Line::color_to) differs from it.
         color: Color,
+        /// The colour at the far end of the stroke.
+        ///
+        /// Defaults to `color`, which is a flat stroke and what every scene
+        /// written before this existed draws. The ramp is measured along the
+        /// path's length, so an uneven curve changes colour at an even rate
+        /// rather than racing through its short segments.
+        ///
+        /// It steps once per segment rather than per pixel: a stroke is drawn
+        /// as a run of separate lines, and colouring each one is a ramp that
+        /// costs nothing, where a per-pixel one would cost a second pass over
+        /// the whole path. A curve with enough points to look like a curve has
+        /// enough to look like a smooth ramp; a four-point line shows three
+        /// bands, and should be given more points if that matters.
+        color_to: Color,
         /// Whether to join the last point back to the first.
         closed: bool,
     },
@@ -239,6 +285,14 @@ pub enum Kind {
         gap: u32,
         /// A lit cell below `warn`.
         fill: Color,
+        /// The colour a lit cell takes at the top of the scale.
+        ///
+        /// Defaults to `fill`, which is the flat bar every scene drew before
+        /// this existed. Ramping across the cells is the other way a bank
+        /// shows where on its scale a reading sits -- the smooth counterpart
+        /// to `warn` and `danger`, which stay in force where they apply, so a
+        /// gauge can ramp green to amber and still have a hard redline.
+        fill_to: Color,
         /// A cell that is not lit. Transparent leaves it unpainted.
         track: Color,
         /// Cells at or past this fraction light in `warn_fill`. Above 1.0
@@ -310,7 +364,24 @@ pub enum Kind {
         /// A real cluster's unlit telltales still catch the light. Drawing
         /// nothing leaves a hole where the driver expects a symbol, so they
         /// know something is there before it comes on.
+        ///
+        /// This is the shorthand that computes [`off`](Self::Led::off) when a
+        /// scene does not name one, and is what every scene written before
+        /// that field existed still says. Naming `off` outright supersedes it.
         glow: f32,
+        /// The unlit colour, which `level` lights from towards `color`.
+        ///
+        /// Dimming the lit colour is the wrong model for a real lamp. A
+        /// telltale behind an amber lens is grey when it is dark, not dim
+        /// amber, and an LED bezel is nearly white -- the colour arrives with
+        /// the light rather than being a fraction of it. Scaling `color` can
+        /// only ever travel towards black, so the one thing it cannot produce
+        /// is the lamp that is *paler* when off, which is most of them.
+        ///
+        /// Resolved by the builder: a scene that says nothing gets `color`
+        /// scaled by `glow`, which is exactly what it drew before, so this
+        /// field costs an existing scene no change at all.
+        off: Color,
     },
     /// A rectangle with rounded corners.
     ///
@@ -350,6 +421,19 @@ pub enum BindTarget {
     Text,
     /// A [`Kind::SegBar`]'s second axis: how tall its lit cells stand.
     Height,
+    /// Whether the widget is on the screen at all.
+    ///
+    /// The only target every kind accepts, and the one a tell-tale wants: a
+    /// real cluster's warning lamps are printed symbols that appear, not
+    /// coloured rectangles that brighten, so the widget behind `OIL_PRESSURE`
+    /// is usually a [`Kind::Image`] and an image has neither a reading nor
+    /// text for a binding to land on.
+    ///
+    /// Anything at or past halfway shows. A reading is a fraction, and a
+    /// fraction has to become a yes or a no somewhere; halfway is the only
+    /// threshold that does not need explaining, and an indicator -- which is
+    /// the case this exists for -- only ever produces 0.0 or 1.0 anyway.
+    Visible,
 }
 
 impl BindTarget {
@@ -360,6 +444,7 @@ impl BindTarget {
             Self::Reading => "value",
             Self::Text => "text",
             Self::Height => "height",
+            Self::Visible => "visible",
         }
     }
 
@@ -370,6 +455,7 @@ impl BindTarget {
             "value" => Some(Self::Reading),
             "text" => Some(Self::Text),
             "height" => Some(Self::Height),
+            "visible" => Some(Self::Visible),
             _ => None,
         }
     }
@@ -536,6 +622,26 @@ impl Kind {
         Some(k)
     }
 
+    /// Which page this kind is showing, if it is a pager.
+    #[must_use]
+    pub fn page(&self) -> Option<u32> {
+        match self {
+            Kind::Pager { page, .. } => Some(*page),
+            _ => None,
+        }
+    }
+
+    /// This kind turned to page `p`, or `None` if it is not a pager.
+    #[must_use]
+    pub fn with_page(&self, p: u32) -> Option<Kind> {
+        let mut k = self.clone();
+        match &mut k {
+            Kind::Pager { page, .. } => *page = p,
+            _ => return None,
+        }
+        Some(k)
+    }
+
     /// The second axis this kind displays, if it has one. Only a segbar does.
     #[must_use]
     pub fn height(&self) -> Option<f32> {
@@ -563,6 +669,10 @@ impl Kind {
             BindTarget::Reading => self.reading().is_some(),
             BindTarget::Text => self.text().is_some(),
             BindTarget::Height => self.height().is_some(),
+            // Everything can be hidden, including a pager and a panel with
+            // children, which is what makes a whole group of widgets appear
+            // together on one lamp.
+            BindTarget::Visible => true,
         }
     }
 

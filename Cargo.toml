@@ -39,3 +39,6 @@ strip = "none"
 opt-level = 1            # a debug-build rasteriser at opt-level 0 is unusable
 overflow-checks = true
 debug = "full"
+
+[patch."https://codeberg.org/Cogware/CogwareCan.git"]
+cogware-can = { path = "/home/ninja/CogwareCan/CogwareCan" }

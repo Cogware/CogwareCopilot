@@ -2,10 +2,11 @@
 
 What exists, what is planned, and why the list stops where it does.
 
-`copilot` has no input handling, so LVGL's interactive widgets — button, slider,
-switch, checkbox, dropdown, roller, textarea, keyboard — are out of scope until
-it does. What is left is the display half of LVGL's catalogue, which is what a
-dashboard needs anyway.
+Most of LVGL's interactive widgets — slider, switch, checkbox, dropdown,
+roller, textarea, keyboard — are out of scope: they assume a pointer and a
+keyboard, and a dashboard has a finger. What a finger needs is any widget
+being pressable and a way to swipe between screens, which is `touch` and
+`pager` below rather than a catalogue of controls.
 
 ## Shipped
 
@@ -16,19 +17,20 @@ agree about where a value sits without the scene file restating it.
 | Widget | |
 | --- | --- |
 | `panel` | Solid rectangle. Also the grouping element: a transparent one draws nothing but still positions its children. |
+| `pager` | A stack of pages, one showing. Each child is a page; swiping or a `touch` action turns it. |
 | `frame` | One-pixel outline, drawn just inside the node. |
 | `label` | Text in the current font, with integer magnification and alignment on both axes. |
 | `image` | A still from the scene's image table, scaled nearest-neighbour. |
 | `anim` | A GIF from the animation table, with play, pause, seek and speed. |
 | `bar` | Horizontal or vertical fill against a track. |
-| `segbar` | The same reading as discrete cells, the way a vacuum-fluorescent panel shows it: colour bands fixed to the scale, an optional profile cutting each cell to a curve, a second axis setting how tall the lit cells stand, and optional divisions breaking each cell into dashes on a grid shared right along the bank. |
+| `segbar` | The same reading as discrete cells, the way a vacuum-fluorescent panel shows it: colour bands fixed to the scale, colour optionally ramping across the cells, an optional profile cutting each cell to a curve, a second axis setting how tall the lit cells stand, and optional divisions breaking each cell into dashes on a grid shared right along the bank. |
 | `arc` | A ring filled between two angles. Every round gauge starts here. |
 | `needle` | A pointer swinging over a sweep, with a hub over the pivot. |
 | `scale` | Tick marks around a dial's rim, with major divisions longer and thicker. |
 | `ruler` | The same marks along a straight edge, for graduating a bar. |
 | `roundrect` | A panel with rounded corners. |
-| `led` | A telltale lamp: on, off, or dim, with an unlit glow so the symbol still reads. |
-| `line` | A polyline through listed points, given as fractions of the box so a curve survives a change of screen. |
+| `led` | A telltale lamp: on, off, or dim, with an unlit colour so the symbol still reads. |
+| `line` | A polyline through listed points, given as fractions of the box so a curve survives a change of screen, optionally ramping colour along its length. |
 | `chart` | A series across the box, as a trace or a filled area. |
 | `sevenseg` | Digits drawn from the seven bars a real display has, unlit segments included, with a decimal point and an optional fixed number of cells. |
 | `gradient` | A fill ramping between two colours, down or across. |
@@ -179,6 +181,122 @@ The envelope and the axis multiply: a cell reaches `profile[i] × height` across
 its box. A `profile` alone is the shape printed on the lens, and `height` is
 how far up it the reading stands.
 
+## Touch
+
+Any widget can be something a finger presses. A `touch` block says what
+pressing it asks for, and sits beside the geometry:
+
+```json
+{ "type": "roundrect", "rect": [248, 366, 64, 48], "radius": 8,
+  "touch": { "action": "menu", "menu": "display", "button": "centre" } }
+```
+
+| `action` | | |
+| --- | --- | --- |
+| `page` | `pager`, `to` | Turn a pager. `pager` names one; left out, it is the nearest one around this widget. `to` is `"next"`, `"prev"`, a page's name, or an index. |
+| `menu` | `menu`, `button` | Press `up`/`down`/`left`/`right`/`centre` on one of the rig's menus. |
+| `mode` | `mode` | Ask the bus to put every display into a drive mode, by the name the rig lists it under. |
+| `emit` | `name` | Hand a name to the host, which decides what it means. |
+
+Only `page` happens inside the toolkit. The rest name something it does not
+own — the menus live on the rig, the mode lives on the bus — so `Scene::touch`
+returns them as a `scene::Event` and the host acts. A hit walks up from the
+topmost widget under the finger, so a label inside a button still presses the
+button.
+
+The host turns its panel into gestures with `input::Recognizer`, which takes
+`Touch` samples and gives back a `Tap`, a `Swipe`, a `Press` or a `Release`.
+The simulator feeds it the mouse: click to tap, drag to swipe.
+
+## Pages
+
+A `pager`'s children are pages and only one is visible, so a page turn costs
+the damage a change of visibility costs and the compositor, the hit test and
+the transitions all learn nothing:
+
+```json
+{ "type": "pager", "rect": [0, 0, 480, 480], "name": "pages",
+  "axis": "horizontal", "page": 0, "wrap": false, "swipe": true,
+  "children": [
+    { "type": "panel", "rect": [0, 0, 480, 480], "name": "drive", "children": [] },
+    { "type": "panel", "rect": [0, 0, 480, 480], "name": "trip",  "children": [] }
+  ] }
+```
+
+`axis` says which swipes turn it; dragging the page away brings the next one
+on, so left and up advance. `wrap` is off by default, because a driver who has
+reached the end of four screens is better told so by nothing happening than by
+landing back at the start without knowing it. `swipe` off leaves the pager to
+its buttons. A `page` past the last one opens on the first, since a blank
+screen is the one thing a cluster must never do by accident.
+
+This is not a mode change. The bus is not told, no scene file is swapped, and
+the other displays carry on with what they were showing — it is one screen
+choosing which of its own faces to put up. A mode change is the rig's job and
+is still `"transition"` in the `.rig` file. Pagers nest, and the innermost one
+under the finger answers first. `examples/touch.scene` is four pages -- the
+engine, the trip, the GPS and the display's own settings -- with a menu driven
+by buttons and a row of tell-tales over all of them. Open it with
+`examples/touch.rig`, which owns the menus and the pins; both are in the
+editor under File > Examples.
+
+## Tell-tales
+
+The bus spec packs sixty-four dashboard lamps into two bitfield gauges. A
+widget binds to one by name and never has to know which bank or which bit:
+
+```json
+{ "type": "led", "rect": [186, 44, 24, 24], "color": "#f85149",
+  "level": 0.0, "glow": 0.12,
+  "bind": { "indicator": "OIL_PRESSURE" } }
+{ "type": "image", "rect": [186, 44, 24, 24], "image": 0, "visible": false,
+  "bind": { "indicator": "LOW_FUEL", "property": "visible" } }
+```
+
+`level` lights the lamp from `off` towards `color`. `off` defaults to `color`
+scaled by `glow`, which is what a scene naming only a `glow` has always drawn;
+naming it outright is how a lamp gets an unlit colour that is not simply a
+darker version of its lit one -- a grey lens over an amber bulb is *paler* when
+it is out, which no multiplier can reach.
+
+Lit is 1 and out is 0, so no range is needed. The binding subscribes to the
+bank as an ordinary gauge — `Scene::wanted` needs to know nothing about lamps
+— and an unset bank leaves the widget as authored, because "the server has not
+said" is not "every lamp is out". A name the spec does not have, or naming
+both an `indicator` and a `gauge`, stops the scene from building. The names
+are `cogware_can::indicators::ALL_INDICATORS`.
+
+`"property": "visible"` is the second form and the one a real cluster uses: a
+printed symbol appears rather than a rectangle brightening. It works on any
+widget, bound to a lamp or to a plain gauge, and anything at or past halfway
+shows. On a panel it hides everything inside, which is how a warning banner
+with its own icon and text is authored. Do not put it on a pager's page — the
+pager owns that flag and wins the moment the page turns.
+
+## Ramping a colour
+
+`line` takes a `color_to` and `segbar` a `fill_to`. Each defaults to the colour
+beside it, which is a flat stroke or a flat bar and what every scene written
+before these existed draws, so neither costs an existing file an edit.
+
+```json
+{ "type": "line", "rect": [60, 100, 1240, 320], "width": 4,
+  "color": "#3fb950", "color_to": "#f85149", "points": [] }
+{ "type": "segbar", "rect": [60, 100, 1240, 320], "segments": 40,
+  "fill": "#3fb950", "fill_to": "#d29922", "danger": 0.9 }
+```
+
+A stroke's ramp is measured along the path's length, so an uneven curve changes
+colour at an even rate rather than racing through its short segments. It steps
+once per segment rather than per pixel: a curve with enough points to look like
+a curve has enough to look like a smooth ramp, and a four-point line shows three
+bands.
+
+A bank's ramp is measured across the whole bank rather than across the lit part
+of it, so a cell keeps its colour as the reading passes it. `warn` and `danger`
+still win where they apply, which is how a gauge ramps green to amber and keeps
+a hard redline.
+
 ## Shaping a curve
 
 `profile`, a `line` or `polygon`'s `points`, and a `chart`'s `values` are all
@@ -232,8 +350,8 @@ For a bound readout, `decimals` on the binding is what makes it a decimal one:
 Colours are written, not blended: the surfaces this targets have no alpha to
 blend against. A "dim" version of a colour has to be an opaque dark colour, not
 the bright one at low alpha -- that lands as the bright one. It is why
-`sevenseg`'s unlit segments and `led`'s unlit glow are both specified the long
-way round. Antialiasing is the one exception, and it blends by reading the
+`sevenseg`'s unlit segments and `led`'s `off` colour are both specified the
+long way round. Antialiasing is the one exception, and it blends by reading the
 surface back rather than by asking it to.
 
 ## Deliberately absent

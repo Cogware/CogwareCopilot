@@ -1,0 +1,226 @@
+// A round 480x480 panel a driver works with a finger instead of a stalk.
+//
+// Three pages inside one scene, swiped between: drive, trip, GPS. This is not
+// a mode change -- the bus is not told, no scene file is swapped, and the
+// other screens in the rig carry on showing whatever they were showing. It is
+// one display deciding which of its own faces to put up, which is the thing a
+// mode change was always too heavy for.
+//
+// Run it:  cargo run -p copilot-sim -- --rig examples/touch.rig examples/touch.scene
+// The mouse is the finger. Drag left and right to turn the page, click the
+// arrows and the buttons. What each touch meant is printed on the terminal.
+// The rig is what owns the two menus and the pins behind the screen; without
+// it the menu widgets draw the placeholder, which is the point of the check.
+{
+  "width": 480,
+  "height": 480,
+  "node": "0x02",
+  "shape": "round",
+  "antialias": true,
+  "root": {
+    "type": "panel", "rect": [0, 0, 480, 480], "background": "#05070a",
+    "children": [
+
+      // The pages. Only one child of a pager is ever visible, so a page turn
+      // costs the damage a change of visibility costs and nothing else.
+      // "axis" says which swipes turn it; "wrap" is off, so the ends stop.
+      { "type": "pager", "rect": [0, 0, 480, 480], "name": "pages",
+        "axis": "horizontal", "page": 0,
+        "children": [
+
+          // --- page 0: what the engine is doing ---
+          { "type": "panel", "rect": [0, 0, 480, 480], "name": "drive",
+            "children": [
+              { "type": "arc", "rect": [30, 30, 420, 420],
+                "start": 225, "end": 495, "value": 0.0, "thickness": 16,
+                "fill": "#3fb950", "track": "#161b22",
+                "bind": { "gauge": "RPM", "min": 0, "max": 8000 } },
+              { "type": "scale", "rect": [56, 56, 368, 368],
+                "start": 225, "end": 495, "ticks": 9, "major_every": 2,
+                "length": 18, "width": 2, "color": "#5a6570", "major_color": "#9aa6b2" },
+              { "type": "needle", "rect": [70, 70, 340, 340],
+                "start": 225, "end": 495, "value": 0.0, "width": 5,
+                "color": "#3fb950", "hub": 14,
+                "bind": { "gauge": "RPM", "min": 0, "max": 8000 } },
+              { "type": "sevenseg", "rect": [150, 290, 180, 60],
+                "text": "   0", "color": "#3fb950", "ghost": "#1a1f26",
+                "thickness": 6, "bind": { "gauge": "RPM", "pad": 4 } },
+              { "type": "label", "rect": [120, 372, 240, 24], "text": "RPM",
+                "color": "#9aa6b2", "scale": 3, "align": "center" },
+            ] },
+
+          // --- page 1: the trip, and the settings behind it ---
+          { "type": "panel", "rect": [0, 0, 480, 480], "name": "trip",
+            "children": [
+              { "type": "label", "rect": [120, 96, 240, 24], "text": "TRIP",
+                "color": "#9aa6b2", "scale": 3, "align": "center" },
+
+              // ODOMETER is new in the bus spec, and so is the distance
+              // dimension it is measured in: "unit": "mi" converts it here
+              // rather than anywhere in the firmware.
+              { "type": "sevenseg", "rect": [110, 150, 260, 64],
+                "text": "     0", "color": "#58a6ff", "ghost": "#141a22",
+                "thickness": 6,
+                "bind": { "gauge": "ODOMETER", "unit": "mi", "decimals": 0, "pad": 6 } },
+              { "type": "label", "rect": [120, 226, 240, 20], "text": "MILES",
+                "color": "#5a6570", "scale": 2, "align": "center" },
+
+              // A menu the driver presses with a finger rather than a stalk:
+              // each button asks for the same press the button pad sends.
+              { "type": "menu", "rect": [120, 264, 240, 92], "menu": "display",
+                "color": "#7d8892", "selected": "#ffffff", "editing": "#ffb000",
+                "scale": 2 },
+              // Triangles rather than letters: the built-in 5x7 face has no
+              // caret, and a polygon's points are fractions of its own box,
+              // so the same three pairs flipped give the other arrow.
+              { "type": "roundrect", "rect": [96, 366, 64, 48], "radius": 8,
+                "background": "#161b22",
+                "touch": { "action": "menu", "menu": "display", "button": "up" },
+                "children": [
+                  { "type": "polygon", "rect": [22, 16, 20, 16], "color": "#c9d1d9",
+                    "points": [[0.5, 0.0], [1.0, 1.0], [0.0, 1.0]] },
+                ] },
+              { "type": "roundrect", "rect": [172, 366, 64, 48], "radius": 8,
+                "background": "#161b22",
+                "touch": { "action": "menu", "menu": "display", "button": "down" },
+                "children": [
+                  { "type": "polygon", "rect": [22, 16, 20, 16], "color": "#c9d1d9",
+                    "points": [[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]] },
+                ] },
+              { "type": "roundrect", "rect": [248, 366, 64, 48], "radius": 8,
+                "background": "#1f6feb",
+                "touch": { "action": "menu", "menu": "display", "button": "centre" },
+                "children": [
+                  { "type": "label", "rect": [0, 14, 64, 20], "text": "OK",
+                    "color": "#ffffff", "scale": 2, "align": "center" },
+                ] },
+              { "type": "roundrect", "rect": [324, 366, 64, 48], "radius": 8,
+                "background": "#161b22",
+                "touch": { "action": "menu", "menu": "display", "button": "right" },
+                "children": [
+                  { "type": "label", "rect": [0, 14, 64, 20], "text": ">",
+                    "color": "#c9d1d9", "scale": 3, "align": "center" },
+                ] },
+            ] },
+
+          // --- page 2: where the car is ---
+          { "type": "panel", "rect": [0, 0, 480, 480], "name": "gps",
+            "children": [
+              { "type": "label", "rect": [120, 96, 240, 24], "text": "GPS",
+                "color": "#9aa6b2", "scale": 3, "align": "center" },
+
+              // Speed over ground, which is not VSS: it survives a wheel
+              // speed fault and disagrees with it under wheelspin.
+              { "type": "sevenseg", "rect": [150, 146, 180, 72],
+                "text": "  0", "color": "#3fb950", "ghost": "#141a22",
+                "thickness": 7,
+                "bind": { "gauge": "GPS_SPEED", "unit": "mph", "decimals": 0, "pad": 3 } },
+              { "type": "label", "rect": [120, 230, 240, 20], "text": "MPH",
+                "color": "#5a6570", "scale": 2, "align": "center" },
+
+              // GPS_LOCK is 0 for no fix, and zero is the only value that
+              // means "do not trust the two readings above".
+              { "type": "label", "rect": [100, 272, 120, 20], "text": "FIX",
+                "color": "#5a6570", "scale": 2, "align": "right" },
+              { "type": "segbar", "rect": [236, 272, 96, 20], "value": 0.0,
+                "segments": 3, "gap": 4, "fill": "#3fb950", "track": "#161b22",
+                "bind": { "gauge": "GPS_LOCK", "min": 0, "max": 3 } },
+              { "type": "label", "rect": [100, 304, 120, 20], "text": "SATS",
+                "color": "#5a6570", "scale": 2, "align": "right" },
+              { "type": "label", "rect": [236, 304, 96, 20], "text": "0",
+                "color": "#c9d1d9", "scale": 2,
+                "bind": { "gauge": "GPS_SATS", "decimals": 0 } },
+            ] },
+
+          // --- page 3: the display's own settings ---
+          //
+          // The rig builds this menu from the bus spec's settings table
+          // rather than listing its rows, so the day the spec grows a
+          // setting this page grows a row and nothing here is edited. The
+          // buttons are the same four, pointed at the other menu.
+          { "type": "panel", "rect": [0, 0, 480, 480], "name": "setup",
+            "children": [
+              { "type": "label", "rect": [120, 96, 240, 24], "text": "SETUP",
+                "color": "#9aa6b2", "scale": 3, "align": "center" },
+              { "type": "menu", "rect": [96, 136, 288, 210], "menu": "settings",
+                "color": "#7d8892", "selected": "#ffffff", "editing": "#ffb000",
+                "scale": 2 },
+              { "type": "roundrect", "rect": [96, 366, 64, 48], "radius": 8,
+                "background": "#161b22",
+                "touch": { "action": "menu", "menu": "settings", "button": "up" },
+                "children": [
+                  { "type": "polygon", "rect": [22, 16, 20, 16], "color": "#c9d1d9",
+                    "points": [[0.5, 0.0], [1.0, 1.0], [0.0, 1.0]] },
+                ] },
+              { "type": "roundrect", "rect": [172, 366, 64, 48], "radius": 8,
+                "background": "#161b22",
+                "touch": { "action": "menu", "menu": "settings", "button": "down" },
+                "children": [
+                  { "type": "polygon", "rect": [22, 16, 20, 16], "color": "#c9d1d9",
+                    "points": [[0.0, 0.0], [1.0, 0.0], [0.5, 1.0]] },
+                ] },
+              { "type": "roundrect", "rect": [248, 366, 64, 48], "radius": 8,
+                "background": "#1f6feb",
+                "touch": { "action": "menu", "menu": "settings", "button": "centre" },
+                "children": [
+                  { "type": "label", "rect": [0, 14, 64, 20], "text": "OK",
+                    "color": "#ffffff", "scale": 2, "align": "center" },
+                ] },
+              { "type": "roundrect", "rect": [324, 366, 64, 48], "radius": 8,
+                "background": "#161b22",
+                "touch": { "action": "menu", "menu": "settings", "button": "right" },
+                "children": [
+                  { "type": "label", "rect": [0, 14, 64, 20], "text": ">",
+                    "color": "#c9d1d9", "scale": 3, "align": "center" },
+                ] },
+            ] },
+        ] },
+
+      // The tell-tales, over every page, because a warning does not care
+      // which screen the driver happens to be looking at. Each is bound to a
+      // lamp by name; which of the two bitfield gauges carries the bit is the
+      // bus spec's business, and a name it does not have fails to build.
+      { "type": "led", "rect": [170, 44, 24, 24], "name": "oil lamp", "color": "#f85149",
+        "level": 0.0, "glow": 0.12,
+        "bind": { "indicator": "OIL_PRESSURE" } },
+      { "type": "led", "rect": [202, 44, 24, 24], "name": "engine lamp", "color": "#d29922",
+        "level": 0.0, "glow": 0.12,
+        "bind": { "indicator": "CHECK_ENGINE" } },
+      { "type": "led", "rect": [234, 44, 24, 24], "name": "beam lamp", "color": "#3fb950",
+        "level": 0.0, "glow": 0.12,
+        "bind": { "indicator": "HIGH_BEAM" } },
+      // In the second bank, which the display subscribes to only because
+      // this lamp is here: a scene asks for the banks it actually shows.
+      { "type": "led", "rect": [266, 44, 24, 24], "name": "overheat lamp", "color": "#f85149",
+        "level": 0.0, "glow": 0.12,
+        "bind": { "indicator": "OVERHEAT" } },
+
+      // A lamp can hide a widget outright rather than dim a rectangle, which
+      // is how a real cluster does it: the symbol appears, it does not glow
+      // faintly all the time. "property" has to be named, because an image
+      // and a label have no reading for a binding to land on by default.
+      { "type": "label", "rect": [140, 420, 200, 20], "name": "low fuel", "text": "LOW FUEL",
+        "color": "#d29922", "scale": 2, "align": "center", "visible": false,
+        "bind": { "indicator": "LOW_FUEL", "property": "visible" } },
+
+      // The page arrows. No "pager" named, so each turns the nearest one
+      // enclosing it -- which, sitting outside the pages, is the pager
+      // itself. "to" may also name a page: { "to": "gps" } jumps straight
+      // there and survives a page being inserted in front of it.
+      { "type": "roundrect", "rect": [8, 216, 40, 48], "radius": 8,
+        "background": "#11161d",
+        "touch": { "action": "page", "pager": "pages", "to": "prev" },
+        "children": [
+          { "type": "label", "rect": [0, 14, 40, 20], "text": "<",
+            "color": "#7d8892", "scale": 2, "align": "center" },
+        ] },
+      { "type": "roundrect", "rect": [432, 216, 40, 48], "radius": 8,
+        "background": "#11161d",
+        "touch": { "action": "page", "pager": "pages", "to": "next" },
+        "children": [
+          { "type": "label", "rect": [0, 14, 40, 20], "text": ">",
+            "color": "#7d8892", "scale": 2, "align": "center" },
+        ] },
+    ],
+  },
+}

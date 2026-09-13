@@ -31,6 +31,8 @@ mod modes_ui;
 mod newdoc;
 mod ops;
 mod outliner;
+mod pins;
+mod pins_ui;
 mod place;
 mod preview;
 mod rescale;
@@ -39,6 +41,7 @@ mod select;
 mod shrink;
 mod snap;
 mod starter;
+mod touch_ui;
 mod ui;
 mod view;
 
@@ -112,6 +115,7 @@ fn main() -> eframe::Result<()> {
     let fresh = args.iter().any(|a| a == "--new");
     let modes = args.iter().any(|a| a == "--modes");
     let curve = args.iter().any(|a| a == "--curve");
+    let pins = args.iter().any(|a| a == "--pins");
     let pane = match after("--pane").map(String::as_str) {
         Some("scene") => Pane::Source,
         Some("values") => Pane::Values,
@@ -131,6 +135,10 @@ fn main() -> eframe::Result<()> {
             }
             if modes && let Some(showing) = app.rig.as_ref().map(|r| r.mode) {
                 app.modes = Some(modes_ui::ModesDialog::new(showing));
+            }
+            if pins && let Some(r) = app.rig.as_ref() {
+                let (d, count) = (r.active, r.display().pins.count());
+                app.pins_dialog = Some(pins_ui::PinsDialog::new(d, count));
             }
             if curve
                 && let Some(id) = app.selected
@@ -180,6 +188,8 @@ struct App {
     rig: Option<rig::RigSession>,
     /// The Modes dialog, while it is open.
     modes: Option<modes_ui::ModesDialog>,
+    /// The Pins dialog, while a display's loom is being edited.
+    pins_dialog: Option<pins_ui::PinsDialog>,
     /// The mode a switch is waiting on an answer about, while the prompt
     /// asking what to do with the unsaved work is up.
     switching: Option<usize>,
@@ -255,6 +265,7 @@ impl App {
             new_doc: None,
             rig: None,
             modes: None,
+            pins_dialog: None,
             switching: None,
             curve: None,
             asking_close: false,

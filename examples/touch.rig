@@ -1,0 +1,70 @@
+// One 480x480 touchscreen, and everything behind it that is not the picture.
+//
+// A rig with a single display looks like overkill until you notice what a
+// scene cannot hold: menus live here so a setting survives a mode change, and
+// the pins live here because a wire does not change when the drive mode does.
+// `examples/touch.scene` is the face; this is the car it is bolted into.
+//
+//   cargo run -p copilot-sim  -- --rig examples/touch.rig examples/touch.scene
+//   cargo run -p copilot-edit -- examples/touch.rig
+{
+  // One mode. The z31 rig is the example of several; this one is about what a
+  // single screen does on its own, which is where the pager earns its keep --
+  // four pages swiped between, with the bus never told and the other screens
+  // in the car none the wiser.
+  "modes": ["drive"],
+
+  "displays": [
+    { "name": "touchscreen", "node": "0x02",
+
+      // The spare pins on the back of it, numbered 1 up. Which physical pin
+      // each lands on is the board's, in the board's own code, where the
+      // schematic is.
+      //
+      // An input does not light its own lamp. It reports the change with
+      // `bus::BusView::report_lamp`, the master folds the bit into the real
+      // INDICATORS frame, and the lamp comes back on the bus -- here and on
+      // every other screen at the same time.
+      "gpio": 6,
+      "pins": [
+        { "pin": 1, "label": "left stalk",  "indicator": "TURN_LEFT" },
+        { "pin": 2, "label": "right stalk", "indicator": "TURN_RIGHT" },
+        // Switched to chassis ground, like most of a car: it reads low when
+        // the beam is on, and wants the board to tie it high when it is not.
+        { "pin": 3, "label": "high beam", "indicator": "HIGH_BEAM",
+          "active": "low", "pull": "up" },
+        // A hard button on the stalk, doing exactly what the arrow on the
+        // screen does. A pin turning a page has to name the pager: it is not
+        // in the widget tree, so there is nothing to look up from.
+        { "pin": 4, "label": "stalk thumbwheel",
+          "action": "page", "pager": "pages", "to": "next" },
+        // Driven by the display: a real bulb on a relay, showing the same
+        // thing the drawn lamp shows, bulb check included.
+        { "pin": 5, "label": "oil lamp bulb",
+          "dir": "out", "indicator": "OIL_PRESSURE" },
+      ],
+
+      "scenes": { "drive": "touch.scene" } },
+  ],
+
+  "menus": [
+    // Written out, because these are this car's and the spec has never heard
+    // of them. The scene's buttons name the menu and the press; the host does
+    // the pressing, since a menu outlives the scene showing it.
+    { "name": "display", "title": "DISPLAY",
+      "items": [
+        { "name": "display brightness", "label": "Brightness",
+          "value": 80, "min": 10, "max": 100, "step": 10 },
+        { "name": "display theme", "label": "Theme",
+          "options": ["night", "day"] },
+        { "name": "trip reset", "label": "Reset trip" },
+      ] },
+
+    // Built from the bus spec's own settings table instead of listed here.
+    // Every row, its range, its unit and its default come from
+    // `cogware_can::config`, so the day the spec grows a setting this menu
+    // grows a row and this file is not edited. `Menu::apply_config` writes
+    // what the driver changed back into the table the firmware reads.
+    { "name": "settings", "title": "SETTINGS", "from": "config" },
+  ],
+}

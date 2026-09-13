@@ -13,7 +13,7 @@ use crate::{Color, Rect, Surface};
 ///
 /// Integer throughout: the core crate has no floats to reach for, and a
 /// gradient down a 1080-pixel panel needs a thousand of these per frame.
-fn mix(a: Color, b: Color, num: i32, den: i32) -> Color {
+pub(crate) fn mix(a: Color, b: Color, num: i32, den: i32) -> Color {
     let den = den.max(1);
     let num = num.clamp(0, den);
     let lerp = |x: u8, y: u8| -> u8 {

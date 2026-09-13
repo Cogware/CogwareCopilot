@@ -13,6 +13,7 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use cogware_can::indicators::{ALL_INDICATORS, Indicator};
 use cogware_can::{ALL_GAUGES, GaugeData, Quantity, Unit};
 
 use crate::asset::Scene;
@@ -65,6 +66,15 @@ pub struct Binding {
     pub node: NodeId,
     /// The gauge it reads, straight from the spec's table.
     pub gauge: &'static GaugeData,
+    /// The tell-tale it reads, when the scene named one rather than a gauge.
+    ///
+    /// A lamp is one bit of `INDICATORS1` or `INDICATORS2`, so `gauge` is the
+    /// bank the bit lives in and the binding still subscribes, damages and
+    /// applies exactly as every other one does -- [`Scene::wanted`] picks the
+    /// bank up without knowing an indicator exists.
+    ///
+    /// [`Scene::wanted`]: crate::asset::Scene::wanted
+    pub indicator: Option<Indicator>,
     /// The unit the reading is shown in. The gauge's own unless the scene
     /// asked for another of the same dimension.
     pub unit: Unit,
@@ -145,6 +155,17 @@ impl Binding {
     /// itself; `Unit::convert` refuses raw quantities on purpose.
     #[must_use]
     pub fn reading(&self) -> Option<f32> {
+        if let Some(ind) = self.indicator {
+            // The bank has to have been written for the answer to mean
+            // anything: an unset bank is "the server has not said", not
+            // "every lamp is out", and leaving the widget alone is what lets
+            // an authored scene still demonstrate itself. Past that the
+            // spec's own reader answers, so a bulb check -- which lights
+            // every lamp from a single bit in the other bank -- works here
+            // without this crate knowing the rule.
+            self.gauge.get()?;
+            return Some(f32::from(u8::from(cogware_can::indicators::get(ind))));
+        }
         if self.unit == self.gauge.unit {
             self.gauge.as_f32()
         } else {
@@ -170,6 +191,7 @@ impl Binding {
             BindTarget::Reading => tree.set_reading(self.node, self.fraction(shown)),
             BindTarget::Height => tree.set_height(self.node, self.fraction(shown)),
             BindTarget::Text => tree.set_text(self.node, &self.text(shown)),
+            BindTarget::Visible => tree.set_visible(self.node, self.fraction(shown) >= 0.5),
         }
     }
 
@@ -225,6 +247,30 @@ pub fn gauge_by_name(name: &str) -> Option<&'static GaugeData> {
     ALL_GAUGES.iter().copied().find(|g| g.name == name)
 }
 
+/// Look a tell-tale up by the name the spec's table gives it, exactly.
+///
+/// Exact for the same reason [`gauge_by_name`] is: the names in
+/// [`cogware_can::indicators`] are the ones an author reads in the editor's
+/// list and in the bus logs, and two spellings of `CHECK_ENGINE` would be two
+/// spellings too many.
+#[must_use]
+pub fn indicator_by_name(name: &str) -> Option<Indicator> {
+    ALL_INDICATORS.iter().copied().find(|i| i.name() == name)
+}
+
+/// The gauge whose bits an indicator lives in.
+///
+/// The spec packs the lamps into two bitfield gauges and gives an `Indicator`
+/// its bank; this turns that back into the table entry a binding subscribes to.
+#[must_use]
+pub fn indicator_bank(ind: Indicator) -> &'static GaugeData {
+    if ind.bank() == 1 {
+        &cogware_can::INDICATORS1
+    } else {
+        &cogware_can::INDICATORS2
+    }
+}
+
 /// Every unit the spec defines, canonical ones first.
 ///
 /// Listed here rather than derived because `cogware_can` exposes them as
@@ -247,6 +293,7 @@ const UNITS: &[Unit] = &[
     Unit::DEGREES,
     Unit::MS,
     Unit::KMH,
+    Unit::KILOMETRES,
     Unit::BYTES,
     Unit::LITRES,
     Unit::FAHRENHEIT,
@@ -255,6 +302,7 @@ const UNITS: &[Unit] = &[
     Unit::BAR,
     Unit::INHG,
     Unit::MPH,
+    Unit::MILES,
     Unit::LAMBDA,
     Unit::MILLIVOLT,
     Unit::MICROSECONDS,
@@ -330,11 +378,35 @@ fn binding(node: NodeId, kind: &Kind, spec: &Value) -> Result<Binding, BuildErro
         return Err(BuildError::BadField { field: "property" });
     }
 
-    let name = spec
-        .get("gauge")
-        .and_then(Value::as_str)
-        .ok_or(BuildError::Missing { field: "gauge" })?;
-    let gauge = gauge_by_name(name).ok_or_else(|| BuildError::UnknownGauge(name.to_string()))?;
+    // A lamp instead of a gauge. It resolves to the bank its bit lives in, so
+    // everything below -- unit, range, subscription, damage -- carries on as
+    // though the scene had named `INDICATORS1` itself, which it could have
+    // done and would then have had to know which bank and which bit.
+    let indicator = match spec.get("indicator") {
+        None | Some(Value::Null) => None,
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or(BuildError::BadField { field: "indicator" })?;
+            Some(indicator_by_name(s).ok_or_else(|| BuildError::UnknownIndicator(s.to_string()))?)
+        }
+    };
+
+    let gauge = match (indicator, spec.get("gauge")) {
+        // Naming both is a file contradicting itself about what the widget
+        // shows, and picking one silently would hide the mistake.
+        (Some(_), Some(Value::Str(_))) => {
+            return Err(BuildError::BadField { field: "indicator" });
+        }
+        (Some(ind), _) => indicator_bank(ind),
+        (None, _) => {
+            let name = spec
+                .get("gauge")
+                .and_then(Value::as_str)
+                .ok_or(BuildError::Missing { field: "gauge" })?;
+            gauge_by_name(name).ok_or_else(|| BuildError::UnknownGauge(name.to_string()))?
+        }
+    };
 
     let unit = match spec.get("unit") {
         None | Some(Value::Null) => gauge.unit,
@@ -354,12 +426,18 @@ fn binding(node: NodeId, kind: &Kind, spec: &Value) -> Result<Binding, BuildErro
     let min = number(spec, "min")?.unwrap_or(0.0);
     let max = match (number(spec, "max")?, target) {
         (Some(m), _) => m,
+        // An indicator is one bit, so its range is not a thing to make an
+        // author write out: lit is 1 and out is 0, whatever it is bound to.
+        (None, _) if indicator.is_some() => 1.0,
         // Both axes map a reading onto a fraction, so both need to know what
-        // the top of the scale is; only text can do without one.
+        // the top of the scale is; the other two do without one.
         (None, BindTarget::Reading | BindTarget::Height) => {
             return Err(BuildError::Missing { field: "max" });
         }
         (None, BindTarget::Text) => 100.0,
+        // Anything at or past halfway shows; a binding that only ever wants
+        // to hide something needs no more scale than that.
+        (None, BindTarget::Visible) => 1.0,
     };
 
     // A divisor of zero is every reading becoming infinity, which draws as a
@@ -372,6 +450,7 @@ fn binding(node: NodeId, kind: &Kind, spec: &Value) -> Result<Binding, BuildErro
     Ok(Binding {
         node,
         gauge,
+        indicator,
         unit,
         divide,
         offset: number(spec, "offset")?.unwrap_or(0.0),
@@ -439,6 +518,7 @@ mod tests {
     use super::*;
     use crate::scene::{build_scene, parse};
     use crate::widget::ROOT;
+    use cogware_can::indicators::Indicator;
     use cogware_can::{CLNT, EGT1, MAP, RPM};
 
     fn scene(root: &str) -> Result<Scene, BuildError> {
@@ -864,5 +944,172 @@ mod tests {
         assert_eq!(s.apply_gauges(), 0);
         assert_eq!(s.tree.get(top(&s)).unwrap().kind.reading(), Some(0.4));
         assert!(s.tree.damage().is_empty(), "nothing changed, nothing dirty");
+    }
+
+    // --- tell-tales ---
+
+    #[test]
+    fn a_lamp_binds_to_the_bank_its_bit_lives_in() {
+        // The scene names the lamp; which of the two bitfield gauges carries
+        // it is the spec's business, not the author's.
+        let s = scene(r#"{"type":"led","rect":[0,0,10,10],"bind":{"indicator":"OIL_PRESSURE"}}"#)
+            .unwrap();
+        let b = &s.bindings[0];
+        assert_eq!(b.indicator, Some(Indicator::OilPressure));
+        assert_eq!(b.gauge.name, "INDICATORS1");
+        assert_eq!((b.min, b.max), (0.0, 1.0), "one bit needs no range");
+    }
+
+    #[test]
+    fn a_lamp_in_the_second_bank_binds_to_the_second_gauge() {
+        let s = scene(r#"{"type":"led","rect":[0,0,10,10],"bind":{"indicator":"PIT_LIMITER"}}"#)
+            .unwrap();
+        assert_eq!(s.bindings[0].gauge.name, "INDICATORS2");
+    }
+
+    #[test]
+    fn a_lit_lamp_drives_its_widget_to_full_and_an_out_one_to_nothing() {
+        let banks = crate::banks::Banks::take();
+        let mut s =
+            scene(r#"{"type":"led","rect":[0,0,10,10],"bind":{"indicator":"CHECK_ENGINE"}}"#)
+                .unwrap();
+        banks.set(&[Indicator::CheckEngine]);
+        assert_eq!(s.apply_gauges(), 1);
+        assert_eq!(s.tree.get(top(&s)).unwrap().kind.reading(), Some(1.0));
+
+        banks.set(&[]);
+        assert_eq!(s.apply_gauges(), 1);
+        assert_eq!(s.tree.get(top(&s)).unwrap().kind.reading(), Some(0.0));
+    }
+
+    #[test]
+    fn a_bank_nothing_has_written_leaves_the_lamp_as_authored() {
+        // An unset bank is "the server has not said", not "every lamp is
+        // out"; a bench scene with its lamps drawn lit must stay that way.
+        let _banks = crate::banks::Banks::take();
+        let mut s = scene(
+            r#"{"type":"led","rect":[0,0,10,10],"level":1.0,
+                "bind":{"indicator":"ABS"}}"#,
+        )
+        .unwrap();
+        cogware_can::INDICATORS1.clear();
+        assert_eq!(s.apply_gauges(), 0);
+        assert_eq!(s.tree.get(top(&s)).unwrap().kind.reading(), Some(1.0));
+    }
+
+    #[test]
+    fn a_lamp_can_show_and_hide_a_symbol_rather_than_brighten_a_rectangle() {
+        // What a real cluster does: the warning is a printed symbol that
+        // appears. An image has no reading for a binding to land on, so the
+        // property has to be named.
+        let banks = crate::banks::Banks::take();
+        let mut s = scene(
+            r#"{"type":"image","rect":[0,0,10,10],"image":0,
+                "bind":{"indicator":"LOW_FUEL","property":"visible"}}"#,
+        )
+        .unwrap();
+        banks.set(&[Indicator::LowFuel]);
+        s.apply_gauges();
+        assert!(s.tree.get(top(&s)).unwrap().visible, "lit, so it shows");
+
+        banks.set(&[]);
+        s.apply_gauges();
+        assert!(!s.tree.get(top(&s)).unwrap().visible, "out, so it hides");
+    }
+
+    #[test]
+    fn hiding_a_panel_hides_everything_inside_it() {
+        // A whole group of widgets on one lamp, which is how a warning
+        // banner with its own text and icon is authored.
+        let banks = crate::banks::Banks::take();
+        let mut s = scene(
+            r#"{"type":"panel","rect":[0,0,100,50],
+                "bind":{"indicator":"OVERHEAT","property":"visible"},
+                "children":[{"type":"label","rect":[0,0,50,10],"text":"HOT","name":"word"}]}"#,
+        )
+        .unwrap();
+        banks.set(&[]);
+        s.apply_gauges();
+        assert!(!s.tree.get(top(&s)).unwrap().visible);
+    }
+
+    #[test]
+    fn a_lamp_a_scene_subscribes_to_is_asked_for_by_its_bank() {
+        // A display subscribes to gauge ids, and the two banks are ordinary
+        // gauges, so `wanted` needs to know nothing about tell-tales.
+        let s = scene(
+            r#"{"type":"panel","rect":[0,0,10,10],"children":[
+                 {"type":"led","rect":[0,0,5,5],"bind":{"indicator":"ABS"}},
+                 {"type":"led","rect":[5,0,5,5],"bind":{"indicator":"BRAKE"}},
+                 {"type":"led","rect":[0,5,5,5],"bind":{"indicator":"ANTILAG"}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            s.wanted(),
+            alloc::vec![
+                cogware_can::INDICATORS1.id as u8,
+                cogware_can::INDICATORS2.id as u8
+            ],
+            "two banks, however many lamps"
+        );
+    }
+
+    #[test]
+    fn a_lamp_nobody_has_heard_of_fails_on_the_desk() {
+        assert_eq!(
+            scene(r#"{"type":"led","rect":[0,0,10,10],"bind":{"indicator":"WARP_CORE"}}"#)
+                .unwrap_err(),
+            BuildError::UnknownIndicator("WARP_CORE".into())
+        );
+    }
+
+    #[test]
+    fn naming_both_a_lamp_and_a_gauge_is_a_file_contradicting_itself() {
+        assert_eq!(
+            scene(
+                r#"{"type":"led","rect":[0,0,10,10],
+                    "bind":{"indicator":"ABS","gauge":"RPM","max":8000}}"#
+            )
+            .unwrap_err(),
+            BuildError::BadField { field: "indicator" }
+        );
+    }
+
+    #[test]
+    fn every_lamp_the_spec_has_resolves_to_a_bank_that_holds_it() {
+        // The one check that the two tables have not drifted apart: every
+        // indicator must name a bank, and the bank must be one of the two.
+        for ind in cogware_can::indicators::ALL_INDICATORS {
+            let bank = indicator_bank(*ind);
+            assert!(
+                bank.name == "INDICATORS1" || bank.name == "INDICATORS2",
+                "{} landed on {}",
+                ind.name(),
+                bank.name
+            );
+            assert_eq!(indicator_by_name(ind.name()), Some(*ind));
+        }
+    }
+
+    #[test]
+    fn a_visible_binding_works_on_a_plain_gauge_too() {
+        // Nothing about hiding a widget is specific to a tell-tale: a boost
+        // readout that only appears once the turbo is doing something is the
+        // same machinery.
+        let mut s = scene(
+            r#"{"type":"label","rect":[0,0,10,10],"text":"BOOST",
+                "bind":{"gauge":"MAP","property":"visible","min":100,"max":150}}"#,
+        )
+        .unwrap();
+        MAP.set(1400);
+        s.apply_gauges();
+        assert!(
+            s.tree.get(top(&s)).unwrap().visible,
+            "40 kPa of boost shows"
+        );
+        MAP.set(1000);
+        s.apply_gauges();
+        assert!(!s.tree.get(top(&s)).unwrap().visible, "atmospheric hides");
+        MAP.clear();
     }
 }

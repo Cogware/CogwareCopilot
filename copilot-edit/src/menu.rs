@@ -50,6 +50,7 @@ pub(crate) enum Command {
 /// absent because each needs a file the menu cannot ask for.
 pub(crate) const KINDS: &[&str] = &[
     "panel",
+    "pager",
     "roundrect",
     "frame",
     "gradient",
@@ -94,6 +95,7 @@ impl App {
         let mut cmd = None;
         let mut mode = None;
         let mut open_modes = None;
+        let mut open_pins = None;
         let has = self.selected.is_some();
         let (can_undo, can_redo) = (!self.undo.is_empty(), !self.redo.is_empty());
         egui::TopBottomPanel::top("bar").show(ctx, |ui| {
@@ -172,6 +174,17 @@ impl App {
                     {
                         open_modes = Some(showing);
                     }
+                    ui.separator();
+                    // Beside the modes because both edit the rig rather than
+                    // the scene, and a person looking for one is in the same
+                    // frame of mind as a person looking for the other.
+                    if ui
+                        .button("Pins")
+                        .on_hover_text("What this display's spare GPIO are wired to")
+                        .clicked()
+                    {
+                        open_pins = Some((rig.active, rig.display().pins.count()));
+                    }
                 }
                 ui.separator();
                 ui.checkbox(&mut self.driver.enabled, "Dummy values");
@@ -195,6 +208,9 @@ impl App {
         }
         if let Some(showing) = open_modes {
             self.modes = Some(crate::modes_ui::ModesDialog::new(showing));
+        }
+        if let Some((display, count)) = open_pins {
+            self.pins_dialog = Some(crate::pins_ui::PinsDialog::new(display, count));
         }
     }
 

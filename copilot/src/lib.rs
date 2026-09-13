@@ -59,11 +59,16 @@ extern crate alloc;
 
 pub use cogware_can;
 
+#[cfg(test)]
+mod banks;
+
 pub mod anim;
 pub mod asset;
 pub mod color;
 pub mod font;
 pub mod geom;
+pub mod gpio;
+pub mod input;
 pub mod menu;
 pub mod render;
 pub mod rig;
@@ -75,6 +80,7 @@ pub mod widget;
 
 pub use color::Color;
 pub use geom::{Point, Rect, Size};
+pub use input::{Axis, Dir, Gesture, Recognizer, Touch};
 pub use render::Damage;
 pub use surface::{Caps, PixelFormat, Primitive, Surface, TextureId};
 pub use surface_mem::MemorySurface;

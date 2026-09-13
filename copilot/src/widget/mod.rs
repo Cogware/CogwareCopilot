@@ -11,7 +11,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::{Color, Rect};
+use crate::{Color, Point, Rect};
 
 mod hit;
 mod kind;
@@ -199,6 +199,149 @@ impl Tree {
             self.dirty.add(*rect);
         }
         Some(())
+    }
+
+    /// Turn a [`Kind::Pager`] to `page`, showing that child and hiding the rest.
+    ///
+    /// Returns the page actually landed on, which is not always the one asked
+    /// for: an index past the last child is refused rather than clamped, the
+    /// same way [`crate::rig::Rig::mode_index`] refuses a mode it does not
+    /// have. A pager showing nothing is a blank screen, and a blank screen is
+    /// the thing a cluster must never do by accident.
+    ///
+    /// `None` if the node does not exist, is not a pager, or has no pages.
+    ///
+    /// Every child is a page, so a page is shown and hidden through
+    /// [`Self::set_visible`] and the damage, the compositor and the hit test
+    /// all behave exactly as they do for any other widget appearing and
+    /// disappearing. Anything the scene has also bound a `visible` property to
+    /// is fighting the pager for the same flag, and the pager wins the moment
+    /// the page turns.
+    pub fn set_page(&mut self, id: NodeId, page: u32) -> Option<u32> {
+        let node = self.nodes.get(id.0 as usize)?;
+        node.kind.page()?;
+        let pages = node.children.len();
+        if pages == 0 || page as usize >= pages {
+            return None;
+        }
+        let kind = node.kind.with_page(page)?;
+        self.nodes[id.0 as usize].kind = kind;
+        // Collected first: `set_visible` needs `&mut self` and the children
+        // live behind the borrow of the node they hang from.
+        let children: alloc::vec::Vec<NodeId> = self.nodes[id.0 as usize].children.clone();
+        for (i, child) in children.into_iter().enumerate() {
+            self.set_visible(child, i as u32 == page);
+        }
+        Some(page)
+    }
+
+    /// Turn a pager one page along, `forwards` or back.
+    ///
+    /// Returns the page landed on, or `None` if there is nowhere to go: the
+    /// pager does not wrap and is already at the end. That `None` is what a
+    /// caller needs in order to let a swipe fall through to an enclosing
+    /// pager rather than being swallowed by one that cannot move.
+    pub fn step_page(&mut self, id: NodeId, forwards: bool) -> Option<u32> {
+        let node = self.nodes.get(id.0 as usize)?;
+        let Kind::Pager { page, wrap, .. } = node.kind else {
+            return None;
+        };
+        let pages = u32::try_from(node.children.len()).ok()?;
+        if pages == 0 {
+            return None;
+        }
+        let next = match (forwards, wrap) {
+            (true, _) if page + 1 < pages => page + 1,
+            (true, true) => 0,
+            (false, _) if page > 0 => page - 1,
+            (false, true) => pages - 1,
+            _ => return None,
+        };
+        self.set_page(id, next)
+    }
+
+    /// The page a pager's child is, by the `name` its scene file gave it.
+    ///
+    /// For `"touch": { "action": "page", "to": "gps" }`, which names the page
+    /// rather than counting to it: inserting a page in front of another must
+    /// not silently re-point every button that jumped past it.
+    #[must_use]
+    pub fn page_named(&self, pager: NodeId, name: &str) -> Option<u32> {
+        let node = self.get(pager)?;
+        node.kind.page()?;
+        node.children
+            .iter()
+            .position(|c| {
+                self.get(*c)
+                    .and_then(|n| n.name.as_deref())
+                    .is_some_and(|n| n == name)
+            })
+            .and_then(|i| u32::try_from(i).ok())
+    }
+
+    /// The nearest pager at or above `id`, walking towards the root.
+    ///
+    /// What makes `"to": "next"` work on a button that is itself several
+    /// panels deep inside the page it turns.
+    #[must_use]
+    pub fn enclosing_pager(&self, id: NodeId) -> Option<NodeId> {
+        let mut cursor = Some(id);
+        // Bounded by the node count for the same reason `absolute_of` is: a
+        // corrupt tree must not hang the display.
+        for _ in 0..=self.nodes.len() {
+            let here = cursor?;
+            let node = self.get(here)?;
+            if node.kind.page().is_some() {
+                return Some(here);
+            }
+            cursor = node.parent;
+        }
+        None
+    }
+
+    /// The innermost visible pager whose rectangle covers `point` and whose
+    /// `axis` answers `axis`, or `None` if a swipe there turns nothing.
+    ///
+    /// Not a hit test: a swipe starting on bare canvas between two widgets
+    /// still has to turn the page it started on, and `hit_test` would return
+    /// nothing for it. What matters is which pager the finger was *over*.
+    #[must_use]
+    pub fn pager_at(&self, point: Point, axis: crate::input::Axis) -> Option<NodeId> {
+        self.pager_at_inner(ROOT, point, axis, 0)
+    }
+
+    fn pager_at_inner(
+        &self,
+        id: NodeId,
+        point: Point,
+        axis: crate::input::Axis,
+        depth: u32,
+    ) -> Option<NodeId> {
+        if depth > 64 {
+            return None;
+        }
+        let node = self.get(id)?;
+        if !node.visible {
+            return None;
+        }
+        if id != ROOT && !self.absolute_rect(id)?.contains(point) {
+            return None;
+        }
+        // Innermost wins, and later siblings are on top, so the search runs
+        // in reverse paint order exactly as the hit test does.
+        for &child in node.children.iter().rev() {
+            if let Some(found) = self.pager_at_inner(child, point, axis, depth + 1) {
+                return Some(found);
+            }
+        }
+        match node.kind {
+            Kind::Pager { axis: a, swipe, .. }
+                if swipe && a == axis && !node.children.is_empty() =>
+            {
+                Some(id)
+            }
+            _ => None,
+        }
     }
 
     /// Set how tall a segbar's lit cells stand, marking it dirty if changed.

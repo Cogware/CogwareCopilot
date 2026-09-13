@@ -949,3 +949,328 @@ fn a_menu_widget_whose_menu_is_missing_draws_the_placeholder() {
     let s = menu_render(false);
     assert!(count_of(&s, [255, 0, 255]) > 0, "drew nothing at all");
 }
+
+// --- touch, pages and tell-tales ---
+
+const TOUCH_SCENE: &str = include_str!("../../examples/touch.scene");
+
+/// Build the touch example, as the simulator does.
+fn touch_scene() -> copilot::asset::Scene {
+    let doc = copilot::scene::parse(TOUCH_SCENE).expect("the touch scene must parse");
+    copilot::scene::build_scene(&doc).expect("the touch scene must build")
+}
+
+/// Render a scene's tree, so a page turn can be checked in pixels rather than
+/// only in the tree that produced them.
+fn render_tree(scene: &copilot::asset::Scene, menus: &[copilot::menu::Menu]) -> MemorySurface {
+    let bounds = scene.tree.get(ROOT).unwrap().rect;
+    let mut s = MemorySurface::new(bounds.size, PixelFormat::Bgrx8888);
+    let (images, anims) = (ImageTable::new(), AnimTable::new());
+    compose_all(
+        &mut s,
+        &scene.tree,
+        Resources {
+            images: &images,
+            anims: &anims,
+            font: FONT.get_or_init(default_font),
+            menus,
+        },
+    );
+    s
+}
+
+#[test]
+fn the_touch_example_binds_against_the_real_tables() {
+    // Every gauge, unit and tell-tale it names resolves, or it would not have
+    // built -- which is the whole point of resolving them at build time.
+    let scene = touch_scene();
+    assert!(!scene.hotspots.is_empty(), "nothing in it can be pressed");
+    assert!(
+        scene.bindings.iter().any(|b| b.indicator.is_some()),
+        "no tell-tale is bound"
+    );
+    assert!(
+        scene.bindings.iter().any(|b| b.gauge.name == "GPS_SPEED"),
+        "the GPS page reads nothing"
+    );
+    assert!(
+        scene.bindings.iter().any(|b| b.gauge.name == "ODOMETER"),
+        "the trip page reads nothing"
+    );
+}
+
+#[test]
+fn it_subscribes_to_the_two_tell_tale_banks_as_ordinary_gauges() {
+    // A display asks for gauge ids, and the banks are gauges, so nothing
+    // about the subscription path had to learn what an indicator is.
+    let wanted = touch_scene().wanted();
+    assert!(wanted.contains(&(cogware_can::INDICATORS1.id as u8)));
+    assert!(wanted.contains(&(cogware_can::INDICATORS2.id as u8)));
+}
+
+#[test]
+fn swiping_turns_the_page_and_repaints_both() {
+    use copilot::input::{Dir, Gesture};
+    use copilot::{Point, scene::Event};
+
+    let mut scene = touch_scene();
+    let pager = scene
+        .tree
+        .find("pages")
+        .expect("the example names its pager");
+    assert_eq!(scene.tree.get(pager).unwrap().kind.page(), Some(0));
+
+    scene.tree.clear_damage();
+    let swipe = Gesture::Swipe {
+        from: Point { x: 240, y: 240 },
+        to: Point { x: 60, y: 240 },
+        dir: Dir::Left,
+    };
+    assert_eq!(
+        scene.touch(swipe),
+        Some(Event::Paged { pager, page: 1 }),
+        "a swipe left brings the next page on"
+    );
+    assert!(
+        !scene.tree.damage().is_empty(),
+        "the page that went and the one that came both need painting"
+    );
+
+    // And it shows: the trip page's heading is on the screen, the tachometer
+    // that was there is not.
+    let menus = copilot::rig::parse(MENU_RIG)
+        .expect("the rig must parse")
+        .menus;
+    let after = render_tree(&scene, &menus);
+    assert_eq!(
+        count_of(&after, [0x3f, 0xb9, 0x50]),
+        0,
+        "the tachometer's green is still on the screen"
+    );
+}
+
+#[test]
+fn tapping_an_arrow_turns_the_page_the_swipe_would_have() {
+    use copilot::input::Gesture;
+    use copilot::{Point, scene::Event};
+
+    let mut scene = touch_scene();
+    let pager = scene.tree.find("pages").unwrap();
+    // The right-hand arrow, whose rect the example puts at [432, 216, 40, 48].
+    let arrow = Point { x: 452, y: 240 };
+    assert!(scene.hotspot_at(arrow).is_some(), "nothing to press there");
+    assert_eq!(
+        scene.touch(Gesture::Tap(arrow)),
+        Some(Event::Paged { pager, page: 1 })
+    );
+}
+
+#[test]
+fn a_button_over_a_menu_asks_the_host_to_press_it() {
+    use copilot::input::{Dir, Gesture};
+    use copilot::menu::Button;
+    use copilot::{Point, scene::Event};
+
+    let mut scene = touch_scene();
+    // Onto the trip page, where the menu buttons live.
+    scene.touch(Gesture::Swipe {
+        from: Point { x: 240, y: 240 },
+        to: Point { x: 60, y: 240 },
+        dir: Dir::Left,
+    });
+    // The OK button, at [248, 366, 64, 48].
+    assert_eq!(
+        scene.touch(Gesture::Tap(Point { x: 280, y: 390 })),
+        Some(Event::Menu {
+            menu: "display".into(),
+            button: Button::Centre
+        }),
+        "the menus live on the rig, so the scene can only say what was asked"
+    );
+}
+
+#[test]
+fn a_button_on_a_hidden_page_cannot_be_pressed() {
+    use copilot::Point;
+
+    // The OK button is on page 1 and page 0 is up, so the finger lands on the
+    // tachometer instead. A hotspot that answered from behind another page
+    // would be the worst kind of bug: invisible, and on a moving car.
+    let scene = touch_scene();
+    assert!(scene.hotspot_at(Point { x: 280, y: 390 }).is_none());
+}
+
+#[test]
+fn a_lit_tell_tale_shows_and_an_out_one_hides() {
+    use cogware_can::indicators::{Indicator, IndicatorSet};
+
+    let _banks = banks();
+    let mut scene = touch_scene();
+    let word = scene
+        .tree
+        .find("low fuel")
+        .or_else(|| {
+            // The label has no name in the example; find it by its text.
+            (0..scene.tree.len() as u32)
+                .map(copilot::widget::NodeId)
+                .find(|id| {
+                    scene
+                        .tree
+                        .get(*id)
+                        .and_then(|n| n.kind.text())
+                        .is_some_and(|t| t == "LOW FUEL")
+                })
+        })
+        .expect("the example has a low-fuel warning");
+
+    let mut set = IndicatorSet::new();
+    set.set(Indicator::LowFuel, true);
+    cogware_can::indicators::apply(set);
+    scene.apply_gauges();
+    assert!(scene.tree.get(word).unwrap().visible, "lit, so it shows");
+
+    cogware_can::indicators::apply(IndicatorSet::new());
+    scene.apply_gauges();
+    assert!(!scene.tree.get(word).unwrap().visible, "out, so it hides");
+}
+
+// --- the whole round trip: a pin, the bus, and the lamp ---
+
+/// Serialises the tests that drive the shared tell-tale banks.
+static BANKS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn banks() -> std::sync::MutexGuard<'static, ()> {
+    // A test that panicked holding it left state, not information; the guard
+    // clears on the way in so the next test is entitled to a clean pair.
+    let g = BANKS.lock().unwrap_or_else(|e| e.into_inner());
+    cogware_can::indicators::apply(cogware_can::indicators::IndicatorSet::new());
+    g
+}
+
+#[test]
+fn a_pin_on_one_display_lights_the_lamp_on_all_of_them() {
+    // The flow the GPIO map exists for, end to end and with nothing faked:
+    //
+    //   stalk -> pin -> node message -> master -> INDICATORS1 frame
+    //         -> every display's feed_frame -> the widget's binding
+    //
+    // The display that read the pin does *not* light its own lamp. It says
+    // so, and the lamp arrives the same way it would if the master had known
+    // all along -- which is what keeps two screens from disagreeing.
+    use cogware_can::bus::{Bus, BusView};
+    use cogware_can::indicators::Indicator;
+    use copilot::gpio::Pin;
+
+    let _banks = banks();
+    let rig = copilot::rig::parse(MENU_RIG).expect("the rig must parse");
+    let cluster = rig.display(0x01).expect("the rig has a cluster");
+    let mut pins = cluster.pins.clone();
+    assert!(!pins.is_empty(), "the example cluster has a loom");
+
+    // Two displays on one bus: the one with the stalk on a pin, and another
+    // that only ever watches.
+    let mut master = Bus::new();
+    let node = BusView::new(cluster.node);
+
+    // The scene the *other* screen is showing, bound to the same lamp.
+    let doc = copilot::scene::parse(TOUCH_SCENE).expect("parse");
+    let mut watcher = copilot::scene::build_scene(&doc).expect("build");
+    let lamp_widget = watcher
+        .bindings
+        .iter()
+        .find(|b| b.indicator == Some(Indicator::HighBeam))
+        .map(|b| b.node)
+        .expect("the touch scene shows a high beam lamp");
+
+    // Pin 3 is the high beam feed, switched to ground, so it reads low when
+    // the beam is on. The port starts with everything high: nothing is on.
+    let all_high = u32::MAX;
+    pins.feed(all_high, 0);
+    assert!(!pins.asserted(3), "the beam should be off to start with");
+
+    // The driver pulls the stalk. The pin goes low and settles.
+    let beam_on = all_high & !(1 << 2);
+    pins.feed(beam_on, 1_000);
+    let changed = pins.feed(beam_on, 1_000 + copilot::gpio::DEBOUNCE_US);
+    assert!(changed.contains(3), "the beam coming on was not noticed");
+
+    // The display says so. It does not light anything.
+    assert!(
+        !cogware_can::indicators::get(Indicator::HighBeam),
+        "the display lit its own lamp instead of reporting it"
+    );
+    // Copied out rather than borrowed through `what()`: the port is read
+    // again below, and `Indicator` is a `Copy` two bytes wide.
+    let ind = pins
+        .get(3)
+        .and_then(Pin::indicator)
+        .expect("pin 3 is wired to a tell-tale");
+    let report = node
+        .report_lamp(ind, pins.asserted(3))
+        .expect("a node must be able to report");
+
+    // The master takes it and folds it into the bank it owns.
+    master.feed(&report).expect("the master must understand it");
+    assert!(cogware_can::indicators::get(Indicator::HighBeam));
+
+    // Which goes out as an ordinary gauge frame, and comes back in as one.
+    let broadcast =
+        cogware_can::frame_for(cogware_can::INDICATORS1.id).expect("the bank must frame");
+    cogware_can::INDICATORS1.clear();
+    cogware_can::feed_frame(&broadcast).expect("an ordinary gauge frame");
+
+    // And the watching screen lights the lamp, through the binding it
+    // already had. Nothing in the scene changed for any of this.
+    watcher.apply_gauges();
+    assert_eq!(
+        watcher.tree.get(lamp_widget).and_then(|n| n.kind.reading()),
+        Some(1.0),
+        "the lamp never came back round"
+    );
+
+    // Let go, and it goes out the same way.
+    pins.feed(all_high, 9_000_000);
+    let changed = pins.feed(all_high, 9_000_000 + copilot::gpio::DEBOUNCE_US);
+    assert!(changed.contains(3));
+    master.feed(&node.report_lamp(ind, pins.asserted(3)).unwrap());
+    watcher.apply_gauges();
+    assert_eq!(
+        watcher.tree.get(lamp_widget).and_then(|n| n.kind.reading()),
+        Some(0.0)
+    );
+}
+
+#[test]
+fn a_display_hands_its_whole_loom_over_in_one_frame() {
+    // After a boot or a bus drop the master knows nothing about this
+    // screen's pins, and there is no "changed" to report -- so the lot goes
+    // at once. A dash that arrives in two halves is a dash that is wrong.
+    use cogware_can::bus::{Bus, BusView, LAMPS_PER_MSG};
+    use cogware_can::indicators::Indicator;
+
+    let _banks = banks();
+    let rig = copilot::rig::parse(MENU_RIG).expect("parse");
+    let cluster = rig.display(0x01).expect("cluster");
+    let mut pins = cluster.pins.clone();
+
+    // Left stalk on, everything else as found.
+    pins.feed(0b0000_0001, 0);
+    let loom: Vec<_> = pins.lamp_states().collect();
+    assert!(!loom.is_empty() && loom.len() <= LAMPS_PER_MSG);
+
+    let node = BusView::new(cluster.node);
+    let mut master = Bus::new();
+    master
+        .feed(&node.report_lamps(&loom).expect("one frame"))
+        .expect("the master must take the lot");
+
+    for (ind, on) in loom {
+        assert_eq!(
+            cogware_can::indicators::get(ind),
+            on,
+            "{} did not survive",
+            ind.name()
+        );
+    }
+    assert!(cogware_can::indicators::get(Indicator::TurnLeft));
+}

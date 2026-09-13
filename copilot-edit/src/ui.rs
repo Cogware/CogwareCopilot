@@ -164,9 +164,59 @@ impl App {
         ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let d = &self.driver;
-            if d.gauges.is_empty() && d.channels.is_empty() && d.labels.is_empty() {
+            if d.gauges.is_empty()
+                && d.channels.is_empty()
+                && d.labels.is_empty()
+                && d.lamps.is_empty()
+            {
                 ui.weak("No bound or named widgets to drive.");
                 return;
+            }
+            if !self.driver.lamps.is_empty() {
+                ui.label(
+                    egui::RichText::new(
+                        "Tell-tales. One switch per lamp, not one per bank: the two                          bitfield gauges carry thirty-two lamps each.",
+                    )
+                    .small()
+                    .weak(),
+                );
+                egui::Grid::new("lamps")
+                    .num_columns(4)
+                    .spacing([8.0, 4.0])
+                    .show(ui, |ui| {
+                        // Four across rather than one per row: a panel with a
+                        // dozen tell-tales would otherwise push every slider
+                        // below the bottom of the pane.
+                        for (i, (name, on)) in self.driver.lamps.iter_mut().enumerate() {
+                            ui.checkbox(on, *name);
+                            if i % 4 == 3 {
+                                ui.end_row();
+                            }
+                        }
+                        ui.end_row();
+                    });
+                ui.horizontal(|ui| {
+                    if ui
+                        .button("All lit")
+                        .on_hover_text("What the bus spec's CheckBulb does at ignition-on")
+                        .clicked()
+                    {
+                        for on in self.driver.lamps.values_mut() {
+                            *on = true;
+                        }
+                    }
+                    if ui.button("All out").clicked() {
+                        for on in self.driver.lamps.values_mut() {
+                            *on = false;
+                        }
+                    }
+                });
+                if !self.driver.gauges.is_empty()
+                    || !self.driver.channels.is_empty()
+                    || !self.driver.labels.is_empty()
+                {
+                    ui.separator();
+                }
             }
             if !self.driver.gauges.is_empty() {
                 ui.label(
@@ -423,6 +473,7 @@ impl eframe::App for App {
         self.resolution_dialog(ctx);
         self.new_dialog(ctx);
         self.modes_window(ctx);
+        self.pins_window(ctx);
         self.switch_prompt(ctx);
         self.canvas(ctx, now_us, delta_us);
 

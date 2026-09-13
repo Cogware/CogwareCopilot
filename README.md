@@ -7,8 +7,10 @@ desktop simulator and on real hardware.
 
 ```
 cargo run -p copilot-sim  -- examples/cluster.scene    # watch it, hot-reloads on save
+cargo run -p copilot-sim  -- --rig examples/touch.rig examples/touch.scene  # poke it: the mouse is the finger
 cargo run -p copilot-edit -- examples/cluster.scene    # edit it
 cargo run -p copilot-edit -- examples/z31.rig          # edit a car's three screens at once
+cargo run -p copilot-edit -- examples/touch.rig        # pages, tell-tales and the pins behind them
 ```
 
 ## The crates
@@ -52,6 +54,20 @@ none of the rest.
   change can be checked against the screens it sits beside — and modes are
   added, renamed and removed from the editor, so "rockcrawl" is as much a mode
   as "sport".
+- **Touch, beside the buttons rather than instead of them.** A panel's samples
+  become taps and swipes; any widget can carry an action, and a `pager` holds
+  several pages one display swipes between without the bus, the scene file or
+  the other screens changing. A mode change is still the rig's job — this is a
+  screen choosing which of its own faces to show.
+- **Tell-tales and GPS.** The sixty-four dashboard lamps the bus spec packs
+  into two bitfield gauges bind by name — `"bind": {"indicator":
+  "OIL_PRESSURE"}` — and can light a lamp or reveal a printed symbol. GPS
+  speed, fix and satellite count, and the odometer in km or miles, are
+  ordinary gauges and bind like any other.
+- **Settings the display already has.** A rig menu that says `"from": "config"`
+  is built from `cogware-can`'s own settings table, so the day the bus spec
+  grows a setting the menu grows a row and no file here is edited. A menu
+  longer than the box it is drawn in scrolls to keep the cursor on the screen.
 - **Images and animation.** QOI and GIF decoders, both written here; property
   animation with easing curves; GIF playback with pause, seek and speed.
 - **Bitmap fonts.** A 5x7 face is compiled in so labels work immediately;
@@ -97,6 +113,29 @@ covers what a `bind` may say and how it sits alongside an `animate`.
   ],
 }
 ```
+
+A display can also say what its spare pins are wired to:
+
+```jsonc
+{ "name": "cluster", "node": "0x01", "gpio": 8,   // eight pins, numbered 1..8
+  "pins": [
+    { "pin": 1, "label": "left stalk", "indicator": "TURN_LEFT" },
+    { "pin": 3, "indicator": "HIGH_BEAM", "active": "low", "pull": "up" },
+    { "pin": 5, "action": "menu", "menu": "display", "button": "centre" },
+    { "pin": 6, "dir": "out", "indicator": "SHIFT_LIGHT" },
+  ],
+  "scenes": { /* ... */ } }
+```
+
+Pins are 1..n and nothing else — which physical pin logical 3 lands on is the
+board's, in the board's own code, where the schematic is. The firmware reads
+its port into a word and hands it to `Pins::feed`; `pull` and `dir` are the
+endpoints it configures the port from. An input does **not** light its own
+lamp: it reports the change with `bus::BusView::report_lamp`, the master folds
+the bit into the real `INDICATORS` frame, and the lamp comes back on the bus —
+on this screen and every other one at once. `Pins::lamp_states` hands the whole
+loom over in one frame after a boot or a bus drop. The editor's **Pins** button edits
+the lot, with a picker for all sixty-four tell-tales.
 
 The mode names are yours. Nothing in the format or the code knows "sport"
 from "rockcrawl" — a mode is whatever the car needs one for, and the editor's

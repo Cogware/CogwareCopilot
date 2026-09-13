@@ -25,7 +25,10 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use cogware_can::bus::BusState;
+
 use crate::asset::Scene;
+use crate::gpio::{PinError, Pins};
 use crate::menu::{Item, Menu};
 use crate::render::Transition;
 use crate::scene::bind::node_address;
@@ -72,6 +75,15 @@ pub enum RigError {
     },
     /// Two menus claimed one name.
     DuplicateMenu(String),
+    /// A menu's `from` named somewhere its rows cannot come from.
+    UnknownMenuSource(String),
+    /// A display's `gpio` count or `pins` list could not be used.
+    BadPins {
+        /// The display, by its `name`.
+        display: String,
+        /// What was wrong with them.
+        why: PinError,
+    },
     /// A menu, or an item in one, was unusable.
     BadMenu {
         /// The menu, by its `name`.
@@ -99,6 +111,12 @@ pub struct Display {
     pub node: u8,
     /// The scene it shows in each mode, indexed like [`Rig::modes`].
     pub scenes: Vec<String>,
+    /// Its spare pins, and what each is wired to.
+    ///
+    /// Here rather than on a scene because a wire does not change when the
+    /// drive mode does: the pin on the turn stalk is the pin on the turn
+    /// stalk in normal and in track. Empty for a display that declares none.
+    pub pins: Pins,
 }
 
 /// Every display on the bus and the scene each shows in each mode.
@@ -161,6 +179,29 @@ impl Rig {
     #[must_use]
     pub fn mode_named(&self, name: &str) -> Option<usize> {
         self.modes.iter().position(|m| m == name)
+    }
+
+    /// The mode the master is telling the bus to be in.
+    ///
+    /// The other half of [`Self::mode_index`], which takes a bare byte and
+    /// had nothing producing it: a display feeds every frame to a
+    /// [`BusView`](cogware_can::bus::BusView) and hands the state it settles
+    /// on to this. `None` for a mode this rig does not have, which is the
+    /// same refusal `mode_index` makes and for the same reason -- a display
+    /// told to be in a mode it has no scene for should keep showing the one
+    /// it has rather than jump somewhere arbitrary.
+    #[must_use]
+    pub fn mode_for(&self, state: &BusState) -> Option<usize> {
+        self.mode_index(state.mode)
+    }
+
+    /// The scene the display at `node` should be showing, given the bus.
+    ///
+    /// What a display actually wants once a frame: the path to load, or
+    /// `None` if the bus has named a mode this rig cannot show.
+    #[must_use]
+    pub fn scene_for(&self, node: u8, state: &BusState) -> Option<&str> {
+        self.scene_path(node, self.mode_for(state)?)
     }
 
     /// Whether `scene`, loaded from the path the rig gave for `node`, agrees
@@ -263,8 +304,31 @@ fn menu(val: &Value) -> Result<Menu, RigError> {
     // The heading defaults to the lookup name, so a one-menu rig need not say
     // the same word twice.
     let title = val.get("title").and_then(Value::as_str).unwrap_or(name);
-    let mut out = Menu::new(name, title);
 
+    // A menu the spec describes rather than one the file lists. The rows come
+    // from `cogware_can::config`, so the day the bus spec grows a setting
+    // every rig that says this grows a row for it and no file is edited.
+    if let Some(from) = val.get("from") {
+        let from = from.as_str().ok_or_else(|| RigError::BadMenu {
+            menu: name.to_string(),
+            field: "from",
+        })?;
+        if from != crate::menu::config::SOURCE {
+            return Err(RigError::UnknownMenuSource(from.to_string()));
+        }
+        // Listing items as well is a file contradicting itself about where
+        // the menu comes from, and quietly appending them would make the
+        // order depend on which half was written first.
+        if val.get("items").is_some() {
+            return Err(RigError::BadMenu {
+                menu: name.to_string(),
+                field: "items",
+            });
+        }
+        return Ok(Menu::from_config(name, title));
+    }
+
+    let mut out = Menu::new(name, title);
     let items = val
         .get("items")
         .and_then(Value::as_array)
@@ -377,7 +441,17 @@ fn display(val: &Value, modes: &[String]) -> Result<Display, RigError> {
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(Display { name, node, scenes })
+    let pins = crate::gpio::pins(val).map_err(|why| RigError::BadPins {
+        display: name.clone(),
+        why,
+    })?;
+
+    Ok(Display {
+        name,
+        node,
+        scenes,
+        pins,
+    })
 }
 
 /// Read a required array of strings.
@@ -571,12 +645,20 @@ mod menu_tests {
     #[test]
     fn the_example_rig_carries_its_menus() {
         let rig = parse(RIG).expect("the example rig must parse");
-        assert_eq!(rig.menus.len(), 2);
+        assert_eq!(rig.menus.len(), 3);
         assert_eq!(
             rig.menu("display").map(|m| m.title.as_str()),
             Some("DISPLAY")
         );
         assert!(rig.menu("nothing").is_none());
+
+        // The touch panel picks a drive mode by row, so the order of these is
+        // the order of `modes` above them in the same file.
+        let drive = rig.menu("drive").expect("the rig names a drive menu");
+        let labels: alloc::vec::Vec<&str> =
+            drive.items().iter().map(|i| i.label.as_str()).collect();
+        assert_eq!(labels, ["Normal", "Sport", "Track"]);
+        assert_eq!(labels.len(), rig.modes.len(), "one row per mode");
     }
 
     #[test]
@@ -652,7 +734,9 @@ mod menu_tests {
 #[cfg(test)]
 mod transition_tests {
     use super::*;
+    use crate::gpio::Pin;
     use crate::render::Edge;
+    use cogware_can::indicators::Indicator;
 
     fn rig_with(extra: &str) -> Result<Rig, RigError> {
         parse(&alloc::format!(
@@ -689,6 +773,182 @@ mod transition_tests {
         assert_eq!(
             rig_with(r#""transition": "dissolve","#),
             Err(RigError::BadTransition("dissolve".into()))
+        );
+    }
+
+    // --- the bus ---
+
+    /// A three-mode rig, which is the shape `mode_for` has anything to say
+    /// about.
+    fn three_modes() -> Rig {
+        parse(
+            r#"{ "modes": ["normal", "sport", "track"],
+                 "displays": [{ "name": "cluster", "node": "0x01",
+                   "scenes": { "normal": "n.scene", "sport": "s.scene",
+                               "track": "t.scene" } }] }"#,
+        )
+        .unwrap()
+    }
+
+    fn bus(mode: u8) -> BusState {
+        BusState {
+            mode,
+            ..BusState::default()
+        }
+    }
+
+    #[test]
+    fn the_mode_the_master_broadcasts_is_the_one_the_rig_shows() {
+        let rig = three_modes();
+        assert_eq!(rig.mode_for(&bus(0)), Some(0));
+        assert_eq!(rig.mode_for(&bus(2)), Some(2));
+    }
+
+    #[test]
+    fn a_mode_this_rig_does_not_have_is_refused_rather_than_clamped() {
+        // A display told to be in a mode it has no scene for should keep
+        // showing the one it has, not jump to the last one in the file.
+        assert_eq!(three_modes().mode_for(&bus(9)), None);
+    }
+
+    #[test]
+    fn a_display_can_ask_straight_for_the_scene_the_bus_puts_it_in() {
+        let rig = three_modes();
+        assert_eq!(rig.scene_for(0x01, &bus(1)), Some("s.scene"));
+        assert_eq!(rig.scene_for(0x01, &bus(9)), None, "no such mode");
+        assert_eq!(rig.scene_for(0x7f, &bus(0)), None, "no such display");
+    }
+
+    // --- settings menus ---
+
+    #[test]
+    fn a_menu_can_come_from_the_bus_spec_rather_than_from_the_file() {
+        let rig = parse(
+            r#"{ "modes": ["a"],
+                 "menus": [{ "name": "settings", "title": "Display",
+                             "from": "config" }],
+                 "displays": [{ "name": "x", "node": "0x01",
+                                "scenes": { "a": "s.scene" } }] }"#,
+        )
+        .unwrap();
+        let m = rig.menu("settings").expect("the rig has one");
+        assert_eq!(m.title, "Display");
+        assert_eq!(
+            m.items().len(),
+            cogware_can::config::ALL_SETTINGS.len(),
+            "a row per setting the spec describes"
+        );
+        assert!(m.item("brightness").is_some());
+    }
+
+    #[test]
+    fn a_menu_source_nobody_has_heard_of_is_refused() {
+        assert_eq!(
+            parse(
+                r#"{ "modes": ["a"],
+                     "menus": [{ "name": "m", "from": "the internet" }],
+                     "displays": [{ "name": "x", "node": "0x01",
+                                    "scenes": { "a": "s.scene" } }] }"#
+            ),
+            Err(RigError::UnknownMenuSource("the internet".into()))
+        );
+    }
+
+    // --- pins ---
+
+    #[test]
+    fn a_display_declares_how_many_pins_it_has_and_what_they_are_wired_to() {
+        let rig = parse(
+            r#"{ "modes": ["a"],
+                 "displays": [{ "name": "cluster", "node": "0x01",
+                   "gpio": 8,
+                   "pins": [{ "pin": 1, "indicator": "TURN_LEFT" },
+                            { "pin": 6, "dir": "out", "indicator": "SHIFT_LIGHT" }],
+                   "scenes": { "a": "s.scene" } }] }"#,
+        )
+        .unwrap();
+        let d = rig.display(0x01).expect("the rig has one");
+        assert_eq!(d.pins.count(), 8);
+        assert_eq!(d.pins.mapped().len(), 2);
+        assert_eq!(
+            d.pins.get(1).and_then(Pin::indicator),
+            Some(Indicator::TurnLeft)
+        );
+        assert_eq!(d.pins.dir(6), crate::gpio::Dir::Out);
+    }
+
+    #[test]
+    fn a_display_that_says_nothing_about_pins_has_none() {
+        // Every rig written before pins existed has to keep working.
+        let rig = rig_with("").unwrap();
+        assert!(rig.displays[0].pins.is_empty());
+    }
+
+    #[test]
+    fn a_pin_the_display_does_not_have_names_the_display_that_claimed_it() {
+        // The error has to say which screen, or a rig with four of them
+        // sends someone hunting through the file.
+        let err = parse(
+            r#"{ "modes": ["a"],
+                 "displays": [{ "name": "cluster", "node": "0x01", "gpio": 4,
+                   "pins": [{ "pin": 9, "indicator": "ABS" }],
+                   "scenes": { "a": "s.scene" } }] }"#,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            RigError::BadPins {
+                display: "cluster".into(),
+                why: crate::gpio::PinError::BadPin(9)
+            }
+        );
+    }
+
+    #[test]
+    fn the_example_rigs_loom_is_wired_to_things_the_spec_has() {
+        // The same file anyone is told to open, so the example cannot drift
+        // from what the format accepts.
+        let rig = parse(include_str!("../../examples/z31.rig")).unwrap();
+        let pins = &rig.display(0x01).expect("the cluster").pins;
+        assert_eq!(pins.count(), 8);
+        assert_eq!(
+            pins.get(1).and_then(Pin::indicator),
+            Some(Indicator::TurnLeft)
+        );
+        assert_eq!(pins.get(3).map(|p| p.active), Some(crate::gpio::Level::Low));
+        assert_eq!(pins.get(3).map(|p| p.pull), Some(crate::gpio::Pull::Up));
+        assert!(
+            pins.get(5).and_then(Pin::action).is_some(),
+            "the wheel button"
+        );
+        assert_eq!(pins.dir(6), crate::gpio::Dir::Out);
+        // Only the inputs are this display's to report; the relay is the
+        // master telling us, not the other way about.
+        assert_eq!(pins.reported().count(), 4);
+    }
+
+    #[test]
+    fn the_other_displays_in_the_example_declare_no_pins() {
+        let rig = parse(include_str!("../../examples/z31.rig")).unwrap();
+        assert!(rig.display(0x02).expect("the map gauge").pins.is_empty());
+    }
+
+    #[test]
+    fn a_menu_that_is_both_listed_and_sourced_is_a_file_contradicting_itself() {
+        // Appending the items quietly would make the order depend on which
+        // half of the entry was written first.
+        assert_eq!(
+            parse(
+                r#"{ "modes": ["a"],
+                     "menus": [{ "name": "m", "from": "config",
+                                 "items": [{ "name": "x", "max": 10 }] }],
+                     "displays": [{ "name": "x", "node": "0x01",
+                                    "scenes": { "a": "s.scene" } }] }"#
+            ),
+            Err(RigError::BadMenu {
+                menu: "m".into(),
+                field: "items"
+            })
         );
     }
 }

@@ -44,6 +44,28 @@ pub struct Text {
     authored: String,
 }
 
+/// What a widget looked like before the driver touched it.
+///
+/// Both halves, because a binding reaches two: a reading is in the kind, and
+/// a `visible` binding -- which is how a tell-tale shows a symbol rather than
+/// dimming a rectangle -- is in the flag beside it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Saved {
+    node: NodeId,
+    kind: Kind,
+    visible: bool,
+}
+
+impl Saved {
+    fn of(node: NodeId, n: &copilot::widget::Node) -> Self {
+        Self {
+            node,
+            kind: n.kind.clone(),
+            visible: n.visible,
+        }
+    }
+}
+
 /// Live overrides applied to the preview before it is drawn.
 #[derive(Debug)]
 pub struct Driver {
@@ -54,6 +76,12 @@ pub struct Driver {
     /// Readings for bound gauges, keyed by the gauge's name and held in the
     /// gauge's own unit -- the one the bus carries.
     pub gauges: BTreeMap<&'static str, Channel>,
+    /// Bound tell-tales, keyed by the name the bus spec gives each lamp.
+    ///
+    /// One switch per lamp rather than a slider on the bank: the two bitfield
+    /// gauges carry thirty-two lamps each, and a slider on `INDICATORS1`
+    /// would light or extinguish every one of them together.
+    pub lamps: BTreeMap<&'static str, bool>,
     /// Whether overrides are applied at all.
     pub enabled: bool,
     /// Whether the sweep is running.
@@ -69,6 +97,7 @@ impl Default for Driver {
             channels: BTreeMap::new(),
             labels: BTreeMap::new(),
             gauges: BTreeMap::new(),
+            lamps: BTreeMap::new(),
             enabled: false,
             sweep: false,
             period_s: 4.0,
@@ -113,6 +142,7 @@ impl Driver {
     /// new authored value.
     pub fn sync(&mut self, tree: &Tree, bindings: &[Binding], others: &[(&Tree, &[Binding])]) {
         self.sync_gauges(tree, bindings, others);
+        self.sync_lamps(tree, bindings, others);
         // A bound widget is the gauge's to drive. Offering it by name as well
         // would put two sliders on one reading, and the second would win by
         // accident of ordering.
@@ -204,9 +234,16 @@ impl Driver {
         let all = core::iter::once((tree, bindings)).chain(others.iter().copied());
         for (tree, bindings) in all {
             for b in bindings {
+                // The bank a tell-tale lives in is not a reading anybody
+                // wants a slider on; `sync_lamps` gives each lamp a switch.
+                if b.indicator.is_some() {
+                    continue;
+                }
                 let lo = to_canonical(b, b.min.min(b.max));
                 let hi = to_canonical(b, b.min.max(b.max));
-                let authored = tree.get(b.node).map_or(lo, |n| authored_of(b, &n.kind));
+                let authored = tree
+                    .get(b.node)
+                    .map_or(lo, |n| authored_of(b, &n.kind, n.visible));
                 let e = seen.entry(b.gauge.name).or_insert((authored, lo, hi));
                 e.1 = e.1.min(lo);
                 e.2 = e.2.max(hi);
@@ -236,6 +273,32 @@ impl Driver {
                     );
                 }
             }
+        }
+    }
+
+    /// Learn the tell-tales `bindings` name, here and on the displays beside.
+    ///
+    /// A lamp starts at whatever the file draws -- a led authored at full is a
+    /// lamp the author wants to see lit -- so switching the driver on changes
+    /// nothing until a switch is flicked, the same as every other channel.
+    fn sync_lamps(&mut self, tree: &Tree, bindings: &[Binding], others: &[(&Tree, &[Binding])]) {
+        let mut seen: BTreeMap<&'static str, bool> = BTreeMap::new();
+        let all = core::iter::once((tree, bindings)).chain(others.iter().copied());
+        for (tree, bindings) in all {
+            for b in bindings {
+                let Some(ind) = b.indicator else { continue };
+                let lit = tree.get(b.node).is_some_and(|n| match b.target {
+                    copilot::widget::BindTarget::Visible => n.visible,
+                    _ => n.kind.reading().is_some_and(|v| v >= 0.5),
+                });
+                // Lit wins where one lamp drives two widgets and they
+                // disagree: the author drew one of them on, so show it on.
+                *seen.entry(ind.name()).or_insert(lit) |= lit;
+            }
+        }
+        self.lamps.retain(|name, _| seen.contains_key(name));
+        for (name, lit) in seen {
+            self.lamps.entry(name).or_insert(lit);
         }
     }
 
@@ -271,7 +334,7 @@ impl Driver {
     /// [`Self::restore`] can put it back after the frame is drawn.
     ///
     /// Returns an empty `Vec` when `!self.enabled`.
-    pub fn apply(&self, tree: &mut Tree, bindings: &[Binding]) -> Vec<(NodeId, Kind)> {
+    pub fn apply(&self, tree: &mut Tree, bindings: &[Binding]) -> Vec<Saved> {
         if !self.enabled {
             return Vec::new();
         }
@@ -279,13 +342,27 @@ impl Driver {
         let mut saved = Vec::new();
 
         for b in bindings {
+            // A tell-tale is a bit, not a reading: it gets a switch of its
+            // own rather than a slider on the bank it shares with thirty-one
+            // others, which one slider would drive all of at once.
+            if let Some(ind) = b.indicator {
+                let Some(on) = self.lamps.get(ind.name()) else {
+                    continue;
+                };
+                let Some(node) = tree.get(b.node) else {
+                    continue;
+                };
+                saved.push(Saved::of(b.node, node));
+                b.apply_value(tree, if *on { b.max } else { b.min });
+                continue;
+            }
             let Some(ch) = self.gauges.get(b.gauge.name) else {
                 continue;
             };
             let Some(node) = tree.get(b.node) else {
                 continue;
             };
-            saved.push((b.node, node.kind.clone()));
+            saved.push(Saved::of(b.node, node));
             let v = from_canonical(b, ch.current(self.sweep, sweep));
             b.apply_value(tree, v);
         }
@@ -297,7 +374,7 @@ impl Driver {
             let Some(new_kind) = node.kind.with_reading(v) else {
                 continue;
             };
-            saved.push((id, node.kind.clone()));
+            saved.push(Saved::of(id, node));
             tree.set_kind(id, new_kind);
         }
 
@@ -314,7 +391,7 @@ impl Driver {
             else {
                 continue;
             };
-            saved.push((id, node.kind.clone()));
+            saved.push(Saved::of(id, node));
             tree.set_kind(
                 id,
                 Kind::Label {
@@ -331,13 +408,22 @@ impl Driver {
     }
 
     /// Put back what [`Self::apply`] replaced.
-    pub fn restore(tree: &mut Tree, saved: Vec<(NodeId, Kind)>) {
-        for (id, kind) in saved {
-            tree.set_kind(id, kind);
+    pub fn restore(tree: &mut Tree, saved: Vec<Saved>) {
+        for s in saved {
+            tree.set_kind(s.node, s.kind);
+            // Visibility as well as kind: a binding whose property is
+            // `visible` moves the flag and leaves the kind alone, and
+            // restoring only the kind would leave a widget the preview had
+            // hidden hidden for good.
+            tree.set_visible(s.node, s.visible);
         }
     }
 
     /// Every channel value and label text back to what the file says.
+    ///
+    /// The lamps are left alone: a switch has no authored value to go back to
+    /// beyond the one it opened on, and a reset that put every tell-tale out
+    /// would undo the one thing a person checking a dark panel is doing.
     pub fn reset(&mut self) {
         for ch in self.channels.values_mut().chain(self.gauges.values_mut()) {
             ch.value = ch.authored;
@@ -378,11 +464,14 @@ fn from_canonical(b: &Binding, v: f32) -> f32 {
 /// The reading, in the gauge's own unit, that would draw `kind` as the file
 /// has it: the fraction mapped back through the range, or the text read as
 /// a number. The bottom of the range when neither can be worked out.
-fn authored_of(b: &Binding, kind: &Kind) -> f32 {
+fn authored_of(b: &Binding, kind: &Kind, visible: bool) -> f32 {
     let shown = match b.target {
         BindTarget::Reading => kind.reading().map(|f| b.min + f * (b.max - b.min)),
         BindTarget::Height => kind.height().map(|f| b.min + f * (b.max - b.min)),
         BindTarget::Text => kind.text().and_then(|t| t.trim().parse::<f32>().ok()),
+        // A hidden widget is at the bottom of its range and a shown one at
+        // the top, which is the only reading either state can have come from.
+        BindTarget::Visible => Some(if visible { b.max } else { b.min }),
     };
     to_canonical(b, shown.unwrap_or(b.min))
 }
@@ -552,6 +641,7 @@ mod tests {
                 color: Color::rgb(1, 1, 1),
                 level: 0.2,
                 glow: 0.1,
+                off: Color::TRANSPARENT,
             },
         ];
         for k in kinds {
@@ -658,5 +748,150 @@ mod tests {
         Driver::restore(&mut t, saved);
         assert_eq!(t.get(bar).expect("node").kind.reading(), Some(0.25));
         assert_eq!(t.get(label).expect("node").kind.text(), Some("32"));
+    }
+}
+
+#[cfg(test)]
+mod lamp_tests {
+    use super::*;
+    use copilot::asset::Scene;
+    use copilot::scene::{build_scene, parse};
+
+    /// Build a scene from its root widget, as the preview does.
+    fn scene(root: &str) -> Scene {
+        let src = format!(r#"{{"width":100,"height":100,"root":{root}}}"#);
+        build_scene(&parse(&src).expect("must parse")).expect("must build")
+    }
+
+    /// A panel holding a led on `OIL_PRESSURE` and a label on `LOW_FUEL`.
+    fn lamps_scene() -> Scene {
+        scene(
+            r#"{"type":"panel","rect":[0,0,100,100],"children":[
+                 {"type":"led","rect":[0,0,10,10],"name":"oil","level":0.0,
+                  "bind":{"indicator":"OIL_PRESSURE"}},
+                 {"type":"label","rect":[0,20,60,10],"name":"fuel","text":"LOW FUEL",
+                  "visible":false,
+                  "bind":{"indicator":"LOW_FUEL","property":"visible"}}]}"#,
+        )
+    }
+
+    #[test]
+    fn a_bound_lamp_gets_a_switch_and_its_bank_gets_no_slider() {
+        // One slider on INDICATORS1 would drive all thirty-two of its lamps
+        // together, which is not a thing anybody wants to do.
+        let s = lamps_scene();
+        let mut d = Driver::default();
+        d.sync(&s.tree, &s.bindings, &[]);
+        assert_eq!(d.lamps.len(), 2);
+        assert!(d.lamps.contains_key("OIL_PRESSURE"));
+        assert!(d.lamps.contains_key("LOW_FUEL"));
+        assert!(
+            d.gauges.is_empty(),
+            "a tell-tale bank turned up as a gauge slider: {:?}",
+            d.gauges.keys().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_lamp_opens_at_what_the_file_draws() {
+        // Switching the driver on must change nothing until a switch moves.
+        let s = scene(
+            r#"{"type":"led","rect":[0,0,10,10],"level":1.0,
+                "bind":{"indicator":"ABS"}}"#,
+        );
+        let mut d = Driver::default();
+        d.sync(&s.tree, &s.bindings, &[]);
+        assert_eq!(d.lamps.get("ABS"), Some(&true), "the file draws it lit");
+    }
+
+    #[test]
+    fn flicking_a_switch_lights_the_widget_it_drives() {
+        let mut s = lamps_scene();
+        let mut d = Driver::default();
+        d.sync(&s.tree, &s.bindings, &[]);
+        d.enabled = true;
+        *d.lamps.get_mut("OIL_PRESSURE").expect("a switch") = true;
+
+        let saved = d.apply(&mut s.tree, &s.bindings);
+        let oil = s.tree.find("oil").expect("the led");
+        assert_eq!(
+            s.tree.get(oil).expect("it exists").kind.reading(),
+            Some(1.0)
+        );
+        Driver::restore(&mut s.tree, saved);
+        assert_eq!(
+            s.tree.get(oil).expect("it exists").kind.reading(),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn a_lamp_that_hides_a_widget_is_put_back_when_the_frame_is_done() {
+        // The bug this guards against: a `visible` binding moves the flag and
+        // leaves the kind alone, so a restore that only put the kind back
+        // would leave the widget hidden for good.
+        let mut s = lamps_scene();
+        let mut d = Driver::default();
+        d.sync(&s.tree, &s.bindings, &[]);
+        d.enabled = true;
+        *d.lamps.get_mut("LOW_FUEL").expect("a switch") = true;
+
+        let fuel = s.tree.find("fuel").expect("the warning");
+        assert!(!s.tree.get(fuel).unwrap().visible, "the file hides it");
+        let saved = d.apply(&mut s.tree, &s.bindings);
+        assert!(s.tree.get(fuel).unwrap().visible, "the switch showed it");
+        Driver::restore(&mut s.tree, saved);
+        assert!(
+            !s.tree.get(fuel).unwrap().visible,
+            "the preview kept the driver's visibility after the frame"
+        );
+    }
+
+    #[test]
+    fn a_lamp_that_leaves_the_scene_loses_its_switch() {
+        let mut d = Driver::default();
+        let s = lamps_scene();
+        d.sync(&s.tree, &s.bindings, &[]);
+        assert_eq!(d.lamps.len(), 2);
+
+        let fewer =
+            scene(r#"{"type":"led","rect":[0,0,10,10],"bind":{"indicator":"OIL_PRESSURE"}}"#);
+        d.sync(&fewer.tree, &fewer.bindings, &[]);
+        assert_eq!(d.lamps.len(), 1);
+        assert!(d.lamps.contains_key("OIL_PRESSURE"));
+    }
+
+    #[test]
+    fn a_switch_keeps_its_position_across_a_reload() {
+        // Editing the file must not put out a lamp somebody is looking at.
+        let mut d = Driver::default();
+        let s = lamps_scene();
+        d.sync(&s.tree, &s.bindings, &[]);
+        *d.lamps.get_mut("OIL_PRESSURE").unwrap() = true;
+        d.sync(&s.tree, &s.bindings, &[]);
+        assert_eq!(d.lamps.get("OIL_PRESSURE"), Some(&true));
+    }
+
+    #[test]
+    fn resetting_the_channels_leaves_the_lamps_alone() {
+        // A reset that put every tell-tale out would undo the one thing a
+        // person checking a dark panel is doing.
+        let mut d = Driver::default();
+        let s = lamps_scene();
+        d.sync(&s.tree, &s.bindings, &[]);
+        *d.lamps.get_mut("OIL_PRESSURE").unwrap() = true;
+        d.reset();
+        assert_eq!(d.lamps.get("OIL_PRESSURE"), Some(&true));
+    }
+
+    #[test]
+    fn a_disabled_driver_touches_neither_lamp_nor_widget() {
+        let mut s = lamps_scene();
+        let mut d = Driver::default();
+        d.sync(&s.tree, &s.bindings, &[]);
+        *d.lamps.get_mut("OIL_PRESSURE").unwrap() = true;
+        assert!(d.apply(&mut s.tree, &s.bindings).is_empty());
+        let oil = s.tree.find("oil").unwrap();
+        assert_eq!(s.tree.get(oil).unwrap().kind.reading(), Some(0.0));
     }
 }

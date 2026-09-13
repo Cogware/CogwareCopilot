@@ -254,12 +254,32 @@ fn adding_with_nothing_selected_goes_into_the_root_and_selects_it() {
 fn every_kind_the_add_menu_offers_builds() {
     // The failure this catches is a starter whose fields the parser rejects:
     // the menu item would add a widget and the preview would go red.
+    //
+    // Counted as children of the root rather than as nodes in the tree,
+    // because a starter may bring its own: a pager arrives with two pages,
+    // since a pager with one page is a panel and shows nothing a swipe does.
+    let before = app(DOC, "root");
+    let was = root_children(&before);
     for kind in menu::KINDS {
         let mut a = app(DOC, "root");
         a.add_child(kind);
         assert!(a.preview.error.is_none(), "{kind}: {:?}", a.preview.error);
-        assert_eq!(shape(&a).len(), 5, "{kind}: {}", a.status);
+        assert_eq!(
+            root_children(&a),
+            was + 1,
+            "{kind} added something other than one widget: {}",
+            a.status
+        );
     }
+}
+
+/// How many widgets hang directly off the document's root panel.
+fn root_children(a: &App) -> usize {
+    a.preview
+        .tree
+        .as_ref()
+        .and_then(|t| Some(t.get(t.find("root")?)?.children.len()))
+        .unwrap_or(0)
 }
 
 // --- snapping ---

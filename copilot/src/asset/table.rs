@@ -183,6 +183,12 @@ pub struct Scene {
     /// [`Scene::wanted`]: crate::asset::Scene::wanted
     /// [`Scene::apply_gauges`]: crate::asset::Scene::apply_gauges
     pub bindings: Vec<crate::scene::Binding>,
+    /// Widgets a finger can press, in document order. Resolved against the
+    /// tree at build time, so a host dispatches a gesture with
+    /// [`Scene::touch`] without a lookup of its own.
+    ///
+    /// [`Scene::touch`]: crate::asset::Scene::touch
+    pub hotspots: Vec<crate::scene::Hotspot>,
     /// The CAN node address of the display this scene is for, if it says.
     /// `0x00` and `0xFF` never appear here: the bus reserves them.
     pub node: Option<u8>,

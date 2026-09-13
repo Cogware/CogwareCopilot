@@ -65,3 +65,58 @@ ranges and defaults set, transitions chosen per mode, and the menu previewed
 with the same button pad as the simulator.
 
 Comes last by definition — it can only edit what the format can express.
+
+## 7. Touch and pages — done
+
+`input::Recognizer` turns a panel's samples into taps and swipes; a widget's
+`touch` block says what pressing it asks for; `pager` holds pages one display
+swipes between. `docs/widgets.md` has the format and `examples/touch.scene`
+uses the lot.
+
+Still open:
+
+- **A page transition.** A mode change slides and wipes; a page turn cuts.
+  `render::transition` draws between two trees and a pager's pages are two
+  subtrees, so the pieces exist — what is missing is a decision about where a
+  per-pager `transition` key sits and whether a page turn under a finger
+  should follow it rather than run on a clock.
+- **A pressed state.** `Scene::hotspot_at` tells a host what is under the
+  finger, and nothing draws it yet; the question is whether that is a widget
+  property, a colour the pager lends its buttons, or the host's business.
+
+## 8. Tell-tales, GPS and settings — done
+
+Lamps bind by name and resolve to their bank; `BindTarget::Visible` shows and
+hides a widget on one; `ODOMETER` brought the distance units with it;
+`Menu::from_config` builds a menu from the bus spec's settings table and
+`Menu::apply_config` writes it back.
+
+Still open:
+
+- **Who saves a config blob.** `cogware_can::config::encode` packs the whole
+  table into the blob `xfer` carries, and nothing here calls it. The core
+  crate cannot write a file, so it is a host's, but a display has no obvious
+  moment to decide the change is meant.
+- **The editor's tell-tale list.** The driver has a switch per bound lamp.
+  Picking one when authoring is still typing the name, where a gauge has a
+  picker.
+
+## 9. GPIO — done
+
+A display says `"gpio": 8` and what each of pins 1..8 is wired to; `copilot::gpio`
+debounces the port, reports what changed, and drives the outputs. The editor's
+**Pins** dialog edits it, and `examples/z31.rig` has a loom in it.
+
+The round trip is closed: `bus::Opcode::Input` carries up to seven tell-tales
+a frame, `BusView::report_lamp` sends them, and `Bus::feed` folds them into the
+bank the master broadcasts. `copilot/tests/render_scene.rs` drives the lot,
+from the pin to the lamp on a second screen.
+
+Still open:
+
+- **Which display reports a lamp.** Nothing stops two screens claiming
+  `TURN_LEFT` on a pin each. The rig could check it, and the question is
+  whether that is an error or a legitimate pair of feeds off one circuit.
+- **An output driven by anything but a lamp.** A fan relay on a coolant
+  threshold is the obvious want; a tell-tale covers it today only because the
+  spec happens to have a `FAN` bit.

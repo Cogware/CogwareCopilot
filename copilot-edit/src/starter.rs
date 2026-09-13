@@ -51,12 +51,22 @@ pub(crate) fn starter_widget(kind: &str) -> String {
             r##""value": 0.6, "segments": 20, "gap": 2, "fill": "#58a6ff", "track": "#161b22", "warn": 0.7, "warn_fill": "#d29922", "danger": 0.9, "danger_fill": "#f85149""##
         }
         "grid" => r##""pitch_x": 16, "pitch_y": 16, "width": 1, "color": "#1f2630""##,
+        // Two pages to start with, because a pager with one is a panel and
+        // there would be nothing to see the swipe do. The panels are named,
+        // since naming a page is what lets a button jump straight to it.
+        "pager" => {
+            r##""axis": "horizontal", "page": 0, "children": [
+        { "type": "panel", "rect": [0, 0, 160, 96], "name": "page one", "background": "#11161d" },
+        { "type": "panel", "rect": [0, 0, 160, 96], "name": "page two", "background": "#161b22" }] "##
+        }
         _ => r##""background": "#30363d""##,
     };
     // The dial kinds want a square that a sweep can actually fill; the default
     // strip would hand the author a needle two pixels long.
     let rect = match kind {
         "arc" | "needle" | "scale" => "[8, 8, 96, 96]",
+        // Room for a page to be a page rather than a strip.
+        "pager" => "[8, 8, 160, 96]",
         "line" | "chart" => "[8, 8, 128, 64]",
         "sevenseg" => "[8, 8, 96, 72]",
         "polygon" => "[8, 8, 64, 64]",
@@ -71,6 +81,8 @@ pub(crate) fn starter_widget(kind: &str) -> String {
 pub(crate) fn kind_name(k: &Kind) -> &'static str {
     match k {
         Kind::Panel { .. } => "panel",
+        Kind::Pager { .. } => "pager",
+        Kind::Menu { .. } => "menu",
         Kind::Frame { .. } => "frame",
         Kind::Label { .. } => "label",
         Kind::Image { .. } => "image",
@@ -123,6 +135,13 @@ pub(crate) const EXAMPLES: &[(&str, &str, Example)] = &[
          bound to the bus, in normal, sport and track modes",
         Example::Rig(Z31_RIG),
     ),
+    (
+        "Touchscreen rig: pages, tell-tales and pins",
+        "A round 480x480 screen a finger works: four pages swiped between, \
+         lamps bound by name, GPS and the odometer, a menu built from the bus \
+         spec's own settings, and six pins wired behind it",
+        Example::Rig(TOUCH_RIG),
+    ),
 ];
 
 /// What an entry of [`EXAMPLES`] opens.
@@ -174,6 +193,18 @@ const Z31_RIG: &[(&str, &str)] = &[
         "gauge-right-track.scene",
         include_str!("../../examples/gauge-right-track.scene"),
     ),
+];
+
+/// The files of the touchscreen rig example, the rig itself first.
+///
+/// A rig rather than a bare scene, and not only because the scene names two
+/// menus: the pins live on the display and there is nowhere else to put them.
+/// Opened as a lone scene the menu widgets would draw the placeholder and the
+/// loom would not exist at all, which is three of the things it is here to
+/// show.
+const TOUCH_RIG: &[(&str, &str)] = &[
+    ("touch.rig", include_str!("../../examples/touch.rig")),
+    ("touch.scene", include_str!("../../examples/touch.scene")),
 ];
 
 impl App {
@@ -345,5 +376,132 @@ mod tests {
             assert!(d.preview.error.is_none(), "{:?}", d.preview.error);
         }
         assert!(!a.dirty, "unpacked files are saved files");
+    }
+
+    #[test]
+    fn the_touchscreen_example_opens_the_way_the_menu_opens_it() {
+        // Through `open_example`, which is the path File > Examples takes:
+        // unpacked to a directory, the rig read from there, the scene found
+        // beside it. Parsing the strings proves the files are good; this
+        // proves the editor can get to them.
+        let (label, _, ex) = EXAMPLES
+            .iter()
+            .find(|(l, _, _)| l.starts_with("Touchscreen"))
+            .expect("the touchscreen example");
+        let mut a = crate::App::new(None, &[]);
+        a.open_example(label, ex);
+
+        let rig = a.rig.as_ref().unwrap_or_else(|| panic!("{}", a.status));
+        assert_eq!(rig.docs.len(), 1, "one screen");
+        assert_eq!(rig.rig.modes.len(), 1);
+        assert!(a.preview.error.is_none(), "{:?}", a.preview.error);
+
+        // The menu widgets draw their menus rather than the placeholder,
+        // which is the whole reason this is a rig and not a bare scene.
+        for name in ["display", "settings"] {
+            assert!(rig.rig.menu(name).is_some(), "no {name} menu");
+        }
+
+        // The Pins dialog opens on the display being edited, and has
+        // something to show.
+        let display = &rig.rig.displays[rig.active];
+        assert!(display.pins.count() > 0, "the Pins dialog would be empty");
+
+        // And the driver offers a switch per bound tell-tale, which is what
+        // makes the lamps checkable without a bus.
+        let tree = a.preview.tree.clone().expect("a tree");
+        let mut driver = Driver::default();
+        driver.sync(&tree, &a.preview.bindings, &[]);
+        assert!(!driver.lamps.is_empty(), "no tell-tale to drive");
+        assert!(
+            driver.gauges.contains_key("GPS_SPEED"),
+            "the GPS page has no slider"
+        );
+    }
+
+    #[test]
+    fn the_touchscreen_example_still_shows_what_it_is_for() {
+        // An example is a claim about what the toolkit does. Without this,
+        // the pager or the pins could quietly fall out of it and the only
+        // thing that would notice is somebody opening the menu to learn.
+        let (_, _, ex) = EXAMPLES
+            .iter()
+            .find(|(l, _, _)| l.starts_with("Touchscreen"))
+            .expect("the touchscreen example");
+        let Example::Rig(files) = ex else {
+            panic!("it has to be a rig: the menus and the pins live there");
+        };
+        let rig = copilot::rig::parse(files[0].1).expect("the rig must parse");
+        let doc = copilot::scene::parse(files[1].1).expect("the scene must parse");
+        let scene = copilot::scene::build_scene(&doc).expect("it must build");
+
+        // Pages you swipe between, without the bus being told.
+        let pager = scene.tree.find("pages").expect("it has a pager");
+        assert_eq!(
+            scene.tree.get(pager).map(|n| n.children.len()),
+            Some(4),
+            "drive, trip, gps and setup"
+        );
+
+        // Widgets a finger presses, and tell-tales bound by name.
+        assert!(!scene.hotspots.is_empty(), "nothing can be pressed");
+        assert!(
+            scene.bindings.iter().any(|b| b.indicator.is_some()),
+            "no lamp is bound"
+        );
+        // Including one that shows a widget rather than brightening it.
+        assert!(
+            scene
+                .bindings
+                .iter()
+                .any(|b| b.target == copilot::widget::BindTarget::Visible),
+            "nothing is shown or hidden on a reading"
+        );
+
+        // The readings that came with the bus spec.
+        for gauge in ["GPS_SPEED", "GPS_LOCK", "GPS_SATS", "ODOMETER"] {
+            assert!(
+                scene.bindings.iter().any(|b| b.gauge.name == gauge),
+                "{gauge} is not shown"
+            );
+        }
+
+        // A menu the spec describes rather than the file listing.
+        let settings = rig.menu("settings").expect("a settings menu");
+        assert_eq!(
+            settings.items().len(),
+            copilot::cogware_can::config::ALL_SETTINGS.len(),
+            "the settings menu is not built from the spec"
+        );
+        // And the hand-written one the scene's other buttons press.
+        assert!(rig.menu("display").is_some());
+
+        // Pins behind the screen: an input, a hard button and an output.
+        let pins = &rig.displays[0].pins;
+        assert!(pins.count() > 0, "the display declares no pins");
+        assert!(pins.reported().count() > 0, "no tell-tale is wired in");
+        assert!(
+            pins.mapped().iter().any(|p| p.action().is_some()),
+            "no hard button"
+        );
+        assert!(
+            pins.mapped()
+                .iter()
+                .any(|p| p.dir == copilot::gpio::Dir::Out),
+            "nothing is driven"
+        );
+        // Every menu a button names has to exist, or the screen draws the
+        // placeholder where the driver expects a list.
+        for h in &scene.hotspots {
+            if let copilot::scene::Action::Menu { menu, .. } = &h.action {
+                assert!(rig.menu(menu).is_some(), "no menu called {menu}");
+            }
+        }
+        // And a pin turning a page has to name a pager that is there.
+        for p in pins.mapped() {
+            if let Some(copilot::scene::Action::Page { pager: Some(n), .. }) = p.action() {
+                assert!(scene.tree.find(n).is_some(), "no pager called {n}");
+            }
+        }
     }
 }

@@ -11,6 +11,7 @@
 //! there is no second match to drift out of step with the first.
 
 use copilot::Color;
+use copilot::input::Axis;
 use copilot::widget::{Align, Kind, VAlign};
 
 /// One editable property, named as the scene format names it.
@@ -85,12 +86,19 @@ const ALIGNMENTS: &[&str] = &["left", "center", "right"];
 /// The words a label's vertical alignment may take.
 const VALIGNMENTS: &[&str] = &["top", "middle", "bottom"];
 
+/// The words a pager's axis may take.
+const AXES: &[&str] = &["horizontal", "vertical"];
+
 fn valign_word(a: VAlign) -> &'static str {
     match a {
         VAlign::Top => "top",
         VAlign::Middle => "middle",
         VAlign::Bottom => "bottom",
     }
+}
+
+fn axis_word(a: Axis) -> &'static str {
+    a.name()
 }
 
 fn align_word(a: Align) -> &'static str {
@@ -110,6 +118,17 @@ fn align_word(a: Align) -> &'static str {
 pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
     match kind {
         Kind::Panel { background } => vec![("background", Value::Color(*background))],
+        Kind::Pager {
+            page,
+            axis,
+            wrap,
+            swipe,
+        } => vec![
+            ("page", Value::Count(*page)),
+            ("axis", Value::Choice(axis_word(*axis), AXES)),
+            ("wrap", Value::Flag(*wrap)),
+            ("swipe", Value::Flag(*swipe)),
+        ],
         Kind::Frame { color } => vec![("color", Value::Color(*color))],
         Kind::Label {
             text,
@@ -239,6 +258,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             segments,
             gap,
             fill,
+            fill_to,
             track,
             warn,
             warn_fill,
@@ -254,6 +274,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("segments", Value::Count(*segments)),
             ("gap", Value::Count(*gap)),
             ("fill", Value::Color(*fill)),
+            ("fill_to", Value::Color(*fill_to)),
             ("track", Value::Color(*track)),
             // Not `Frac`: a band is switched off by putting it above the top
             // of the scale, and a slider capped at 1.0 could not say that.
@@ -282,8 +303,14 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("width", Value::Count(*width)),
             ("color", Value::Color(*color)),
         ],
-        Kind::Led { color, level, glow } => vec![
+        Kind::Led {
+            color,
+            level,
+            glow,
+            off,
+        } => vec![
             ("color", Value::Color(*color)),
+            ("off", Value::Color(*off)),
             ("level", Value::Frac(*level)),
             ("glow", Value::Frac(*glow)),
         ],
@@ -294,6 +321,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
         Kind::Line {
             width,
             color,
+            color_to,
             closed,
             ..
         } => vec![
@@ -302,6 +330,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             // is right there.
             ("width", Value::Count(*width)),
             ("color", Value::Color(*color)),
+            ("color_to", Value::Color(*color_to)),
             ("closed", Value::Flag(*closed)),
         ],
         Kind::Polygon { color, .. } => vec![("color", Value::Color(*color))],
@@ -329,6 +358,7 @@ mod tests {
     /// Every kind the editor offers, by the name the scene format uses.
     const KINDS: &[&str] = &[
         "panel",
+        "pager",
         "roundrect",
         "frame",
         "label",

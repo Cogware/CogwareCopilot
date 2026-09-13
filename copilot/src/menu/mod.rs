@@ -9,6 +9,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+/// Building a menu from the display settings the bus spec describes.
+pub mod config;
 mod item;
 
 pub use item::{Item, ItemKind, Value};
@@ -68,10 +70,41 @@ impl Menu {
         &self.items
     }
 
+    /// The items, to rewrite in place.
+    ///
+    /// Deliberately narrower than handing out the `Vec`: the selection is an
+    /// index into this list and a caller that could push or remove could
+    /// leave it pointing past the end. Replacing an item is what
+    /// [`Self::load_config`] needs and is all this allows.
+    pub fn items_mut(&mut self) -> &mut [Item] {
+        &mut self.items
+    }
+
     /// Which item the cursor is on, or `None` when the menu is empty.
     #[must_use]
     pub fn selected(&self) -> Option<usize> {
         (!self.items.is_empty()).then_some(self.selected)
+    }
+
+    /// Put the cursor on `index`, returning whether it moved.
+    ///
+    /// For a selection that is not the driver thumbing a stalk but a fact the
+    /// host has been told -- which drive mode the bus says the car is in, for
+    /// one. The highlighted row is the only thing on a mode menu that says
+    /// which mode is the current one, so a menu opened with the cursor left
+    /// wherever it last was claims the wrong one.
+    ///
+    /// An index past the last item is refused rather than clamped: it means
+    /// the caller and the menu disagree about what is in it, and moving the
+    /// cursor somewhere arbitrary would hide that behind a plausible screen.
+    pub fn select(&mut self, index: usize) -> bool {
+        if index >= self.items.len() {
+            return false;
+        }
+        // A row that is chosen from outside is not being edited, whatever the
+        // previous row was doing.
+        self.editing = false;
+        self.move_to(Some(index))
     }
 
     /// Whether the cursor is inside the selected item's value rather than on
@@ -222,6 +255,30 @@ mod tests {
         assert!(m.press(Button::Down));
         assert_eq!(m.selected(), Some(2));
         assert!(!m.press(Button::Down), "already at the bottom");
+    }
+
+    #[test]
+    fn a_host_can_put_the_cursor_where_a_fact_says_it_belongs() {
+        // The drive-mode case: the bus says the car is in mode 2, and the
+        // menu has to open showing that rather than whatever was last
+        // touched.
+        let mut m = menu();
+        assert!(m.select(2));
+        assert_eq!(m.selected(), Some(2));
+        assert!(!m.select(2), "already there, so nothing moved");
+        assert!(!m.select(3), "there is no fourth item");
+        assert_eq!(m.selected(), Some(2), "a refused index left the cursor put");
+    }
+
+    #[test]
+    fn choosing_a_row_from_outside_does_not_leave_it_being_edited() {
+        // Otherwise the new row inherits the old one's editing state and the
+        // screen says up and down change a number it is not on.
+        let mut m = menu();
+        m.press(Button::Centre);
+        assert!(m.editing());
+        m.select(1);
+        assert!(!m.editing());
     }
 
     #[test]

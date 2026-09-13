@@ -16,6 +16,37 @@
 
   "displays": [
     { "name": "cluster", "node": "0x01",
+
+      // The spare pins on the back of this screen, numbered 1 up. Which
+      // physical pin each lands on is the board's, in the board's own code,
+      // where the schematic is -- a rig that named GPIO27 would be a rig that
+      // only fits one board.
+      //
+      // An input does not light its own lamp. It reports the change, the
+      // firmware tells the master, the master folds the bit into the real
+      // INDICATORS frame, and the lamp comes back on the bus -- on this
+      // screen and on every other one at the same time.
+      "gpio": 8,
+      "pins": [
+        { "pin": 1, "label": "left stalk",  "indicator": "TURN_LEFT" },
+        { "pin": 2, "label": "right stalk", "indicator": "TURN_RIGHT" },
+        // Switched to chassis ground, like most of a car, so it reads low
+        // when it is on and wants the board to tie it high when it is not.
+        { "pin": 3, "label": "high beam", "indicator": "HIGH_BEAM",
+          "active": "low", "pull": "up" },
+        { "pin": 4, "label": "handbrake", "indicator": "PARK_BRAKE",
+          "active": "low", "pull": "up" },
+        // A hard button on the wheel, firing exactly what a widget's touch
+        // fires. A pin turning a page has to name the pager: it is not in the
+        // tree, so there is nothing to look up from.
+        { "pin": 5, "label": "wheel button",
+          "action": "menu", "menu": "display", "button": "centre" },
+        // The display drives this one: a real bulb on a relay, showing the
+        // same thing the drawn lamp shows, bulb check included.
+        { "pin": 6, "label": "shift light relay",
+          "dir": "out", "indicator": "SHIFT_LIGHT" },
+      ],
+
       "scenes": { "normal": "z31-normal.scene",
                   "sport":  "z31-sport.scene",
                   "track":  "z31-track.scene" } },
@@ -36,6 +67,17 @@
   // An item's kind comes from its fields: "options" is a choice, "max" is a
   // number, neither is an action. A host reads the value back by "name".
   "menus": [
+    // Three plain items rather than one option list: a touch panel selects by
+    // pressing the thing it wants, where a rotary control would step through
+    // values. Choosing one asks the master to move the whole bus, which is
+    // the only place that decision is made -- see `bus::Opcode::ModeRequest`.
+    { "name": "drive", "title": "DRIVE MODE",
+      "items": [
+        { "name": "drive normal", "label": "Normal" },
+        { "name": "drive sport",  "label": "Sport" },
+        { "name": "drive track",  "label": "Track" },
+      ] },
+
     { "name": "display", "title": "DISPLAY",
       "items": [
         { "name": "display brightness", "label": "Brightness",

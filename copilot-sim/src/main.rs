@@ -19,16 +19,19 @@ use std::time::{Duration, Instant, SystemTime};
 
 mod pad;
 
+use copilot::Point;
 use copilot::anim::Animator;
 use copilot::asset::{AnimTable, Image, ImageTable};
 use copilot::font::{Font, default_font};
+use copilot::input::{Gesture, Phase, Recognizer, Touch};
 use copilot::menu::Menu;
 use copilot::render::{Resources, compose_all, frame, transition};
 use copilot::rig::Rig;
+use copilot::scene::{Event, Hotspot};
 use copilot::widget::Tree;
 use copilot::widget::{Kind, NodeId};
 use copilot::{Color, MemorySurface, PixelFormat, Size, Surface};
-use minifb::{Key, Window, WindowOptions};
+use minifb::{Key, MouseButton, MouseMode, Window, WindowOptions};
 
 /// How often the scene file is checked for changes.
 const POLL: Duration = Duration::from_millis(250);
@@ -96,6 +99,10 @@ fn usage() {
     eprintln!("                cycle the display's modes with TAB");
     eprintln!("  --ppm <out>   render one frame to a binary PPM and exit, for");
     eprintln!("                checking a scene where there is no display");
+    eprintln!();
+    eprintln!("  The mouse is the finger: click a widget to tap it, drag across");
+    eprintln!("  the window to swipe a pager. What each touch turned out to mean");
+    eprintln!("  is printed, so a scene can be checked without a panel.");
 }
 
 /// Render one frame to a PPM and return.
@@ -141,6 +148,7 @@ fn run(path: &Path, damage_only: bool, rig_path: Option<&Path>) -> Result<(), St
         mut images,
         mut clips,
         mut anims,
+        mut hotspots,
         node,
     } = load(path)?;
     let bounds = tree
@@ -188,6 +196,10 @@ fn run(path: &Path, damage_only: bool, rig_path: Option<&Path>) -> Result<(), St
         .to_path_buf();
     let mut mode = 0usize;
     let mut swap: Option<Swap> = None;
+    // The mouse standing in for a finger. One pointer, one button, which is
+    // exactly the shape of the single-touch panel the core crate recognises.
+    let mut finger = Recognizer::new();
+    let mut was_down = false;
 
     // The monotonic source the core crate refuses to invent for itself.
     let started = Instant::now();
@@ -211,6 +223,11 @@ fn run(path: &Path, damage_only: bool, rig_path: Option<&Path>) -> Result<(), St
                     images = l.images;
                     clips = l.clips;
                     anims = l.anims;
+                    hotspots = l.hotspots;
+                    // The old tree's node ids meant something in the old
+                    // tree. A finger still down when the file was saved
+                    // would tap whatever inherited its id.
+                    finger.forget();
                     // A reloaded scene shares nothing with the old one, so the
                     // previous frame's pixels are meaningless.
                     surface.clear(Color::BLACK);
@@ -227,12 +244,56 @@ fn run(path: &Path, damage_only: bool, rig_path: Option<&Path>) -> Result<(), St
             }
         }
 
+        // The mouse as a finger. One pointer with one button is exactly the
+        // shape of the single-touch panel the core crate recognises. Skipped
+        // during a transition, when the tree being touched is on its way out.
+        let mut want_mode: Option<usize> = None;
+        if swap.is_none() {
+            let now_us = started.elapsed().as_micros() as u64;
+            for gesture in pointer(&window, &mut finger, &mut was_down, now_us) {
+                match copilot::scene::dispatch(&mut tree, &hotspots, gesture) {
+                    Some(Event::Paged { page, .. }) => eprintln!("page {page}"),
+                    // The menus live on the rig, so pressing one is the host's
+                    // job -- which here is this file.
+                    Some(Event::Menu { menu, button }) => {
+                        eprintln!("menu {menu}: {button:?}");
+                        if let Some(m) = menus.iter_mut().find(|m| m.name == menu)
+                            && m.press(button)
+                            && let Some((id, name)) = driven.as_ref()
+                            && name == &menu
+                        {
+                            tree.touch(*id);
+                        }
+                    }
+                    // A display on a bus would ask the master and wait to be
+                    // told; there is no master here, so the mode is taken
+                    // directly and the transition can still be watched.
+                    Some(Event::Mode { mode: wanted }) => {
+                        match rig.as_ref().and_then(|r| r.mode_named(&wanted)) {
+                            Some(next) => want_mode = Some(next),
+                            None => eprintln!("no mode called {wanted}"),
+                        }
+                    }
+                    Some(Event::Emit { name }) => eprintln!("emit {name}"),
+                    None => {}
+                }
+            }
+        }
+
+        // TAB cycles; a scene's own `mode` button names one. Both land here.
         if window.is_key_pressed(Key::Tab, minifb::KeyRepeat::No)
+            && let Some(r) = rig.as_ref()
+            && !r.modes.is_empty()
+        {
+            want_mode = Some((mode + 1) % r.modes.len());
+        }
+
+        if let Some(next) = want_mode.filter(|n| *n != mode)
             && swap.is_none()
             && let (Some(r), Some(n)) = (rig.as_ref(), node)
         {
-            match next_mode(r, n, mode, &rig_dir) {
-                Ok(Some((next, loaded))) => {
+            match scene_for_mode(r, n, next, &rig_dir) {
+                Ok(loaded) => {
                     eprintln!("mode {} -> {}", r.modes[mode], r.modes[next]);
                     mode = next;
                     swap = Some(Swap {
@@ -240,7 +301,6 @@ fn run(path: &Path, damage_only: bool, rig_path: Option<&Path>) -> Result<(), St
                         started: Instant::now(),
                     });
                 }
-                Ok(None) => {}
                 Err(e) => eprintln!("{e}"),
             }
         }
@@ -257,6 +317,8 @@ fn run(path: &Path, damage_only: bool, rig_path: Option<&Path>) -> Result<(), St
                 images = s.into.images;
                 clips = s.into.clips;
                 anims = s.into.anims;
+                hotspots = s.into.hotspots;
+                finger.forget();
                 driven = menu_widget(&tree);
                 compose_all(&mut surface, &tree, res(&images, &clips, &font, &menus));
             } else {
@@ -331,6 +393,8 @@ struct Loaded {
     images: ImageTable,
     clips: AnimTable,
     anims: Animator,
+    /// The widgets a finger can press, which the mouse stands in for here.
+    hotspots: Vec<Hotspot>,
     /// The CAN node the scene says it is for, which is how a rig finds the
     /// display it belongs to.
     node: Option<u8>,
@@ -372,6 +436,7 @@ fn load(path: &Path) -> Result<Loaded, String> {
         images,
         clips,
         anims: scene.anims,
+        hotspots: scene.hotspots,
         node: scene.node,
     })
 }
@@ -405,21 +470,65 @@ struct Swap {
 ///
 /// `None` when the rig has only one mode, so TAB on a single-mode rig is not
 /// an error.
-fn next_mode(
-    rig: &Rig,
-    node: u8,
-    mode: usize,
-    dir: &Path,
-) -> Result<Option<(usize, Loaded)>, String> {
-    if rig.modes.len() < 2 {
-        return Ok(None);
-    }
-    let next = (mode + 1) % rig.modes.len();
+fn scene_for_mode(rig: &Rig, node: u8, mode: usize, dir: &Path) -> Result<Loaded, String> {
+    let name = rig.modes.get(mode).map_or("?", String::as_str);
     let path = rig
-        .scene_path(node, next)
-        .ok_or_else(|| format!("no scene for node {node:#04x} in mode {}", rig.modes[next]))?;
-    let loaded = load(&dir.join(path))?;
-    Ok(Some((next, loaded)))
+        .scene_path(node, mode)
+        .ok_or_else(|| format!("no scene for node {node:#04x} in mode {name}"))?;
+    load(&dir.join(path))
+}
+
+/// Read the mouse as a touch panel, and hand back whatever it meant.
+///
+/// The window has one pointer and one button, which is the whole of what a
+/// single-touch panel reports; the only work here is turning "is it down now"
+/// into the down, move and up edges the recogniser is fed. A pointer that has
+/// left the window is a finger that has left the panel, and cancels rather
+/// than lifting, so dragging off the edge cannot fire what it started on.
+///
+/// At most two gestures come back from one frame -- the press, and whatever
+/// the lift turned out to be -- so the array is sized for that and never
+/// allocates.
+fn pointer(
+    window: &Window,
+    finger: &mut Recognizer,
+    was_down: &mut bool,
+    now_us: u64,
+) -> Vec<Gesture> {
+    let mut out = Vec::new();
+    let down = window.get_mouse_down(MouseButton::Left);
+    // Discard, rather than clamp: a clamped position is a finger that slid
+    // along the edge of a panel it is no longer on.
+    let at = window
+        .get_mouse_pos(MouseMode::Discard)
+        .map(|(x, y)| Point {
+            x: x as i32,
+            y: y as i32,
+        });
+
+    let Some(at) = at else {
+        // Off the window. Only a finger that was down has anything to cancel.
+        if std::mem::take(was_down)
+            && let Some(g) = finger.feed(Touch::new(Point { x: 0, y: 0 }, Phase::Cancel, now_us))
+        {
+            out.push(g);
+        }
+        return out;
+    };
+
+    let phase = match (down, *was_down) {
+        (true, false) => Phase::Down,
+        (true, true) => Phase::Move,
+        (false, true) => Phase::Up,
+        // Nothing is happening, and feeding a move with no finger down would
+        // only be ignored.
+        (false, false) => return out,
+    };
+    *was_down = down;
+    if let Some(g) = finger.feed(Touch::new(at, phase, now_us)) {
+        out.push(g);
+    }
+    out
 }
 
 /// The rig's menus, or none when no rig was named.
@@ -486,6 +595,11 @@ mod tests {
         copilot::rig::parse(&text).expect("the rig must parse")
     }
 
+    /// The mode TAB moves to from `mode`, which is what the loop computes.
+    fn tabbed(rig: &Rig, mode: usize) -> usize {
+        (mode + 1) % rig.modes.len()
+    }
+
     #[test]
     fn tab_walks_the_modes_in_order_and_wraps() {
         let r = rig();
@@ -493,10 +607,8 @@ mod tests {
         let mut mode = 0;
         let mut seen = Vec::new();
         for _ in 0..r.modes.len() {
-            let (next, _) = next_mode(&r, 0x02, mode, &dir)
-                .expect("every mode must have a scene")
-                .expect("a three-mode rig has a next mode");
-            mode = next;
+            mode = tabbed(&r, mode);
+            scene_for_mode(&r, 0x02, mode, &dir).expect("every mode must have a scene");
             seen.push(r.modes[mode].clone());
         }
         assert_eq!(seen, ["sport", "track", "normal"], "modes must cycle");
@@ -505,7 +617,8 @@ mod tests {
     #[test]
     fn the_scene_it_loads_is_the_one_the_rig_names() {
         let r = rig();
-        let (next, loaded) = next_mode(&r, 0x02, 0, &examples()).unwrap().unwrap();
+        let next = tabbed(&r, 0);
+        let loaded = scene_for_mode(&r, 0x02, next, &examples()).unwrap();
         assert_eq!(r.scene_path(0x02, next), Some("gauge-left-sport.scene"));
         assert_eq!(
             loaded.node,
@@ -516,16 +629,27 @@ mod tests {
 
     #[test]
     fn a_single_mode_rig_has_nowhere_to_switch_to() {
-        // TAB on a rig with one mode is not an error, it just does nothing.
+        // TAB on a rig with one mode is not an error, it just does nothing:
+        // the mode it lands on is the one it was already in, which the loop
+        // filters out before loading anything.
         let text = r#"{ "modes": ["only"], "displays": [
             { "name": "x", "node": "0x02", "scenes": { "only": "gauge-left-normal.scene" } }] }"#;
         let r = copilot::rig::parse(text).unwrap();
-        assert!(next_mode(&r, 0x02, 0, &examples()).unwrap().is_none());
+        assert_eq!(tabbed(&r, 0), 0);
     }
 
     #[test]
     fn a_node_the_rig_does_not_have_is_reported_rather_than_ignored() {
         let r = rig();
-        assert!(next_mode(&r, 0x7f, 0, &examples()).is_err());
+        assert!(scene_for_mode(&r, 0x7f, 1, &examples()).is_err());
+    }
+
+    #[test]
+    fn a_scene_s_own_mode_button_names_a_mode_the_rig_lists() {
+        // What `{"action":"mode","mode":"track"}` resolves through. A name
+        // the rig does not have has to answer None rather than land on 0.
+        let r = rig();
+        assert_eq!(r.mode_named("track"), Some(2));
+        assert_eq!(r.mode_named("rockcrawl"), None);
     }
 }

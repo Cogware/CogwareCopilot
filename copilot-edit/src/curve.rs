@@ -486,6 +486,7 @@ mod tests {
             segments: 4,
             gap: 1,
             fill: copilot::Color::WHITE,
+            fill_to: copilot::Color::WHITE,
             track: copilot::Color::BLACK,
             warn: 2.0,
             warn_fill: copilot::Color::WHITE,
@@ -551,6 +552,7 @@ mod tests {
             points: vec![],
             width: 1,
             color: copilot::Color::WHITE,
+            color_to: copilot::Color::WHITE,
             closed: false,
         };
         assert_eq!(Shape::of(&line).map(|(_, f)| f), Some("points"));
