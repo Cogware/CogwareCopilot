@@ -679,6 +679,7 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                     Some(_) => Some(colour(val, "cursor", "#ffffffff")?),
                     None => None,
                 },
+                cursor_size: count(val, "cursor_size", 0)?,
                 lights: match val.get("lights") {
                     None | Some(Value::Null) => Lights::Bar,
                     Some(v) => v
@@ -851,6 +852,7 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                     Some(_) => Some(colour(val, "cursor", "#3fb950ff")?),
                     None => None,
                 },
+                cursor_size: count(val, "cursor_size", 0)?,
                 lights: match val.get("lights") {
                     None | Some(Value::Null) => Lights::Bar,
                     Some(v) => v

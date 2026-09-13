@@ -313,7 +313,11 @@ existed.
   "bind": { "gauge": "RPM" } }
 ```
 
-One cell, always -- a marker two cells wide cannot say which of them it means.
+`cursor_size` widens it, counting cells back from the reading so the mark's
+leading edge stays put however wide it is made. 0 and 1 both mean the single
+cell the reading stands on, and a mark wider than the reading stops at the
+first cell rather than running off the end.
+
 It takes the cell from `fill` and from the ramp, but not from `warn` and
 `danger`: a redline a marker could cover would be a redline that disappears at
 exactly the revs it is there for.
@@ -375,6 +379,15 @@ exactly what they do on a bank.
 `segments: 0` is the smooth ring every scene drew before this existed, and is
 the default. A sweep whose gaps would eat all of it draws nothing rather than
 wrapping round.
+
+A cursor works on a smooth ring as well as a cut one: with nothing to light it
+becomes a band sitting at the reading, at the leading edge of the fill, which
+is where a bank's marked cell is too. `cursor_size` is in degrees here, for the
+reason `gap` is, and 0 sizes the mark for the dial -- one segment on a cut
+ring, and on a smooth one a band as wide as the ring is thick, which is the
+mark that looks square at whatever radius the scene gives it. A mark that would
+reach back past the start of the sweep is clipped to it rather than wrapping
+round to the far end.
 
 ### Which cells the reading lights
 

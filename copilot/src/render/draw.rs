@@ -139,6 +139,7 @@ fn arc<S: Surface + ?Sized>(
     segments: u32,
     gap_deg: u32,
     cursor: Option<Color>,
+    cursor_size: u32,
     lights: Lights,
     antialias: bool,
 ) {
@@ -171,10 +172,47 @@ fn arc<S: Surface + ?Sized>(
     );
     let outer = at.size.w.min(at.size.h) as f32 / 2.0;
     let inner = (outer - thickness.max(1) as f32).max(0.0);
+    let deg_to_brad = |deg: u32| (i64::from(deg) * i64::from(TURN) / 360) as i32;
+
     if segments == 0 {
         let lit = (sweep as f32 * value) as i32;
         super::aa::arc(surface, clip, c, inner, outer, a0, sweep, track, antialias);
         super::aa::arc(surface, clip, c, inner, outer, a0, lit, fill, antialias);
+        // A smooth ring has no segment to light, so the mark is a band of its
+        // own width sitting at the reading -- the leading edge of the fill,
+        // which is where a bank's marked cell is too.
+        if let Some(mark) = cursor {
+            let wide = if cursor_size > 0 {
+                deg_to_brad(cursor_size)
+            } else {
+                // As wide as the ring is thick, so the mark looks square at
+                // whatever radius the scene gives it. An arc's length is its
+                // angle times its radius, so the angle is the length over it.
+                let mid = ((inner + outer) / 2.0).max(1.0);
+                (((outer - inner) / mid) * (TURN as f32) / core::f32::consts::TAU) as i32
+            };
+            let wide = if sweep < 0 { -wide } else { wide };
+            let edge = a0.saturating_add(lit);
+            // Clamped to the sweep, so a reading at either end keeps the whole
+            // mark on the dial rather than hanging it off the beginning.
+            let start = edge.saturating_sub(wide);
+            let start = if sweep >= 0 {
+                start.max(a0)
+            } else {
+                start.min(a0)
+            };
+            super::aa::arc(
+                surface,
+                clip,
+                c,
+                inner,
+                outer,
+                start,
+                edge.saturating_sub(start),
+                mark,
+                antialias,
+            );
+        }
         return;
     }
 
@@ -183,7 +221,7 @@ fn arc<S: Surface + ?Sized>(
     let n = segments.min(4096) as i32;
     // The gap is signed with the sweep, so an anticlockwise dial cuts its
     // segments the same way round as a clockwise one.
-    let gap = (i64::from(gap_deg) * i64::from(TURN) / 360) as i32;
+    let gap = deg_to_brad(gap_deg);
     let gap = if sweep < 0 { -gap } else { gap };
     // What is left of the sweep once the gaps are taken out of it. A ring
     // whose gaps would eat the whole sweep has no segments to draw.
@@ -205,6 +243,17 @@ fn arc<S: Surface + ?Sized>(
     }
     let count = count.clamp(0, n);
 
+    // How many segments the mark covers. A size in degrees is rounded to the
+    // segments it touches, because a mark that ended halfway through one
+    // would be a segment lit half its length, which is not a thing the
+    // instrument can show.
+    let marked = if cursor_size == 0 {
+        1
+    } else {
+        let step_and_gap = (step + gap).abs().max(1);
+        (deg_to_brad(cursor_size) / step_and_gap).max(1)
+    };
+
     for i in 0..n {
         let is_lit = match lights {
             Lights::Bar => i < count,
@@ -213,7 +262,9 @@ fn arc<S: Surface + ?Sized>(
         };
         let colour = if let Some(c) = cursor
             && is_lit
-            && i == count - 1
+            && count > 0
+            && i > count - 1 - marked
+            && i < count
         {
             c
         } else if is_lit {
@@ -495,6 +546,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
             segments,
             gap,
             cursor,
+            cursor_size,
             lights,
         } => {
             arc(
@@ -510,6 +562,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
                 *segments,
                 *gap,
                 *cursor,
+                *cursor_size,
                 *lights,
                 antialias,
             );
@@ -651,6 +704,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
             danger,
             danger_fill,
             cursor,
+            cursor_size,
             lights,
             vertical,
             profile,
@@ -675,6 +729,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
                 *danger,
                 *danger_fill,
                 *cursor,
+                *cursor_size,
                 *lights,
                 *vertical,
                 profile,
@@ -1648,10 +1703,105 @@ mod widget_tests {
                 segments,
                 gap: 6,
                 cursor,
+                cursor_size: 0,
                 lights,
             },
             Rect::new(0, 0, 60, 60),
         );
+    }
+
+    /// A smooth ring, marked or not.
+    fn smooth(s: &mut MemorySurface, cursor: Option<Color>, cursor_size: u32) {
+        draw64(
+            s,
+            &Kind::Arc {
+                start: 225,
+                end: 495,
+                value: 0.5,
+                thickness: 8,
+                fill: Color::rgb(60, 60, 60),
+                track: Color::rgb(20, 20, 20),
+                segments: 0,
+                gap: 0,
+                cursor,
+                cursor_size,
+                lights: crate::widget::Lights::Bar,
+            },
+            Rect::new(0, 0, 64, 64),
+        );
+    }
+
+    /// Pixels of `want` anywhere on a 64-square surface.
+    fn pixels_of(s: &MemorySurface, want: [u8; 3]) -> usize {
+        (0..64)
+            .flat_map(|y| (0..64).map(move |x| (x, y)))
+            .filter(|&(x, y)| {
+                let o = y * s.stride() + x * 4;
+                s.pixels()[o..o + 3] == want
+            })
+            .count()
+    }
+
+    #[test]
+    fn a_smooth_ring_takes_a_cursor_too() {
+        // The bug this guards: the mark used to be drawn only on the
+        // segmented path, so a dial left at the default `segments: 0` -- which
+        // is most of them -- set a cursor colour and saw nothing at all.
+        let mark = Color::rgb(0, 255, 75);
+        let mut s = surf64();
+        smooth(&mut s, Some(mark), 0);
+        assert!(
+            pixels_of(&s, [75, 255, 0]) > 0,
+            "a smooth ring ignored its cursor"
+        );
+    }
+
+    #[test]
+    fn a_smooth_ring_with_no_cursor_is_unchanged() {
+        let mut s = surf64();
+        smooth(&mut s, None, 0);
+        assert_eq!(pixels_of(&s, [75, 255, 0]), 0);
+    }
+
+    #[test]
+    fn a_bigger_cursor_covers_more_of_the_ring() {
+        let mark = Color::rgb(0, 255, 75);
+        let (mut small, mut big) = (surf64(), surf64());
+        smooth(&mut small, Some(mark), 0);
+        smooth(&mut big, Some(mark), 40);
+        assert!(
+            pixels_of(&big, [75, 255, 0]) > pixels_of(&small, [75, 255, 0]),
+            "the size was ignored"
+        );
+    }
+
+    #[test]
+    fn a_cursor_at_the_start_of_the_sweep_stays_on_the_dial() {
+        // At a reading of zero the mark would reach back past the beginning
+        // of the sweep; it has to be clipped to it rather than wrap round to
+        // the far end of the dial.
+        let mark = Color::rgb(0, 255, 75);
+        let mut s = surf64();
+        draw64(
+            &mut s,
+            &Kind::Arc {
+                start: 225,
+                end: 495,
+                value: 0.0,
+                thickness: 8,
+                fill: Color::rgb(60, 60, 60),
+                track: Color::rgb(20, 20, 20),
+                segments: 0,
+                gap: 0,
+                cursor: Some(mark),
+                cursor_size: 60,
+                lights: crate::widget::Lights::Bar,
+            },
+            Rect::new(0, 0, 64, 64),
+        );
+        // Nothing to mark yet, so nothing is marked -- and nothing is drawn
+        // at the other end of the sweep either.
+        assert_eq!(pixels_of(&s, [75, 255, 0]), 0, "the mark wrapped round");
     }
 
     #[test]
@@ -1705,6 +1855,7 @@ mod widget_tests {
                 segments: 12,
                 gap: 30,
                 cursor: None,
+                cursor_size: 0,
                 lights: crate::widget::Lights::Bar,
             },
             Rect::new(0, 0, 60, 60),
@@ -1880,6 +2031,7 @@ mod arc_tests {
             segments: 0,
             gap: 0,
             cursor: None,
+            cursor_size: 0,
             lights: crate::widget::Lights::Bar,
         }
     }
@@ -1952,6 +2104,7 @@ mod arc_tests {
                 segments: 0,
                 gap: 0,
                 cursor: None,
+                cursor_size: 0,
                 lights: crate::widget::Lights::Bar,
             },
             Rect::new(0, 0, 60, 60),
@@ -1990,6 +2143,7 @@ mod arc_tests {
                 segments: 0,
                 gap: 0,
                 cursor: None,
+                cursor_size: 0,
                 lights: crate::widget::Lights::Bar,
             },
             Rect::new(0, 0, 60, 60),
@@ -2013,6 +2167,7 @@ mod arc_tests {
                 segments: 0,
                 gap: 0,
                 cursor: None,
+                cursor_size: 0,
                 lights: crate::widget::Lights::Bar,
             },
             Rect::new(0, 0, 60, 60),

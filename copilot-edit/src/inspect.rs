@@ -188,6 +188,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             segments,
             gap,
             cursor,
+            cursor_size,
             lights,
         } => vec![
             ("start", Value::Whole(*start)),
@@ -199,6 +200,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("segments", Value::Count(*segments)),
             ("gap", Value::Count(*gap)),
             ("cursor", Value::Color(cursor.unwrap_or(*fill))),
+            ("cursor_size", Value::Count(*cursor_size)),
             ("lights", Value::Choice(lights.name(), LIGHTS)),
         ],
         Kind::Needle {
@@ -283,6 +285,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             danger,
             danger_fill,
             cursor,
+            cursor_size,
             lights,
             vertical,
             height,
@@ -310,6 +313,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             // row is where an author goes to add one, so it has to be there
             // before there is anything to show.
             ("cursor", Value::Color(cursor.unwrap_or(*fill))),
+            ("cursor_size", Value::Count(*cursor_size)),
             ("lights", Value::Choice(lights.name(), LIGHTS)),
             ("vertical", Value::Flag(*vertical)),
             // The second axis: how far up its envelope each lit cell stands.

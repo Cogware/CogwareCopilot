@@ -304,12 +304,21 @@ pub enum Kind {
         /// ring than at the inside, and would not be a gap at all on a ring
         /// whose radius the scene changed.
         gap: u32,
-        /// Colour of the segment the reading is standing on.
+        /// Colour of the mark at the reading.
         ///
         /// `None` is the evenly lit ring. Set it and the dial gains the same
-        /// third state a bank has: unlit, lit, and *here*. Needs `segments` --
-        /// a smooth ring has no one segment to mark.
+        /// third state a bank has: unlit, lit, and *here*. Works on a smooth
+        /// ring as well as a cut one -- on a smooth ring it is a band of the
+        /// fill's own width sitting at the reading, which is what a dial with
+        /// no segments has instead of one segment to light.
         cursor: Option<Color>,
+        /// How far round the mark reaches, in degrees.
+        ///
+        /// Degrees for the reason `gap` is: the axis here is an angle. 0 sizes
+        /// it for the dial -- one segment on a cut ring, and on a smooth one a
+        /// band as wide as the ring is thick, which is the mark that looks
+        /// square whatever radius the scene gives it.
+        cursor_size: u32,
         /// Which segments the reading lights.
         lights: Lights,
     },
@@ -521,13 +530,17 @@ pub enum Kind {
         /// once. The columns stand at the height of one, dimly, and a single
         /// full-brightness line runs across them at the other, so a glance
         /// reads the moving line and a longer look reads the shape behind it.
-        /// One cell, always: a marker two cells wide is a marker that cannot
-        /// say which of them it means.
-        ///
         /// It takes the cell from `fill` and from the ramp, but not from
         /// `warn` and `danger` -- a redline that a marker could cover would be
         /// a redline that disappears at exactly the revs it is there for.
         cursor: Option<Color>,
+        /// How many cells the mark covers, counting back from the reading.
+        ///
+        /// 0 and 1 both mean the single cell the reading stands on. Cells
+        /// rather than pixels, because that is the unit the mark can land on:
+        /// half a cell is a cell lit half its width, which is not something
+        /// the instrument can show.
+        cursor_size: u32,
         /// Which cells the reading lights.
         lights: Lights,
         /// Whether cells stack upwards rather than running rightwards.

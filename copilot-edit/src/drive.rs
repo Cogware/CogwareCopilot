@@ -631,6 +631,7 @@ mod tests {
                 segments: 0,
                 gap: 0,
                 cursor: None,
+                cursor_size: 0,
                 lights: copilot::widget::Lights::Bar,
             },
             Kind::Needle {
