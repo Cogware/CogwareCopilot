@@ -105,7 +105,8 @@ Still open:
 
 A display says `"gpio": 8` and what each of pins 1..8 is wired to; `copilot::gpio`
 debounces the port, reports what changed, and drives the outputs. The editor's
-**Pins** dialog edits it, and `examples/z31.rig` has a loom in it.
+**Pins** dialog edits it, a strip above the canvas shows what each pin is
+doing, and `examples/z31.rig` has a loom in it.
 
 The round trip is closed: `bus::Opcode::Input` carries up to seven tell-tales
 a frame, `BusView::report_lamp` sends them, and `Bus::feed` folds them into the

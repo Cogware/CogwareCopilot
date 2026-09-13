@@ -465,6 +465,9 @@ impl eframe::App for App {
             self.toolbar(ctx);
         }
         self.status_bar(ctx);
+        // Above the canvas and below the toolbar: the loom has to be read
+        // against the scene it is driven by, not from a tab away.
+        self.gpio_strip(ctx);
         self.outliner(ctx);
         self.side_pane(ctx);
         // A fresh selection has now been shown to the tree and the text;

@@ -22,6 +22,7 @@ mod canvas;
 mod close;
 mod curve;
 mod drive;
+mod gpio_strip;
 mod handle;
 mod inspect;
 mod layout;
