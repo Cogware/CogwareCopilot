@@ -378,6 +378,10 @@ pub enum Kind {
         /// How many pieces each cell is cut into across its width. 0 leaves
         /// the cells solid.
         ///
+        /// A dash is lit or unlit and never part of each: where a reading
+        /// falls inside one, the dash it lands in lights if the reading is at
+        /// least half way up it.
+        ///
         /// A vacuum-fluorescent panel's columns are stacks of short dashes,
         /// not solid bars, and the dashes line up right along the bank. The
         /// bands are measured across the whole widget for exactly that reason:

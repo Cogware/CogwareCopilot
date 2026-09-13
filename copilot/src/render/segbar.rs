@@ -181,6 +181,13 @@ pub fn seg_bar<S: Surface + ?Sized>(
             TrackShape::Box => across,
         };
 
+        // Both edges land on a dash boundary when the cell is cut into dashes.
+        // A dash is lit or it is not: half of one is a segment nothing on the
+        // instrument can show, and a row of them reads as a mask laid over a
+        // smooth bar rather than as a bank of segments lighting up.
+        let lit_to = snapped(lit_to, divided, divs, dpitch, dg);
+        let drawn_to = snapped(drawn_to, divided, divs, dpitch, dg);
+
         // The lit part and the unlit remainder above it. They do not overlap,
         // so an antialiased edge between them is blended once, not twice.
         paint(
@@ -192,6 +199,34 @@ pub fn seg_bar<S: Surface + ?Sized>(
             dpitch, dg, antialias,
         );
     }
+}
+
+/// Round a reach across the box out to a whole number of dashes.
+///
+/// A dash more than half covered lights and the rest does not, so the reading
+/// lands where the eye expects rather than always short of it. Undivided
+/// cells have nothing to snap to and are returned untouched.
+fn snapped(reach: f32, divided: bool, divs: i32, dpitch: f32, dg: f32) -> f32 {
+    if !divided || reach <= 0.0 {
+        return reach;
+    }
+    let step = dpitch + dg;
+    if step <= 0.0 {
+        return reach;
+    }
+    // How many dashes are at least half covered. The division is done on a
+    // value known to be positive so that a cast truncates the way a floor
+    // would; `f32::floor` lives in `std`, which this crate does without.
+    let half = dpitch / 2.0;
+    if reach < half {
+        return 0.0;
+    }
+    let whole = (((reach - half) / step) as i32 + 1).min(divs);
+    if whole <= 0 {
+        return 0.0;
+    }
+    // The far edge of the last one, which is a dash short of the gap after it.
+    (whole - 1) as f32 * step + dpitch
 }
 
 /// Paint one cell between `lo` and `hi` across the box, in bands if the bank
@@ -432,6 +467,82 @@ mod segbar_tests {
     /// How many rows of column `x` are the track colour.
     fn track_rows(s: &MemorySurface, x: usize) -> usize {
         (0..64).filter(|&y| px(s, x, y) == bgr(OFF)).count()
+    }
+
+    /// A bar of four dashes across a 64-pixel box, with no gaps: dash edges
+    /// land on 16, 32, 48 and 64, and each lights once half covered.
+    fn dashed(s: &mut MemorySurface, height: f32) {
+        seg_bar(
+            s,
+            FULL,
+            FULL,
+            1.0,
+            height,
+            4,
+            2,
+            LIT,
+            LIT,
+            OFF,
+            TrackShape::Box,
+            2.0,
+            WARN,
+            2.0,
+            DANGER,
+            false,
+            &[],
+            4,
+            0,
+            false,
+        );
+    }
+
+    /// Rows of column `x` painted in the fill colour.
+    fn lit_rows(s: &MemorySurface, x: usize) -> usize {
+        (0..64).filter(|&y| px(s, x, y) == bgr(LIT)).count()
+    }
+
+    #[test]
+    fn a_reading_inside_a_dash_does_not_light_part_of_it() {
+        // The artefact this guards: a dash cut across its middle is a segment
+        // no instrument can show, and a row of them reads as a mask laid over
+        // a smooth bar rather than as a bank of segments lighting up. Both
+        // readings fall inside the second dash, so both draw one dash.
+        let (mut a, mut b) = (surf(), surf());
+        dashed(&mut a, 0.30);
+        dashed(&mut b, 0.35);
+        assert_eq!(lit_rows(&a, 1), 16, "the fill did not land on a dash edge");
+        assert_eq!(lit_rows(&a, 1), lit_rows(&b, 1), "the fill crept up a dash");
+    }
+
+    #[test]
+    fn a_dash_lights_once_the_reading_is_half_way_up_it() {
+        // Half rather than all of it, so the bank reads where the needle is
+        // rather than always a dash short of it.
+        let (mut under, mut over) = (surf(), surf());
+        dashed(&mut under, 0.36);
+        dashed(&mut over, 0.40);
+        assert_eq!(lit_rows(&under, 1), 16);
+        assert_eq!(lit_rows(&over, 1), 32, "the second dash did not light");
+    }
+
+    #[test]
+    fn an_undivided_cell_has_nothing_to_snap_to() {
+        // Snapping is a property of dashes. A solid cell follows the reading
+        // exactly, as it always did.
+        assert_eq!(snapped(19.2, false, 4, 16.0, 0.0), 19.2);
+    }
+
+    #[test]
+    fn a_reading_short_of_half_the_first_dash_lights_none_of_it() {
+        assert_eq!(snapped(7.0, true, 4, 16.0, 0.0), 0.0);
+        assert_eq!(snapped(9.0, true, 4, 16.0, 0.0), 16.0);
+    }
+
+    #[test]
+    fn a_reading_past_the_last_dash_stops_at_it() {
+        // Nothing beyond the last dash to light, and a reach that overshot
+        // would paint into the gap the divisions cut.
+        assert_eq!(snapped(999.0, true, 4, 16.0, 0.0), 64.0);
     }
 
     #[test]

@@ -286,6 +286,12 @@ cell *above* where its reading stands -- and `track_shape` fills both.
 | `envelope` | The whole envelope `profile` cuts, whatever `height` says -- the shape the bank fills *into*. |
 | `box` | The whole cell, ignoring both. The row of empty boxes that fills up. |
 
+Both edges land on a dash boundary when `divisions` cuts the cells into one.
+A dash is lit or it is not: half of one is a segment nothing on the instrument
+can show, and a row of them reads as a mask laid over a smooth bar rather than
+as a bank of segments lighting up. A dash more than half covered lights, so the
+bank reads where the reading is rather than a dash short of it.
+
 The second part is the one that catches people. A bank with no `height` has no
 remainder -- a cell is lit or it is not, which is why a plain bargraph never
 needed this -- but give it a second axis and every lit column stops part way
