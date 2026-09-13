@@ -266,6 +266,15 @@ impl App {
                 });
         }
 
+        // A gauge's bands are a list, so they get rows of their own below the
+        // one-row-per-field grid above.
+        let mut zone_edit = None;
+        if let Some(zones) = crate::zones_ui::zones_of(&node.kind) {
+            let fill = crate::zones_ui::fill_of(&node.kind);
+            ui.separator();
+            zone_edit = crate::zones_ui::zone_rows(ui, zones, fill);
+        }
+
         // A curve is a row of numbers, and the place to shape one is on the
         // widget rather than in a column of drag boxes or the text pane.
         let mut shape_curve = None;
@@ -288,6 +297,26 @@ impl App {
                 .small()
                 .weak(),
         );
+        if let Some((z, g)) = zone_edit {
+            match z {
+                crate::zones_ui::ZoneEdit::Set(v) => {
+                    self.set_field_of(id, g, "zones", &v);
+                    // The two-band shorthand is superseded the moment a list
+                    // exists, and a key that no longer decides anything is a
+                    // key somebody will edit and wonder about.
+                    for old in ["warn", "warn_fill", "danger", "danger_fill"] {
+                        self.unset_field_of(id, old);
+                    }
+                }
+                crate::zones_ui::ZoneEdit::Unset => {
+                    self.unset_field_of(id, "zones");
+                    for old in ["warn", "warn_fill", "danger", "danger_fill"] {
+                        self.unset_field_of(id, old);
+                    }
+                }
+            }
+            return;
+        }
         if let Some((shape, field)) = shape_curve {
             self.start_curve(id, shape, field);
             return;

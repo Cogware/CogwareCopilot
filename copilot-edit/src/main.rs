@@ -45,6 +45,7 @@ mod starter;
 mod touch_ui;
 mod ui;
 mod view;
+mod zones_ui;
 
 #[cfg(test)]
 mod tests;
