@@ -16,7 +16,9 @@ use crate::{Color, Point, Rect};
 mod hit;
 mod kind;
 pub use hit::hit_test;
-pub use kind::{Align, BindTarget, Kind, Lights, MAX_READING_RECTS, Newest, TrackShape, VAlign};
+pub use kind::{
+    Align, BindTarget, Kind, Lights, MAX_READING_RECTS, Newest, TrackShape, VAlign, Zone,
+};
 
 /// Index of a node within a [`Tree`].
 ///
@@ -795,6 +797,7 @@ mod tests {
             value: 0.25,
             fill: Color::WHITE,
             track: Color::BLACK,
+            zones: alloc::vec::Vec::new(),
             vertical: false,
         };
         let n = t.push(ROOT, bar).unwrap();

@@ -172,6 +172,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             fill,
             track,
             vertical,
+            ..
         } => vec![
             ("value", Value::Frac(*value)),
             ("fill", Value::Color(*fill)),
@@ -190,6 +191,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             cursor,
             cursor_size,
             lights,
+            ..
         } => vec![
             ("start", Value::Whole(*start)),
             ("end", Value::Whole(*end)),
@@ -280,10 +282,6 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             fill_to,
             track,
             track_shape,
-            warn,
-            warn_fill,
-            danger,
-            danger_fill,
             cursor,
             cursor_size,
             lights,
@@ -305,10 +303,6 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("track", Value::Color(*track)),
             // Not `Frac`: a band is switched off by putting it above the top
             // of the scale, and a slider capped at 1.0 could not say that.
-            ("warn", Value::Ratio(*warn)),
-            ("warn_fill", Value::Color(*warn_fill)),
-            ("danger", Value::Ratio(*danger)),
-            ("danger_fill", Value::Color(*danger_fill)),
             // The marker's colour, shown as the body's until one is set: the
             // row is where an author goes to add one, so it has to be there
             // before there is anything to show.

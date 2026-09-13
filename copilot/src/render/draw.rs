@@ -7,7 +7,7 @@
 
 use crate::font::Font;
 use crate::surface::TextureId;
-use crate::widget::{Align, Kind, Lights, VAlign};
+use crate::widget::{Align, Kind, Lights, VAlign, Zone};
 use crate::{Color, Rect, Surface};
 
 use super::{Resources, fill_rect, image, stroke_rect};
@@ -136,6 +136,7 @@ fn arc<S: Surface + ?Sized>(
     thickness: u32,
     fill: Color,
     track: Color,
+    zones: &[Zone],
     segments: u32,
     gap_deg: u32,
     cursor: Option<Color>,
@@ -177,7 +178,46 @@ fn arc<S: Surface + ?Sized>(
     if segments == 0 {
         let lit = (sweep as f32 * value) as i32;
         super::aa::arc(surface, clip, c, inner, outer, a0, sweep, track, antialias);
-        super::aa::arc(surface, clip, c, inner, outer, a0, lit, fill, antialias);
+        // The fill in bands, each running from where it starts to wherever the
+        // next begins or the reading stops, whichever comes first. Walked in
+        // order rather than collected, because nothing here may allocate.
+        let mut from = 0.0f32;
+        let mut colour = fill;
+        for z in zones {
+            let at = clamp01(z.at);
+            if at >= value {
+                break;
+            }
+            if at > from {
+                let (a, b) = (sweep as f32 * from, sweep as f32 * at);
+                let start = a0.saturating_add(a as i32);
+                super::aa::arc(
+                    surface,
+                    clip,
+                    c,
+                    inner,
+                    outer,
+                    start,
+                    (b - a) as i32,
+                    colour,
+                    antialias,
+                );
+                from = at;
+            }
+            colour = z.color;
+        }
+        let start = a0.saturating_add((sweep as f32 * from) as i32);
+        super::aa::arc(
+            surface,
+            clip,
+            c,
+            inner,
+            outer,
+            start,
+            lit.saturating_sub(start.saturating_sub(a0)),
+            colour,
+            antialias,
+        );
         // A smooth ring has no segment to light, so the mark is a band of its
         // own width sitting at the reading -- the leading edge of the fill,
         // which is where a bank's marked cell is too.
@@ -260,17 +300,21 @@ fn arc<S: Surface + ?Sized>(
             Lights::All => true,
             Lights::One => count > 0 && i == count - 1,
         };
-        let colour = if let Some(c) = cursor
-            && is_lit
+        // Where this segment sits on the scale, which is what a band is about
+        // rather than where the reading has got to.
+        let at_frac = (i + 1) as f32 / n as f32;
+        let colour = if !is_lit {
+            track
+        } else if let Some(z) = Zone::pick(zones, at_frac) {
+            z
+        } else if let Some(c) = cursor
             && count > 0
             && i > count - 1 - marked
             && i < count
         {
             c
-        } else if is_lit {
-            fill
         } else {
-            track
+            fill
         };
         let a = a0.saturating_add(i.saturating_mul(step.saturating_add(gap)));
         super::aa::arc(surface, clip, c, inner, outer, a, step, colour, antialias);
@@ -543,6 +587,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
             thickness,
             fill,
             track,
+            zones,
             segments,
             gap,
             cursor,
@@ -559,6 +604,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
                 *thickness,
                 *fill,
                 *track,
+                zones,
                 *segments,
                 *gap,
                 *cursor,
@@ -699,10 +745,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
             fill_to,
             track,
             track_shape,
-            warn,
-            warn_fill,
-            danger,
-            danger_fill,
+            zones,
             cursor,
             cursor_size,
             lights,
@@ -724,10 +767,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
                 *fill_to,
                 *track,
                 *track_shape,
-                *warn,
-                *warn_fill,
-                *danger,
-                *danger_fill,
+                zones,
                 *cursor,
                 *cursor_size,
                 *lights,
@@ -774,6 +814,7 @@ pub fn draw_kind<S: Surface + ?Sized>(
             value,
             fill,
             track,
+            zones,
             vertical,
         } => {
             // Clamp value into [0.0, 1.0]; NaN is treated as 0.0 to avoid
@@ -793,42 +834,59 @@ pub fn draw_kind<S: Surface + ?Sized>(
                 return;
             }
 
-            if antialias {
-                // The leading edge lands where the value puts it, to a
-                // fraction of a pixel, so a slow sweep moves smoothly rather
-                // than one whole pixel at a time.
+            // The fill in bands, each running from where it starts to
+            // wherever the next begins or the reading stops, whichever comes
+            // first. One band and no zones is the whole bar, which is what
+            // every scene drew before zones existed.
+            let mut band = |from: f32, to: f32, colour: Color| {
+                if to <= from || colour.is_transparent() {
+                    return;
+                }
                 let (l, t, r, b) = (
                     at.left() as f32,
                     at.top() as f32,
                     at.right() as f32,
                     at.bottom() as f32,
                 );
-                if *vertical {
-                    let top = b - at.size.h as f32 * v;
-                    super::aa::frac_rect(surface, clip, l, top, r, b, *fill, true);
+                let (x0, y0, x1, y1) = if *vertical {
+                    // Vertical bars grow upward from the bottom edge.
+                    (l, b - at.size.h as f32 * to, r, b - at.size.h as f32 * from)
                 } else {
-                    let right = l + at.size.w as f32 * v;
-                    super::aa::frac_rect(surface, clip, l, t, right, b, *fill, true);
+                    // Horizontal bars grow rightward from the left edge.
+                    (l + at.size.w as f32 * from, t, l + at.size.w as f32 * to, b)
+                };
+                if antialias {
+                    // The leading edge lands where the value puts it, to a
+                    // fraction of a pixel, so a slow sweep moves smoothly
+                    // rather than one whole pixel at a time.
+                    super::aa::frac_rect(surface, clip, x0, y0, x1, y1, colour, true);
+                    return;
                 }
-                return;
-            }
+                let rect = Rect::new(
+                    x0 as i32,
+                    y0 as i32,
+                    (x1 - x0) as u32,
+                    (y1 - y0).max(0.0) as u32,
+                );
+                if !rect.is_empty() {
+                    fill_clipped(surface, rect, clip, colour);
+                }
+            };
 
-            if *vertical {
-                // Vertical bars grow upward from the bottom edge.
-                let height = (at.size.h as f32 * v) as u32;
-                if height > 0 {
-                    let filled =
-                        Rect::new(at.left(), at.bottom() - height as i32, at.size.w, height);
-                    fill_clipped(surface, filled, clip, *fill);
+            let mut from = 0.0f32;
+            let mut colour = *fill;
+            for z in zones {
+                let at_frac = clamp01(z.at);
+                if at_frac >= v {
+                    break;
                 }
-            } else {
-                // Horizontal bars grow rightward from the left edge.
-                let width = (at.size.w as f32 * v) as u32;
-                if width > 0 {
-                    let filled = Rect::new(at.left(), at.top(), width, at.size.h);
-                    fill_clipped(surface, filled, clip, *fill);
+                if at_frac > from {
+                    band(from, at_frac, colour);
+                    from = at_frac;
                 }
+                colour = z.color;
             }
+            band(from, v, colour);
         }
     }
 }
@@ -1210,6 +1268,8 @@ mod tests {
             value,
             fill: Color::WHITE,
             track: Color::TRANSPARENT,
+            zones: alloc::vec::Vec::new(),
+
             vertical,
         }
     }
@@ -1323,6 +1383,7 @@ mod tests {
             value: 0.5,
             fill: Color::rgb(255, 0, 0),
             track: Color::rgb(0, 0, 255),
+            zones: alloc::vec::Vec::new(),
             vertical: false,
         };
         draw_kind(
@@ -1700,6 +1761,7 @@ mod widget_tests {
                 thickness: 10,
                 fill: Color::WHITE,
                 track: Color::rgb(0, 0, 255),
+                zones: alloc::vec::Vec::new(),
                 segments,
                 gap: 6,
                 cursor,
@@ -1721,6 +1783,7 @@ mod widget_tests {
                 thickness: 8,
                 fill: Color::rgb(60, 60, 60),
                 track: Color::rgb(20, 20, 20),
+                zones: alloc::vec::Vec::new(),
                 segments: 0,
                 gap: 0,
                 cursor,
@@ -1740,6 +1803,116 @@ mod widget_tests {
                 s.pixels()[o..o + 3] == want
             })
             .count()
+    }
+
+    /// The five bands of an oil pressure gauge.
+    fn five() -> alloc::vec::Vec<crate::widget::Zone> {
+        use crate::widget::Zone;
+        alloc::vec![
+            Zone {
+                at: 0.00,
+                color: Color::rgb(255, 0, 0)
+            },
+            Zone {
+                at: 0.15,
+                color: Color::rgb(255, 255, 0)
+            },
+            Zone {
+                at: 0.30,
+                color: Color::rgb(0, 255, 0)
+            },
+            Zone {
+                at: 0.80,
+                color: Color::rgb(255, 255, 0)
+            },
+            Zone {
+                at: 0.92,
+                color: Color::rgb(255, 0, 0)
+            },
+        ]
+    }
+
+    fn banded_bar(s: &mut MemorySurface, value: f32) {
+        draw64(
+            s,
+            &Kind::Bar {
+                value,
+                fill: Color::rgb(10, 10, 10),
+                track: Color::TRANSPARENT,
+                zones: five(),
+                vertical: false,
+            },
+            Rect::new(0, 0, 64, 64),
+        );
+    }
+
+    #[test]
+    fn a_bar_paints_every_band_the_reading_has_passed() {
+        // The whole point of a list: a reading up in the top caution band has
+        // four bands behind it, and all four are on the glass.
+        let mut s = surf64();
+        banded_bar(&mut s, 0.85);
+        assert!(pixels_of(&s, [0, 0, 255]) > 0, "the low danger band");
+        assert!(pixels_of(&s, [0, 255, 255]) > 0, "a caution band");
+        assert!(pixels_of(&s, [0, 255, 0]) > 0, "the normal band");
+    }
+
+    #[test]
+    fn a_bar_paints_no_band_the_reading_has_not_reached() {
+        // The top danger band starts at 0.92 and the reading is below it.
+        let mut s = surf64();
+        banded_bar(&mut s, 0.85);
+        let reached = (0..64)
+            .filter(|&x| {
+                let o = 32 * s.stride() + x * 4;
+                s.pixels()[o..o + 3] != [0, 0, 0]
+            })
+            .count();
+        assert!(reached < 60, "the bar painted past its reading");
+    }
+
+    #[test]
+    fn a_bar_with_no_bands_is_one_colour() {
+        // What every scene drew before zones existed.
+        let mut s = surf64();
+        draw64(
+            &mut s,
+            &Kind::Bar {
+                value: 1.0,
+                fill: Color::rgb(0, 255, 0),
+                track: Color::TRANSPARENT,
+                zones: alloc::vec::Vec::new(),
+                vertical: false,
+            },
+            Rect::new(0, 0, 64, 64),
+        );
+        assert!(pixels_of(&s, [0, 255, 0]) > 3000, "the plain bar changed");
+    }
+
+    #[test]
+    fn a_dial_bands_its_sweep_the_same_way_a_bar_bands_its_length() {
+        let mut s = surf64();
+        draw64(
+            &mut s,
+            &Kind::Arc {
+                start: 225,
+                end: 495,
+                value: 0.85,
+                thickness: 10,
+                fill: Color::rgb(10, 10, 10),
+                track: Color::TRANSPARENT,
+                zones: five(),
+                segments: 0,
+                gap: 0,
+                cursor: None,
+                cursor_size: 0,
+                lights: crate::widget::Lights::Bar,
+            },
+            Rect::new(0, 0, 64, 64),
+        );
+        assert!(pixels_of(&s, [0, 0, 255]) > 0, "the low danger band");
+        assert!(pixels_of(&s, [0, 255, 0]) > 0, "the normal band");
+        assert!(pixels_of(&s, [0, 255, 255]) > 0, "a caution band");
     }
 
     #[test]
@@ -1791,6 +1964,7 @@ mod widget_tests {
                 thickness: 8,
                 fill: Color::rgb(60, 60, 60),
                 track: Color::rgb(20, 20, 20),
+                zones: alloc::vec::Vec::new(),
                 segments: 0,
                 gap: 0,
                 cursor: Some(mark),
@@ -1852,6 +2026,7 @@ mod widget_tests {
                 thickness: 10,
                 fill: Color::WHITE,
                 track: Color::rgb(0, 0, 255),
+                zones: alloc::vec::Vec::new(),
                 segments: 12,
                 gap: 30,
                 cursor: None,
@@ -2028,6 +2203,7 @@ mod arc_tests {
             thickness,
             fill: Color::WHITE,
             track: Color::TRANSPARENT,
+            zones: alloc::vec::Vec::new(),
             segments: 0,
             gap: 0,
             cursor: None,
@@ -2101,6 +2277,7 @@ mod arc_tests {
                 thickness: 6,
                 fill: Color::WHITE,
                 track: Color::rgb(0, 0, 255),
+                zones: alloc::vec::Vec::new(),
                 segments: 0,
                 gap: 0,
                 cursor: None,
@@ -2140,6 +2317,7 @@ mod arc_tests {
                 thickness: 9999,
                 fill: Color::WHITE,
                 track: Color::TRANSPARENT,
+                zones: alloc::vec::Vec::new(),
                 segments: 0,
                 gap: 0,
                 cursor: None,
@@ -2164,6 +2342,7 @@ mod arc_tests {
                 thickness: 6,
                 fill: Color::WHITE,
                 track: Color::TRANSPARENT,
+                zones: alloc::vec::Vec::new(),
                 segments: 0,
                 gap: 0,
                 cursor: None,

@@ -22,9 +22,9 @@ agree about where a value sits without the scene file restating it.
 | `label` | Text in the current font, with integer magnification and alignment on both axes. |
 | `image` | A still from the scene's image table, scaled nearest-neighbour. |
 | `anim` | A GIF from the animation table, with play, pause, seek and speed. |
-| `bar` | Horizontal or vertical fill against a track. |
+| `bar` | Horizontal or vertical fill against a track, in as many colour bands as the scale has. |
 | `segbar` | The same reading as discrete cells, the way a vacuum-fluorescent panel shows it: colour bands fixed to the scale, colour optionally ramping across the cells, a brighter cell marking the reading, a say in which cells the reading lights at all, an optional profile cutting each cell to a curve, a say in how much of its cell an unlit one paints, a second axis setting how tall the lit cells stand, and optional divisions breaking each cell into dashes on a grid shared right along the bank. |
-| `arc` | A ring filled between two angles, optionally cut into countable segments with one of them marked. Every round gauge starts here. |
+| `arc` | A ring filled between two angles, banded by the scale and optionally cut into countable segments with one of them marked. Every round gauge starts here. |
 | `needle` | A pointer swinging over a sweep, with a hub over the pivot. |
 | `scale` | Tick marks around a dial's rim, with major divisions longer and thicker. |
 | `ruler` | The same marks along a straight edge, for graduating a bar. |
@@ -299,6 +299,38 @@ up. Under `lit` nothing is drawn above it and the column reads as a short
 column rather than a full one part lit, so the bank looks like it is drawing
 cells as the reading reaches them. `envelope` draws the curve the reading is
 filling into; `box` draws the whole cell.
+
+## Colouring a scale in bands
+
+`bar`, `arc` and `segbar` take a `zones` list. Each band says where it starts,
+and it runs until the next one begins:
+
+```jsonc
+"zones": [
+  { "at": 0.00, "color": "#f85149" },  // danger, low
+  { "at": 0.15, "color": "#d29922" },  // caution, low
+  { "at": 0.30, "color": "#3fb950" },  // normal
+  { "at": 0.80, "color": "#d29922" },  // caution, high
+  { "at": 0.92, "color": "#f85149" },  // danger, high
+]
+```
+
+Two thresholds could not say that. An oil pressure gauge is dangerous when it
+is *low* and dangerous again when it is high, with a caution band either side
+of normal, and that is five bands and not two.
+
+A band colours the **reading**, not the track: where a gauge has got to is what
+the colour is about, and an unlit segment sitting in the redline is still
+unlit. Bands are held in ascending order whatever order they are written in, so
+a list that reads out of order still draws what it says.
+
+`warn`, `warn_fill`, `danger` and `danger_fill` are the two-band shorthand and
+still mean exactly what they did, so no scene written before this needs an
+edit. A threshold above 1.0 switches its band off, which is the default -- a
+gauge that never asked for a redline does not get one.
+
+Zones are a list, so like a line's `points` they are edited in the text pane
+rather than the properties pane.
 
 ## A line that moves across the bank
 

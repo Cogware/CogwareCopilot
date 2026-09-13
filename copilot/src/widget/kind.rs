@@ -34,6 +34,59 @@ pub enum VAlign {
     /// Against the bottom edge.
     Bottom,
 }
+/// A band of a gauge's scale, and the colour a reading takes inside it.
+///
+/// Two thresholds are not enough for a real instrument. An oil pressure gauge
+/// is dangerous when it is *low* and dangerous again when it is high, with a
+/// caution band either side of normal, and a list says that where a `warn` and
+/// a `danger` cannot: write the bands up the scale and each one runs until the
+/// next begins.
+///
+/// ```jsonc
+/// "zones": [
+///   { "at": 0.00, "color": "#f85149" },  // danger, low
+///   { "at": 0.15, "color": "#d29922" },  // caution, low
+///   { "at": 0.30, "color": "#3fb950" },  // normal
+///   { "at": 0.80, "color": "#d29922" },  // caution, high
+///   { "at": 0.92, "color": "#f85149" },  // danger, high
+/// ]
+/// ```
+///
+/// A band colours the *reading*, not the track: where a gauge has got to is
+/// what the colour is about, and an unlit segment sitting in the redline is
+/// still unlit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Zone {
+    /// Where the band starts, as a fraction of the scale.
+    pub at: f32,
+    /// The colour a reading takes from here up to wherever the next begins.
+    pub color: Color,
+}
+
+impl Zone {
+    /// The band `frac` falls in, or `None` below the first one.
+    ///
+    /// `None` rather than a fallback colour so a caller can tell "no band
+    /// applies" from "a band that happens to be the same colour", which is
+    /// what lets a marker take a cell no band has claimed and leave a redline
+    /// alone.
+    ///
+    /// The bands are held in ascending order by the builder, so the last one
+    /// the fraction has reached is the one it is in.
+    #[must_use]
+    pub fn pick(zones: &[Zone], frac: f32) -> Option<Color> {
+        let mut out = None;
+        for z in zones {
+            if frac >= z.at {
+                out = Some(z.color);
+            } else {
+                break;
+            }
+        }
+        out
+    }
+}
+
 /// Which end of a [`Kind::Chart`] the newest sample is at.
 ///
 /// The old samples run away from it, so a chart's history reads the way the
@@ -289,6 +342,9 @@ pub enum Kind {
         fill: Color,
         /// Colour of the rest of the sweep. Transparent leaves it unpainted.
         track: Color,
+        /// Bands round the sweep, each colouring the fill from where it
+        /// starts. Empty leaves the dial one colour.
+        zones: Vec<Zone>,
         /// How many discrete segments the ring is cut into. 0 leaves it
         /// smooth, which is what every scene drew before this existed.
         ///
@@ -505,15 +561,13 @@ pub enum Kind {
         track: Color,
         /// How much of its cell an unlit one paints.
         track_shape: TrackShape,
-        /// Cells at or past this fraction light in `warn_fill`. Above 1.0
-        /// there is no warning band at all.
-        warn: f32,
-        /// The colour those cells light in.
-        warn_fill: Color,
-        /// Cells at or past this fraction light in `danger_fill`.
-        danger: f32,
-        /// The colour those cells light in.
-        danger_fill: Color,
+        /// Bands up the scale, each colouring the cells from where it starts.
+        ///
+        /// Empty leaves the bank one colour. A scene naming `warn` and
+        /// `danger` gets the two bands those describe, which is what it always
+        /// drew; a scene naming `zones` can have as many as its instrument
+        /// has.
+        zones: Vec<Zone>,
         /// The colour of the cell the reading is standing on.
         ///
         /// `None` is the evenly lit bar every scene drew before this existed.
@@ -647,6 +701,11 @@ pub enum Kind {
         fill: Color,
         /// Colour of the unfilled remainder.
         track: Color,
+        /// Bands up the scale, each colouring the fill from where it starts.
+        ///
+        /// Empty leaves the bar one colour, which is what every scene drew
+        /// before this existed.
+        zones: Vec<Zone>,
         /// Whether the bar grows upwards rather than rightwards.
         vertical: bool,
     },

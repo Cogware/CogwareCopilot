@@ -499,6 +499,7 @@ mod tests {
             value,
             fill: Color::rgb(1, 2, 3),
             track: Color::rgb(4, 5, 6),
+            zones: Vec::new(),
             vertical: false,
         }
     }
@@ -628,6 +629,7 @@ mod tests {
                 thickness: 1,
                 fill: Color::rgb(1, 1, 1),
                 track: Color::rgb(2, 2, 2),
+                zones: Vec::new(),
                 segments: 0,
                 gap: 0,
                 cursor: None,

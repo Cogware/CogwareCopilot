@@ -13,7 +13,9 @@ use crate::anim::{Animation, Animator, Easing, Property, Repeat};
 use crate::asset::Scene;
 use crate::color::parse_hex;
 use crate::input::Axis;
-use crate::widget::{Align, Kind, Lights, Newest, Node, NodeId, ROOT, TrackShape, Tree, VAlign};
+use crate::widget::{
+    Align, Kind, Lights, Newest, Node, NodeId, ROOT, TrackShape, Tree, VAlign, Zone,
+};
 use crate::{Color, Rect};
 
 use super::bind::{self, Binding, Shape};
@@ -318,6 +320,63 @@ fn dim(color: Color, f: f32) -> Color {
     }
     let scale = |v: u8| (f32::from(v) * f) as u8;
     Color::rgba(scale(color.r), scale(color.g), scale(color.b), color.a)
+}
+
+/// Read a `zones` list, or build one from the `warn`/`danger` shorthand.
+///
+/// Held in ascending order so a renderer can walk the bands up the scale and
+/// stop at the first one the reading has not reached. Sorting here rather than
+/// asking the author to keeps a list that reads out of order from drawing
+/// something nobody would predict.
+fn zones(
+    val: &Value,
+    warn_fill: &'static str,
+    danger_fill: &'static str,
+) -> Result<Vec<Zone>, BuildError> {
+    let field = "zones";
+    if let Some(v) = val.get(field) {
+        let arr = v.as_array().ok_or(BuildError::BadField { field })?;
+        let mut out = Vec::with_capacity(arr.len());
+        for z in arr {
+            let at = z
+                .get("at")
+                .and_then(Value::as_f64)
+                .ok_or(BuildError::BadField { field })? as f32;
+            let hex = z
+                .get("color")
+                .and_then(Value::as_str)
+                .ok_or(BuildError::BadField { field })?;
+            out.push(Zone {
+                at: if at.is_nan() { 0.0 } else { at },
+                color: parse_hex(hex).ok_or(BuildError::BadColor { field })?,
+            });
+        }
+        // `total_cmp` rather than `partial_cmp`: a NaN is already gone above,
+        // and this needs no unwrap to say so.
+        out.sort_by(|a, b| a.at.total_cmp(&b.at));
+        return Ok(out);
+    }
+
+    // The shorthand, which is what every scene written before `zones` existed
+    // says. Above the top of the scale means the band is switched off, and is
+    // the default, so a gauge that never asked for a redline does not get one.
+    let mut out = Vec::new();
+    let warn = unbounded(val, "warn", 2.0)?;
+    if warn <= 1.0 {
+        out.push(Zone {
+            at: warn,
+            color: colour(val, "warn_fill", warn_fill)?,
+        });
+    }
+    let danger = unbounded(val, "danger", 2.0)?;
+    if danger <= 1.0 {
+        out.push(Zone {
+            at: danger,
+            color: colour(val, "danger_fill", danger_fill)?,
+        });
+    }
+    out.sort_by(|a, b| a.at.total_cmp(&b.at));
+    Ok(out)
 }
 
 /// Read an optional 0.0..=1.0 field, clamping rather than rejecting.
@@ -673,6 +732,7 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                 thickness,
                 fill: colour(val, "fill", "#ffffffff")?,
                 track: colour(val, "track", "#00000000")?,
+                zones: zones(val, "#d29922ff", "#f85149ff")?,
                 segments: count(val, "segments", 0)?,
                 gap: count(val, "gap", 2)?,
                 cursor: match val.get("cursor") {
@@ -841,10 +901,7 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                 },
                 // Above the top of the scale by default, so a gauge that never
                 // asked for a redline does not get one on its last cell.
-                warn: unbounded(val, "warn", 2.0)?,
-                warn_fill: colour(val, "warn_fill", "#d29922ff")?,
-                danger: unbounded(val, "danger", 2.0)?,
-                danger_fill: colour(val, "danger_fill", "#f85149ff")?,
+                zones: zones(val, "#d29922ff", "#f85149ff")?,
                 // Absent rather than defaulted: a bank with no marker leaves
                 // every cell the colour it would otherwise have had, which on
                 // a ramped bar is not `fill`.
@@ -938,6 +995,7 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                 value,
                 fill,
                 track,
+                zones: zones(val, "#d29922ff", "#f85149ff")?,
                 vertical,
             })
         }
@@ -1031,6 +1089,72 @@ mod tests {
         assert!(matches!(
             go(&doc(src)),
             Err(BuildError::BadField { field: "newest" })
+        ));
+    }
+
+    /// The bands a gauge built from `src` carries.
+    fn bands(src: &str) -> alloc::vec::Vec<Zone> {
+        match top(&go(&doc(src)).expect("a gauge must build")).kind {
+            Kind::Bar { ref zones, .. }
+            | Kind::Arc { ref zones, .. }
+            | Kind::SegBar { ref zones, .. } => zones.clone(),
+            ref other => panic!("expected a gauge, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_gauge_can_carry_as_many_bands_as_its_instrument_has() {
+        // Dangerous low, caution low, normal, caution high, dangerous high:
+        // the shape an oil pressure gauge wants and two thresholds cannot say.
+        let src = r##"{"type":"bar","rect":[0,0,10,10],"zones":[
+            {"at":0.00,"color":"#f85149"},
+            {"at":0.15,"color":"#d29922"},
+            {"at":0.30,"color":"#3fb950"},
+            {"at":0.80,"color":"#d29922"},
+            {"at":0.92,"color":"#f85149"}]}"##;
+        let z = bands(src);
+        assert_eq!(z.len(), 5);
+        assert_eq!(z[0].at, 0.0);
+        assert_eq!(z[4].color, Color::rgb(248, 81, 73));
+    }
+
+    #[test]
+    fn bands_are_held_in_order_however_they_were_written() {
+        // A renderer walks them up the scale and stops at the first one the
+        // reading has not reached, so a list written out of order has to be
+        // put right here rather than drawing something nobody would predict.
+        let src = r##"{"type":"arc","rect":[0,0,10,10],"zones":[
+            {"at":0.9,"color":"#ff0000"},
+            {"at":0.1,"color":"#00ff00"}]}"##;
+        let z = bands(src);
+        assert!(z[0].at < z[1].at, "the bands were left out of order");
+    }
+
+    #[test]
+    fn the_old_thresholds_still_describe_the_two_bands_they_always_did() {
+        // Every scene written before `zones` existed says `warn` and
+        // `danger`, and has to keep drawing what it drew.
+        let src = r##"{"type":"segbar","rect":[0,0,10,10],
+                       "warn":0.7,"danger":0.9}"##;
+        let z = bands(src);
+        assert_eq!(z.len(), 2);
+        assert_eq!((z[0].at, z[1].at), (0.7, 0.9));
+    }
+
+    #[test]
+    fn a_threshold_above_the_scale_is_a_band_that_is_switched_off() {
+        // The default, so a gauge that never asked for a redline does not get
+        // one on its last cell.
+        let src = r#"{"type":"segbar","rect":[0,0,10,10]}"#;
+        assert!(bands(src).is_empty());
+    }
+
+    #[test]
+    fn a_band_with_no_colour_stops_the_scene_building() {
+        let src = r#"{"type":"bar","rect":[0,0,10,10],"zones":[{"at":0.5}]}"#;
+        assert!(matches!(
+            go(&doc(src)),
+            Err(BuildError::BadField { field: "zones" })
         ));
     }
 
