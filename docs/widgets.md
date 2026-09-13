@@ -24,7 +24,7 @@ agree about where a value sits without the scene file restating it.
 | `anim` | A GIF from the animation table, with play, pause, seek and speed. |
 | `bar` | Horizontal or vertical fill against a track. |
 | `segbar` | The same reading as discrete cells, the way a vacuum-fluorescent panel shows it: colour bands fixed to the scale, colour optionally ramping across the cells, a brighter cell marking the reading, a say in which cells the reading lights at all, an optional profile cutting each cell to a curve, a say in how much of its cell an unlit one paints, a second axis setting how tall the lit cells stand, and optional divisions breaking each cell into dashes on a grid shared right along the bank. |
-| `arc` | A ring filled between two angles. Every round gauge starts here. |
+| `arc` | A ring filled between two angles, optionally cut into countable segments with one of them marked. Every round gauge starts here. |
 | `needle` | A pointer swinging over a sweep, with a hub over the pivot. |
 | `scale` | Tick marks around a dial's rim, with major divisions longer and thicker. |
 | `ruler` | The same marks along a straight edge, for graduating a bar. |
@@ -317,6 +317,24 @@ One cell, always -- a marker two cells wide cannot say which of them it means.
 It takes the cell from `fill` and from the ramp, but not from `warn` and
 `danger`: a redline a marker could cover would be a redline that disappears at
 exactly the revs it is there for.
+
+### A dial cut into segments
+
+`arc` takes the same three ideas. `segments` cuts the ring into that many
+pieces with `gap` degrees of dark between them -- degrees, not pixels, because
+the axis is an angle and a gap measured along the rim would be wider at the
+outside of a thick ring than the inside. `cursor` and `lights` then mean
+exactly what they do on a bank.
+
+```json
+{ "type": "arc", "rect": [8, 8, 200, 200], "value": 0.62, "thickness": 26,
+  "segments": 28, "gap": 3, "lights": "all",
+  "fill": "#1f6f34", "cursor": "#a8f5c0", "track": "#1d2b22" }
+```
+
+`segments: 0` is the smooth ring every scene drew before this existed, and is
+the default. A sweep whose gaps would eat all of it draws nothing rather than
+wrapping round.
 
 ### Which cells the reading lights
 

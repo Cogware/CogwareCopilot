@@ -252,6 +252,29 @@ pub enum Kind {
         fill: Color,
         /// Colour of the rest of the sweep. Transparent leaves it unpainted.
         track: Color,
+        /// How many discrete segments the ring is cut into. 0 leaves it
+        /// smooth, which is what every scene drew before this existed.
+        ///
+        /// A ring of segments is the round version of a [`Kind::SegBar`], and
+        /// it is there for the same reason: a solid arc says "about this
+        /// much" and a ring of segments says "this many", which is what a
+        /// driver counts without looking away from the road.
+        segments: u32,
+        /// Degrees of dark between segments, never outside the sweep.
+        ///
+        /// Degrees rather than pixels because the axis here is an angle: a gap
+        /// measured along the rim would be wider at the outside of a thick
+        /// ring than at the inside, and would not be a gap at all on a ring
+        /// whose radius the scene changed.
+        gap: u32,
+        /// Colour of the segment the reading is standing on.
+        ///
+        /// `None` is the evenly lit ring. Set it and the dial gains the same
+        /// third state a bank has: unlit, lit, and *here*. Needs `segments` --
+        /// a smooth ring has no one segment to mark.
+        cursor: Option<Color>,
+        /// Which segments the reading lights.
+        lights: Lights,
     },
     /// A pointer swinging over a sweep.
     ///

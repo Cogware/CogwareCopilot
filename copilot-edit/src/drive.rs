@@ -628,6 +628,10 @@ mod tests {
                 thickness: 1,
                 fill: Color::rgb(1, 1, 1),
                 track: Color::rgb(2, 2, 2),
+                segments: 0,
+                gap: 0,
+                cursor: None,
+                lights: copilot::widget::Lights::Bar,
             },
             Kind::Needle {
                 start: 0,

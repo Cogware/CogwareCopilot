@@ -7,7 +7,7 @@
 
 use crate::font::Font;
 use crate::surface::TextureId;
-use crate::widget::{Align, Kind, VAlign};
+use crate::widget::{Align, Kind, Lights, VAlign};
 use crate::{Color, Rect, Surface};
 
 use super::{Resources, fill_rect, image, stroke_rect};
@@ -136,6 +136,10 @@ fn arc<S: Surface + ?Sized>(
     thickness: u32,
     fill: Color,
     track: Color,
+    segments: u32,
+    gap_deg: u32,
+    cursor: Option<Color>,
+    lights: Lights,
     antialias: bool,
 ) {
     use crate::trig::TURN;
@@ -167,9 +171,59 @@ fn arc<S: Surface + ?Sized>(
     );
     let outer = at.size.w.min(at.size.h) as f32 / 2.0;
     let inner = (outer - thickness.max(1) as f32).max(0.0);
-    let lit = (sweep as f32 * value) as i32;
-    super::aa::arc(surface, clip, c, inner, outer, a0, sweep, track, antialias);
-    super::aa::arc(surface, clip, c, inner, outer, a0, lit, fill, antialias);
+    if segments == 0 {
+        let lit = (sweep as f32 * value) as i32;
+        super::aa::arc(surface, clip, c, inner, outer, a0, sweep, track, antialias);
+        super::aa::arc(surface, clip, c, inner, outer, a0, lit, fill, antialias);
+        return;
+    }
+
+    // Capped like a bank's cells, and for the same reason: a ring asking for
+    // more segments than it has pixels of rim is a smear, not a gauge.
+    let n = segments.min(4096) as i32;
+    // The gap is signed with the sweep, so an anticlockwise dial cuts its
+    // segments the same way round as a clockwise one.
+    let gap = (i64::from(gap_deg) * i64::from(TURN) / 360) as i32;
+    let gap = if sweep < 0 { -gap } else { gap };
+    // What is left of the sweep once the gaps are taken out of it. A ring
+    // whose gaps would eat the whole sweep has no segments to draw.
+    let span = sweep - gap * (n - 1);
+    if span == 0 || (span < 0) != (sweep < 0) {
+        return;
+    }
+    let step = span / n;
+    if step == 0 {
+        return;
+    }
+
+    // Ceiling by hand, as a bank does: a reading part way into a segment
+    // lights it, so the dial reads where the needle is.
+    let scaled = value * n as f32;
+    let mut count = scaled as i32;
+    if (count as f32) < scaled {
+        count += 1;
+    }
+    let count = count.clamp(0, n);
+
+    for i in 0..n {
+        let is_lit = match lights {
+            Lights::Bar => i < count,
+            Lights::All => true,
+            Lights::One => count > 0 && i == count - 1,
+        };
+        let colour = if let Some(c) = cursor
+            && is_lit
+            && i == count - 1
+        {
+            c
+        } else if is_lit {
+            fill
+        } else {
+            track
+        };
+        let a = a0.saturating_add(i.saturating_mul(step.saturating_add(gap)));
+        super::aa::arc(surface, clip, c, inner, outer, a, step, colour, antialias);
+    }
 }
 
 /// Clamp to 0.0..=1.0, treating NaN as zero.
@@ -438,6 +492,10 @@ pub fn draw_kind<S: Surface + ?Sized>(
             thickness,
             fill,
             track,
+            segments,
+            gap,
+            cursor,
+            lights,
         } => {
             arc(
                 surface,
@@ -449,6 +507,10 @@ pub fn draw_kind<S: Surface + ?Sized>(
                 *thickness,
                 *fill,
                 *track,
+                *segments,
+                *gap,
+                *cursor,
+                *lights,
                 antialias,
             );
         }
@@ -1544,6 +1606,90 @@ mod widget_tests {
         assert_eq!(count(&s, 16, 16), 0);
     }
 
+    /// A segmented ring filling `value`, marked or not.
+    fn ring(
+        s: &mut MemorySurface,
+        value: f32,
+        segments: u32,
+        cursor: Option<Color>,
+        lights: crate::widget::Lights,
+    ) {
+        draw64(
+            s,
+            &Kind::Arc {
+                start: 0,
+                end: 360,
+                value,
+                thickness: 10,
+                fill: Color::WHITE,
+                track: Color::rgb(0, 0, 255),
+                segments,
+                gap: 6,
+                cursor,
+                lights,
+            },
+            Rect::new(0, 0, 60, 60),
+        );
+    }
+
+    #[test]
+    fn a_segmented_ring_leaves_gaps_a_smooth_one_does_not() {
+        // The point of the segments: a solid arc says "about this much", a
+        // ring of them says "this many", and the gaps are what makes them
+        // countable.
+        let (mut smooth, mut cut) = (surf64(), surf64());
+        ring(&mut smooth, 1.0, 0, None, crate::widget::Lights::Bar);
+        ring(&mut cut, 1.0, 12, None, crate::widget::Lights::Bar);
+        assert!(
+            count64(&cut) < count64(&smooth),
+            "the segmented ring painted as much as the smooth one"
+        );
+    }
+
+    #[test]
+    fn a_smooth_ring_is_what_it_always_was() {
+        // `segments: 0` is the default, and every scene written before this
+        // existed has it.
+        let mut s = surf64();
+        ring(&mut s, 0.5, 0, None, crate::widget::Lights::Bar);
+        assert!(count64(&s) > 200, "the smooth ring stopped drawing");
+    }
+
+    #[test]
+    fn a_marked_ring_paints_a_colour_neither_fill_nor_track_is() {
+        // The dial's third state, the same one a bank has.
+        let mark = Color::rgb(255, 0, 0);
+        let mut s = surf64();
+        ring(&mut s, 0.5, 8, Some(mark), crate::widget::Lights::Bar);
+        let found = (0..64).any(|y| (0..64).any(|x| lit64(&s, x, y)));
+        assert!(found, "the marked segment was not drawn");
+    }
+
+    #[test]
+    fn a_ring_whose_gaps_eat_its_sweep_draws_nothing_rather_than_wrapping() {
+        // Twelve segments of six degrees of gap is seventy-two degrees, and a
+        // ninety-degree sweep has only eighteen left to share between them.
+        // Asking for more gap than sweep must not come back inside out.
+        let mut s = surf64();
+        draw64(
+            &mut s,
+            &Kind::Arc {
+                start: 0,
+                end: 20,
+                value: 1.0,
+                thickness: 10,
+                fill: Color::WHITE,
+                track: Color::rgb(0, 0, 255),
+                segments: 12,
+                gap: 30,
+                cursor: None,
+                lights: crate::widget::Lights::Bar,
+            },
+            Rect::new(0, 0, 60, 60),
+        );
+        assert_eq!(count64(&s), 0, "a sweep eaten by its gaps drew anyway");
+    }
+
     #[test]
     fn a_nan_level_is_treated_as_off_rather_than_drawn_arbitrarily() {
         let mut s = surf(16, 16);
@@ -1709,6 +1855,10 @@ mod arc_tests {
             thickness,
             fill: Color::WHITE,
             track: Color::TRANSPARENT,
+            segments: 0,
+            gap: 0,
+            cursor: None,
+            lights: crate::widget::Lights::Bar,
         }
     }
 
@@ -1777,6 +1927,10 @@ mod arc_tests {
                 thickness: 6,
                 fill: Color::WHITE,
                 track: Color::rgb(0, 0, 255),
+                segments: 0,
+                gap: 0,
+                cursor: None,
+                lights: crate::widget::Lights::Bar,
             },
             Rect::new(0, 0, 60, 60),
         );
@@ -1811,6 +1965,10 @@ mod arc_tests {
                 thickness: 9999,
                 fill: Color::WHITE,
                 track: Color::TRANSPARENT,
+                segments: 0,
+                gap: 0,
+                cursor: None,
+                lights: crate::widget::Lights::Bar,
             },
             Rect::new(0, 0, 60, 60),
         );
@@ -1830,6 +1988,10 @@ mod arc_tests {
                 thickness: 6,
                 fill: Color::WHITE,
                 track: Color::TRANSPARENT,
+                segments: 0,
+                gap: 0,
+                cursor: None,
+                lights: crate::widget::Lights::Bar,
             },
             Rect::new(0, 0, 60, 60),
         );

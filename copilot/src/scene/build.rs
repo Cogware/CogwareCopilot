@@ -673,6 +673,19 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                 thickness,
                 fill: colour(val, "fill", "#ffffffff")?,
                 track: colour(val, "track", "#00000000")?,
+                segments: count(val, "segments", 0)?,
+                gap: count(val, "gap", 2)?,
+                cursor: match val.get("cursor") {
+                    Some(_) => Some(colour(val, "cursor", "#ffffffff")?),
+                    None => None,
+                },
+                lights: match val.get("lights") {
+                    None | Some(Value::Null) => Lights::Bar,
+                    Some(v) => v
+                        .as_str()
+                        .and_then(Lights::parse)
+                        .ok_or(BuildError::BadField { field: "lights" })?,
+                },
             })
         }
         "needle" => Ok(Kind::Needle {
@@ -922,6 +935,40 @@ mod tests {
         match top(&go(&doc(src)).expect("a lamp must build")).kind {
             Kind::Led { off, .. } => off,
             ref other => panic!("expected a lamp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dial_is_a_smooth_ring_unless_it_asks_to_be_cut() {
+        let src = r#"{"type":"arc","rect":[0,0,10,10]}"#;
+        match top(&go(&doc(src)).expect("a dial must build")).kind {
+            Kind::Arc {
+                segments, cursor, ..
+            } => {
+                assert_eq!(segments, 0);
+                assert_eq!(cursor, None);
+            }
+            ref other => panic!("expected a dial, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dial_can_be_cut_into_segments_and_marked() {
+        let src = r##"{"type":"arc","rect":[0,0,10,10],"segments":24,"gap":3,
+                       "cursor":"#ffffff","lights":"all"}"##;
+        match top(&go(&doc(src)).expect("a dial must build")).kind {
+            Kind::Arc {
+                segments,
+                gap,
+                cursor,
+                lights,
+                ..
+            } => {
+                assert_eq!((segments, gap), (24, 3));
+                assert_eq!(cursor, Some(Color::WHITE));
+                assert_eq!(lights, Lights::All);
+            }
+            ref other => panic!("expected a dial, got {other:?}"),
         }
     }
 

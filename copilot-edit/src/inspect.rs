@@ -182,6 +182,10 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             thickness,
             fill,
             track,
+            segments,
+            gap,
+            cursor,
+            lights,
         } => vec![
             ("start", Value::Whole(*start)),
             ("end", Value::Whole(*end)),
@@ -189,6 +193,10 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("thickness", Value::Count(*thickness)),
             ("fill", Value::Color(*fill)),
             ("track", Value::Color(*track)),
+            ("segments", Value::Count(*segments)),
+            ("gap", Value::Count(*gap)),
+            ("cursor", Value::Color(cursor.unwrap_or(*fill))),
+            ("lights", Value::Choice(lights.name(), LIGHTS)),
         ],
         Kind::Needle {
             start,
