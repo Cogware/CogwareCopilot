@@ -117,7 +117,12 @@
                         0.58, 0.62, 0.66, 0.70, 0.74, 0.78, 0.81, 0.84, 0.87, 0.89,
                         0.91, 0.93, 0.95, 0.96, 0.97, 0.98, 0.99, 1.00, 1.00, 0.99,
                         0.98, 0.97, 0.95, 0.93, 0.91, 0.89, 0.86, 0.83, 0.80, 0.77],
-            "fill": "#3fb950", "track": "#0c1410" },
+            // Brighter than the vertical banks' track and boxed rather than
+            // cut to the curve: this bar's cells are 34 dashes each, so an
+            // unlit one at the old colour was a dash three pixels tall in
+            // near-black, and the bar read as empty to the right of the
+            // reading rather than as a row of boxes waiting to light.
+            "fill": "#3fb950", "track": "#1d2b22", "track_shape": "box" },
           // The curve on the glass. Its points come from the same profile the
           // cells are cut to, so the printed line and the cut it describes are
           // one curve rather than two guesses at it.
