@@ -14,6 +14,20 @@ const LAN_NOTE: &str =
     "The master joins a network it has been told about. Send it the name and \
      password over Bluetooth first.";
 
+/// How the link to the car stands.
+pub enum LinkState {
+    /// Nothing open.
+    Off,
+    /// A link is open; `heard` is how long ago the car last answered, or
+    /// `None` if it has not answered yet.
+    Open {
+        /// What the link is, as the transport describes itself.
+        what: String,
+        /// Since the last word from the car.
+        heard: Option<std::time::Duration>,
+    },
+}
+
 /// Which way the editor is talking to the car.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Link {
@@ -53,6 +67,9 @@ pub struct Monitor {
     open: bool,
     link: Link,
     addr: String,
+    /// When the drive was last sent, so it goes at a sane rate rather than
+    /// once a frame.
+    last_feed: Option<std::time::Instant>,
     /// The network to hand the master, and what came of sending it.
     ssid: String,
     password: String,
@@ -81,15 +98,39 @@ impl Monitor {
     }
 
     /// Draw it, and keep the reading current.
+    /// How the link to the car stands, for anything that wants to show it.
+    ///
+    /// "Open" is not the same as "answering": a socket stays up and a radio
+    /// stays paired long after the board behind them has stopped talking, so
+    /// what is reported is how long ago the car last said anything.
+    pub fn link_state(&self) -> LinkState {
+        match &self.watching {
+            None => LinkState::Off,
+            Some((link, watch)) => LinkState::Open {
+                what: link.describe(),
+                heard: watch.latest().map(|(_, age)| age),
+            },
+        }
+    }
+
     /// Send one round of readings down the link this window already has open.
     ///
     /// Reuses the watch connection rather than opening a second one: the car
     /// takes one at a time, and a feed that opened its own would be refused
     /// by a board that is perfectly well.
     pub fn feed(&mut self, car: &copilot::cogware_can::drive::Car) {
+        // A dash does not need sixty sets of readings a second, and a radio
+        // certainly does not: over Bluetooth a frame a frame would fill the
+        // channel and leave the reports that say how it is going stuck behind
+        // the drive. Ten a second is smoother than any needle can move.
+        const EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+        if self.last_feed.is_some_and(|at| at.elapsed() < EVERY) {
+            return;
+        }
         let Some((link, _)) = self.watching.as_mut() else {
             return;
         };
+        self.last_feed = Some(std::time::Instant::now());
         if let Err(e) = super::feed_gauges(link.as_mut(), car) {
             self.trouble = Some(e);
             self.watching = None;

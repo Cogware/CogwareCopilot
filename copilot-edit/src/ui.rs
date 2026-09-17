@@ -404,9 +404,39 @@ impl App {
     }
 
     /// The line along the bottom: what just happened, and what is missing.
+    /// Whether the car is on the other end, in the corner where it is always
+    /// visible.
+    ///
+    /// Three states rather than two: a link that is open but has heard
+    /// nothing looks exactly like a working one until you notice nothing is
+    /// arriving, and that is the case worth seeing.
+    fn link_light(&mut self, ui: &mut egui::Ui) {
+        use crate::upload::ui::LinkState;
+        const GREEN: egui::Color32 = egui::Color32::from_rgb(90, 200, 110);
+        const AMBER: egui::Color32 = egui::Color32::from_rgb(255, 170, 40);
+        const GREY: egui::Color32 = egui::Color32::from_rgb(130, 130, 130);
+
+        let (colour, text) = match self.monitor.link_state() {
+            LinkState::Off => (GREY, "Not connected".to_string()),
+            LinkState::Open { what, heard } => match heard {
+                // Two seconds: the server answers far faster than that, so
+                // anything older means it has stopped rather than is busy.
+                Some(age) if age.as_secs_f32() < 2.0 => (GREEN, format!("Connected to {what}")),
+                Some(age) => (AMBER, format!("{what}, silent for {:.0}s", age.as_secs_f32())),
+                None => (AMBER, format!("{what}, no answer yet")),
+            },
+        };
+        ui.colored_label(colour, "\u{25cf}");
+        if ui.button(text).clicked() {
+            self.monitor.toggle();
+        }
+    }
+
     fn status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
             ui.horizontal(|ui| {
+                self.link_light(ui);
+                ui.separator();
                 ui.label(&self.status);
                 for m in &self.preview.missing {
                     ui.colored_label(egui::Color32::from_rgb(255, 160, 0), format!("missing {m}"));

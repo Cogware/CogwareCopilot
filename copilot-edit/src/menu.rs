@@ -247,12 +247,15 @@ impl App {
             self.path = Some(p);
             self.open_current();
         }
+        // One entry rather than two: connecting and watching are the same
+        // window, and a person looking for "how do I connect" does not think
+        // to look under "watch".
         if item(
             ui,
             true,
-            "Watch the car…",
+            "Connection…",
             "",
-            "What the server says about itself: the bus, the links, the counters",
+            "Connect over Bluetooth, the car's network or a shared one, and see what it says",
         ) {
             self.monitor.toggle();
         }

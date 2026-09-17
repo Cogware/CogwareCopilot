@@ -785,6 +785,9 @@ pub fn feed_gauges(
     let mut frame = [0u8; wire::MAX_FRAME];
     let n = wire::encode(KIND_GAUGE, &payload, &mut frame)
         .ok_or_else(|| Error::Link("the readings would not encode".into()))?;
+    // A link with no room says so rather than blocking. Dropped rather than
+    // queued: the next set is along in a tenth of a second and is newer than
+    // this one, so a backlog would only show the car where it used to be.
     link.send(&frame[..n])?;
     Ok(())
 }
