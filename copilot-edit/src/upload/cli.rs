@@ -24,7 +24,7 @@ fn open(args: &[String]) -> Result<Box<dyn Transport>, String> {
             println!("looking for the car over Bluetooth…");
             Ok(Box::new(Bluetooth::connect().map_err(|e| e.to_string())?))
         }
-        "wifi" | "net" => {
+        "wifi" | "net" | "lan" => {
             let addr = after("--addr").unwrap_or(super::wifi::DEFAULT_ADDR);
             Ok(Box::new(Wifi::connect(addr).map_err(|e| e.to_string())?))
         }
@@ -38,7 +38,7 @@ fn open(args: &[String]) -> Result<Box<dyn Transport>, String> {
 /// somebody sees there.
 ///
 /// ```text
-/// copilot-edit --watch [--link bluetooth|wifi] [--addr HOST:PORT] [--for SECONDS]
+/// copilot-edit --watch [--link bluetooth|wifi|lan] [--addr HOST:PORT] [--for SECONDS]
 /// ```
 pub fn watch(args: &[String]) -> Result<(), String> {
     let seconds: u64 = args
@@ -110,7 +110,7 @@ pub fn watch(args: &[String]) -> Result<(), String> {
 /// Run a push described by the command line, and report what happened.
 ///
 /// ```text
-/// copilot-edit --push FILE --node 0x02 --kind scene --slot 0 [--link bluetooth|wifi]
+/// copilot-edit --push FILE --node 0x02 --kind scene --slot 0 [--link bluetooth|wifi|lan]
 ///              [--addr HOST:PORT]
 /// ```
 pub fn run(args: &[String]) -> Result<(), String> {
@@ -138,7 +138,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             println!("looking for the car over Bluetooth…");
             Box::new(Bluetooth::connect().map_err(|e| e.to_string())?)
         }
-        "wifi" | "net" => {
+        "wifi" | "net" | "lan" => {
             let addr = after("--addr").unwrap_or(super::wifi::DEFAULT_ADDR);
             Box::new(Wifi::connect(addr).map_err(|e| e.to_string())?)
         }

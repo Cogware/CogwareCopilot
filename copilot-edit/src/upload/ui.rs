@@ -8,6 +8,12 @@
 use super::watch::{self, Reading, Watch};
 use super::{bluetooth::Bluetooth, wifi::Wifi, Error, Push, State, Transport};
 
+/// Why a shared network may not answer, said where somebody choosing it reads
+/// it rather than in a document nobody opens.
+const LAN_NOTE: &str =
+    "The master joins a network it has been told about. Send it the name and \
+     password over Bluetooth first.";
+
 /// Which way the editor is talking to the car.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Link {
@@ -16,6 +22,11 @@ pub enum Link {
     Bluetooth,
     /// Over the car's own access point, which the laptop must have joined.
     Wifi,
+    /// Over a network both are already on, for a car wired or joined to one.
+    ///
+    /// The same socket as [`Link::Wifi`]: what differs is whose network it is,
+    /// and that the master has to have been told how to join it.
+    Lan,
 }
 
 /// What the window is doing.
@@ -151,12 +162,16 @@ impl Monitor {
             ui.label("Link");
             ui.selectable_value(&mut self.link, Link::Bluetooth, "Bluetooth");
             ui.selectable_value(&mut self.link, Link::Wifi, "The car's network");
+            ui.selectable_value(&mut self.link, Link::Lan, "A network you both share");
         });
-        if self.link == Link::Wifi {
+        if self.link != Link::Bluetooth {
             ui.horizontal(|ui| {
                 ui.label("Address");
                 ui.text_edit_singleline(&mut self.addr);
             });
+        }
+        if self.link == Link::Lan {
+            ui.small(LAN_NOTE);
         }
         if let Some(e) = &self.trouble {
             ui.colored_label(WARN, e.to_string());
@@ -165,7 +180,12 @@ impl Monitor {
             self.trouble = None;
             let opened: Result<Box<dyn Transport>, Error> = match self.link {
                 Link::Bluetooth => Bluetooth::connect().map(|b| Box::new(b) as Box<dyn Transport>),
-                Link::Wifi => Wifi::connect(&self.addr).map(|w| Box::new(w) as Box<dyn Transport>),
+                // One socket for both: the car's own access point and a network
+                // you share differ in whose network it is, not in what this
+                // end does with it.
+                Link::Wifi | Link::Lan => {
+                    Wifi::connect(&self.addr).map(|w| Box::new(w) as Box<dyn Transport>)
+                }
             };
             match opened {
                 Ok(link) => self.watching = Some((link, Watch::new())),
@@ -373,13 +393,18 @@ impl Uploader {
             ui.label("Link");
             ui.selectable_value(&mut self.link, Link::Bluetooth, "Bluetooth");
             ui.selectable_value(&mut self.link, Link::Wifi, "The car's network");
+            ui.selectable_value(&mut self.link, Link::Lan, "A network you both share");
         });
-        if self.link == Link::Wifi {
+        if self.link != Link::Bluetooth {
             ui.horizontal(|ui| {
                 ui.label("Address");
                 ui.text_edit_singleline(&mut self.addr);
             });
-            ui.small("Join the car's access point first; it is not on your own network.");
+            if self.link == Link::Lan {
+                ui.small(LAN_NOTE);
+            } else {
+                ui.small("Join the car's access point first; it is not on your own network.");
+            }
         } else {
             ui.small("The car has to be advertising. It is, unless a display has turned it off.");
         }
@@ -403,7 +428,12 @@ impl Uploader {
             };
             let opened: Result<Box<dyn Transport>, Error> = match self.link {
                 Link::Bluetooth => Bluetooth::connect().map(|b| Box::new(b) as Box<dyn Transport>),
-                Link::Wifi => Wifi::connect(&self.addr).map(|w| Box::new(w) as Box<dyn Transport>),
+                // One socket for both: the car's own access point and a network
+                // you share differ in whose network it is, not in what this
+                // end does with it.
+                Link::Wifi | Link::Lan => {
+                    Wifi::connect(&self.addr).map(|w| Box::new(w) as Box<dyn Transport>)
+                }
             };
             match opened {
                 Ok(link) => {
