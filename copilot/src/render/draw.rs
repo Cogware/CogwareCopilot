@@ -709,6 +709,32 @@ pub fn draw_kind<S: Surface + ?Sized>(
             };
             super::plot::chart(surface, at, clip, values, style, antialias);
         }
+        // Drawn exactly as a label is: what makes it its own kind is that
+        // `render::fps` can find it to keep it up to date, not anything about
+        // how it lands on the panel.
+        Kind::Fps {
+            text,
+            color,
+            scale,
+            align,
+            valign,
+            ..
+        } => {
+            if color.is_transparent() {
+                return;
+            }
+            draw_text(
+                surface,
+                text,
+                *color,
+                at,
+                clip,
+                res.font,
+                (*scale).max(1),
+                *align,
+                *valign,
+            );
+        }
         Kind::SevenSeg {
             text,
             color,
