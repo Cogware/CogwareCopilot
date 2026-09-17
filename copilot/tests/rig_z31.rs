@@ -26,7 +26,9 @@ fn the_cockpit_rig_parses_and_maps_the_cluster_loom() {
     // The lamps this loom drives, and the feeds it reads.
     for (pin, name, dir) in [
         (1u8, "TURN_LEFT", Dir::Out),
-        (2, "HIGH_BEAM", Dir::Out),
+        // The editor changed this one from HIGH_BEAM; the loom is what the
+        // rig says, not what the first table drawn on paper said.
+        (2, "LOW_BEAM", Dir::Out),
         (3, "BATTERY", Dir::Out),
         (4, "CHECK_ENGINE", Dir::Out),
         (5, "OIL_PRESSURE", Dir::Out),

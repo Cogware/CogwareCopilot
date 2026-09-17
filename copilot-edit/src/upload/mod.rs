@@ -756,3 +756,145 @@ mod pacing {
         assert_eq!(last, Err(Error::Silent));
     }
 }
+
+/// The kind that carries gauge readings to the master, matching its `host.rs`.
+pub const KIND_GAUGE: u8 = 0x01;
+
+/// Bytes one reading takes: a two-byte id then a four-byte value.
+const GAUGE_ENTRY: usize = 6;
+
+/// Send one car's worth of readings to the master.
+///
+/// The master writes them into its gauge table and broadcasts them like any
+/// other source, so every display on the bus shows the drive -- which is the
+/// point: a layout is read on the glass it will live on, not only in the
+/// editor's preview.
+pub fn feed_gauges(
+    link: &mut dyn Transport,
+    car: &cogware_can::drive::Car,
+) -> Result<(), Error> {
+    let mut payload = Vec::with_capacity(cogware_can::drive::DRIVEN.len() * GAUGE_ENTRY);
+    for (id, _) in cogware_can::drive::DRIVEN {
+        let Some(value) = car.reading(*id) else { continue };
+        payload.extend_from_slice(&id.to_le_bytes());
+        payload.extend_from_slice(&value.to_le_bytes());
+    }
+    if payload.is_empty() {
+        return Ok(());
+    }
+    let mut frame = [0u8; wire::MAX_FRAME];
+    let n = wire::encode(KIND_GAUGE, &payload, &mut frame)
+        .ok_or_else(|| Error::Link("the readings would not encode".into()))?;
+    link.send(&frame[..n])?;
+    Ok(())
+}
+
+/// The kind that carries a network to the master, matching its `host.rs`.
+pub const KIND_NETWORK: u8 = 0x13;
+
+/// Longest name and passphrase the master will store.
+pub const SSID_MAX: usize = 32;
+/// As above, for the passphrase.
+pub const PASS_MAX: usize = 63;
+
+/// Tell the master which network to join, and have it keep it.
+///
+/// Sent over whichever link is open, which in practice means Bluetooth: these
+/// are the credentials for the network, so they cannot arrive over it. The
+/// master writes them to flash and joins on its next start.
+pub fn set_network(link: &mut dyn Transport, ssid: &str, password: &str) -> Result<(), Error> {
+    // Checked here as well as on the board, so somebody typing into a box is
+    // told which field is wrong rather than watching a frame be ignored.
+    if ssid.is_empty() || ssid.len() > SSID_MAX {
+        return Err(Error::Link(format!("a name is 1 to {SSID_MAX} bytes")));
+    }
+    if password.len() > PASS_MAX {
+        return Err(Error::Link(format!("a passphrase is at most {PASS_MAX} bytes")));
+    }
+    // The zero separates the two, so neither may contain one.
+    if ssid.contains('\0') || password.contains('\0') {
+        return Err(Error::Link("neither may contain a zero".into()));
+    }
+
+    let mut payload = Vec::with_capacity(ssid.len() + 1 + password.len());
+    payload.extend_from_slice(ssid.as_bytes());
+    payload.push(0);
+    payload.extend_from_slice(password.as_bytes());
+
+    let mut frame = [0u8; wire::MAX_FRAME];
+    let n = wire::encode(KIND_NETWORK, &payload, &mut frame)
+        .ok_or_else(|| Error::Link("the network frame would not encode".into()))?;
+    link.send(&frame[..n])?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod network_tests {
+    use super::tests_support::Fake;
+    use super::*;
+
+    /// The payload of the one frame that went out.
+    fn payload_of(link: &Fake) -> Vec<u8> {
+        let frame = link.sent.first().expect("one frame");
+        assert_eq!(frame[2], KIND_NETWORK, "the kind the master stores");
+        // Sync, kind, a two-byte length, then the payload; the tail is a CRC.
+        let len = u16::from_le_bytes([frame[3], frame[4]]) as usize;
+        frame[5..5 + len].to_vec()
+    }
+
+    #[test]
+    fn a_drive_goes_out_as_readings_the_master_can_parse() {
+        // The master reads a two-byte id then a four-byte value, and rejects a
+        // payload that is not a whole number of those. A mismatch here would
+        // not error anywhere -- the gauges would simply never move.
+        let mut link = Fake::default();
+        let mut car = cogware_can::drive::Car::new();
+        car.advance(3_000_000);
+        feed_gauges(&mut link, &car).expect("sends");
+
+        let frame = link.sent.first().expect("one frame");
+        assert_eq!(frame[2], KIND_GAUGE);
+        let len = u16::from_le_bytes([frame[3], frame[4]]) as usize;
+        assert_eq!(len % GAUGE_ENTRY, 0, "a whole number of readings");
+
+        let payload = &frame[5..5 + len];
+        let rpm = cogware_can::RPM.id;
+        let found = payload.chunks_exact(GAUGE_ENTRY).find(|e| {
+            u16::from_le_bytes([e[0], e[1]]) == rpm
+        });
+        let entry = found.expect("the drive carries rpm");
+        let value = i32::from_le_bytes([entry[2], entry[3], entry[4], entry[5]]);
+        assert!((0..=8000).contains(&value), "rpm reads {value}");
+    }
+
+    #[test]
+    fn a_name_and_secret_go_out_separated_by_a_zero() {
+        let mut link = Fake::default();
+        set_network(&mut link, "DingusBingus", "hunter2").expect("sends");
+        assert_eq!(payload_of(&link), b"DingusBingus\0hunter2");
+    }
+
+    #[test]
+    fn an_open_network_is_a_name_and_nothing_after_the_zero() {
+        let mut link = Fake::default();
+        set_network(&mut link, "cafe", "").expect("sends");
+        assert_eq!(payload_of(&link), b"cafe\0");
+    }
+
+    #[test]
+    fn what_the_board_would_refuse_is_refused_here_first() {
+        // Said in the window rather than swallowed by a board that ignores
+        // the frame, which looks identical to a link that is not there.
+        let mut link = Fake::default();
+        assert!(set_network(&mut link, "", "x").is_err(), "an empty name");
+        assert!(
+            set_network(&mut link, &"a".repeat(SSID_MAX + 1), "x").is_err(),
+            "an over-long name"
+        );
+        assert!(
+            set_network(&mut link, "net", &"a".repeat(PASS_MAX + 1)).is_err(),
+            "an over-long secret"
+        );
+        assert!(link.sent.is_empty(), "nothing goes out when it is refused");
+    }
+}

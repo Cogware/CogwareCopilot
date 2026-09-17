@@ -189,7 +189,19 @@ impl App {
                 ui.separator();
                 ui.checkbox(&mut self.driver.enabled, "Dummy values");
                 ui.add_enabled_ui(self.driver.enabled, |ui| {
-                    ui.checkbox(&mut self.driver.sweep, "Sweep");
+                    // One or the other: both writing the same channels would
+                    // leave whichever ran last deciding what is on the glass.
+                    if ui.checkbox(&mut self.driver.sweep, "Sweep").changed() && self.driver.sweep {
+                        self.driver.driving = false;
+                    }
+                    if ui.checkbox(&mut self.driver.driving, "Drive").changed()
+                        && self.driver.driving
+                    {
+                        self.driver.sweep = false;
+                    }
+                    ui.add_enabled_ui(self.driver.driving, |ui| {
+                        ui.checkbox(&mut self.driver.to_car, "Send to the car");
+                    });
                 });
                 ui.separator();
                 if self.dirty {

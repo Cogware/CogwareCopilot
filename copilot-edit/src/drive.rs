@@ -86,6 +86,18 @@ pub struct Driver {
     pub enabled: bool,
     /// Whether the sweep is running.
     pub sweep: bool,
+    /// Whether the drive is also sent to the master, so the real displays
+    /// show it rather than only this preview.
+    pub to_car: bool,
+    /// Whether a simulated car drives the bound gauges instead.
+    ///
+    /// A sweep proves a needle reaches both ends. This proves the numbers
+    /// agree with each other -- revs dropping into a gear while speed climbs,
+    /// coolant sitting at ninety while everything else moves -- which is what
+    /// a dash actually looks like and what a layout has to be read against.
+    pub driving: bool,
+    /// The car, when one is driving.
+    pub car: copilot::cogware_can::drive::Car,
     /// Seconds for one full up-and-down sweep. Default 4.0.
     pub period_s: f32,
     phase: f32,
@@ -100,6 +112,9 @@ impl Default for Driver {
             lamps: BTreeMap::new(),
             enabled: false,
             sweep: false,
+            driving: false,
+            to_car: false,
+            car: copilot::cogware_can::drive::Car::new(),
             period_s: 4.0,
             phase: 0.0,
         }
@@ -313,6 +328,23 @@ impl Driver {
     /// A triangle wave: phase runs 0..2 over `period_s` seconds. A period of
     /// zero or less is treated as 4.0 to avoid division by zero.
     pub fn tick(&mut self, delta_us: u64) {
+        if self.driving {
+            // The car moves on its own clock and writes through the same
+            // channels a slider does, so everything downstream -- bindings,
+            // units, the canvas -- is unchanged by which one is driving.
+            self.car.advance(delta_us);
+            for (id, _) in copilot::cogware_can::drive::DRIVEN {
+                let Some(spec) = copilot::cogware_can::gauge_by_id(*id) else {
+                    continue;
+                };
+                let Some(ch) = self.gauges.get_mut(spec.name) else {
+                    continue;
+                };
+                let Some(raw) = self.car.reading(*id) else { continue };
+                ch.value = raw as f32 / spec.unit.scale as f32;
+            }
+            return;
+        }
         if !self.sweep {
             return;
         }

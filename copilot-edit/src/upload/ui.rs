@@ -53,6 +53,10 @@ pub struct Monitor {
     open: bool,
     link: Link,
     addr: String,
+    /// The network to hand the master, and what came of sending it.
+    ssid: String,
+    password: String,
+    stored: Option<Result<String, Error>>,
     /// The link, once opened, and what it has heard.
     watching: Option<(Box<dyn Transport>, Watch)>,
     /// Why the last attempt failed, if it did.
@@ -77,6 +81,21 @@ impl Monitor {
     }
 
     /// Draw it, and keep the reading current.
+    /// Send one round of readings down the link this window already has open.
+    ///
+    /// Reuses the watch connection rather than opening a second one: the car
+    /// takes one at a time, and a feed that opened its own would be refused
+    /// by a board that is perfectly well.
+    pub fn feed(&mut self, car: &copilot::cogware_can::drive::Car) {
+        let Some((link, _)) = self.watching.as_mut() else {
+            return;
+        };
+        if let Err(e) = super::feed_gauges(link.as_mut(), car) {
+            self.trouble = Some(e);
+            self.watching = None;
+        }
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) {
         if !self.open {
             return;
@@ -157,6 +176,41 @@ impl Monitor {
         }
     }
 
+    /// Where the master is told which network to join.
+    ///
+    /// Only over Bluetooth, and only there: these are the credentials for the
+    /// network, so a link that already needs it cannot carry them.
+    fn network_box(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("Tell the master its network", |ui| {
+            if self.link != Link::Bluetooth {
+                ui.small("Choose Bluetooth first: a network cannot carry its own password.");
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                ui.text_edit_singleline(&mut self.ssid);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Password");
+                ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
+            });
+            if ui.button("Send and store").clicked() {
+                self.stored = Some(
+                    Bluetooth::connect()
+                        .and_then(|mut link| {
+                            super::set_network(&mut link, &self.ssid, &self.password)
+                        })
+                        .map(|()| format!("{} stored; restart the master to join it", self.ssid)),
+                );
+            }
+            match &self.stored {
+                Some(Ok(said)) => ui.small(said.as_str()),
+                Some(Err(e)) => ui.colored_label(WARN, e.to_string()),
+                None => ui.small("The master keeps this across a power cycle."),
+            };
+        });
+    }
+
     fn offer(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Link");
@@ -173,6 +227,7 @@ impl Monitor {
         if self.link == Link::Lan {
             ui.small(LAN_NOTE);
         }
+        self.network_box(ui);
         if let Some(e) = &self.trouble {
             ui.colored_label(WARN, e.to_string());
         }
@@ -310,6 +365,15 @@ impl Uploader {
         self.open = true;
         self.rig = rig;
         self.doing = Doing::Asking;
+    }
+
+    /// Whether the next push goes as a rig rather than a scene.
+    ///
+    /// The caller needs it to hand over the right document: the two are
+    /// different files, and sending one under the other's kind writes it over
+    /// the wrong one on the card.
+    pub fn sending_rig(&self) -> bool {
+        self.rig
     }
 
     /// Draw it, and carry a push along if one is running.

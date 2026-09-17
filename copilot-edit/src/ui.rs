@@ -471,8 +471,26 @@ impl eframe::App for App {
         {
             let text = self.text.clone();
             let broken = self.preview.error.is_some();
+            // The rig is its own document. Sending the canvas text under the
+            // rig's kind writes a scene over the rig on the card, which the
+            // board then cannot parse and falls back from -- so which one is
+            // going decides which text is fetched, not just which kind.
+            let rig_text = self.rig.as_ref().map(|r| r.text.clone());
+            let sending_rig = self.uploader.sending_rig();
+            // Sent down the link the monitor already holds, and only while
+            // somebody asked for it: this writes the car's gauge table, so it
+            // is not something to do quietly in the background.
+            if self.driver.enabled && self.driver.driving && self.driver.to_car {
+                self.monitor.feed(&self.driver.car);
+            }
             self.monitor.show(ctx);
             self.uploader.show(ctx, move || {
+                if sending_rig {
+                    // Checked the same way a scene is: a rig that will not
+                    // parse is not a rig, and the card holds only one.
+                    let text = rig_text?;
+                    return copilot::rig::parse(&text).ok().map(|_| text.into_bytes());
+                }
                 // The same rule `save` follows: a scene that will not parse
                 // is not a scene, and sending one would put a display in a
                 // state nobody could see to fix.
