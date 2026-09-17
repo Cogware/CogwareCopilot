@@ -238,6 +238,24 @@ impl App {
         if item(
             ui,
             true,
+            "Watch the car…",
+            "",
+            "What the server says about itself: the bus, the links, the counters",
+        ) {
+            self.monitor.toggle();
+        }
+        if item(
+            ui,
+            true,
+            "Send to the car…",
+            "",
+            "Push this scene to a display over Bluetooth or the car's own network",
+        ) {
+            self.uploader.open(self.rig.is_some());
+        }
+        if item(
+            ui,
+            true,
             "Open rig…",
             "",
             "Every display on the bus, side by side, with a tab per mode",

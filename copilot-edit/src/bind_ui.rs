@@ -230,6 +230,15 @@ fn default_span(q: Quantity) -> (f32, f32) {
         Quantity::Frequency => (0.0, 200.0),
         Quantity::Volume => (0.0, 80.0),
         Quantity::Data => (0.0, 4096.0),
+        // A cylinder's air charge is well under a gram; fuel burned over a
+        // tank is hundreds of thousands of milligrams. The small end is the
+        // one a needle has to resolve.
+        Quantity::Mass => (0.0, 2.0),
+        Quantity::MassFlow => (0.0, 600.0),
+        Quantity::VolumeFlow => (0.0, 60.0),
+        // Rather more than a road car manages in any direction, so a scene
+        // authored against this does not clip the interesting moment.
+        Quantity::Acceleration => (-2.0, 2.0),
         Quantity::AngularSpeedRate | Quantity::PressureRate | Quantity::PercentRate => {
             (-100.0, 100.0)
         }

@@ -43,6 +43,7 @@ mod shrink;
 mod snap;
 mod starter;
 mod touch_ui;
+mod upload;
 mod ui;
 mod view;
 mod zones_ui;
@@ -96,6 +97,26 @@ fn main() -> eframe::Result<()> {
     // question, and so the editor can be photographed in a state that
     // otherwise needs a mouse.
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // A push with no window. The editor is where this code lives and where a
+    // person uses it; a terminal is how it gets tested and scripted.
+    if args.iter().any(|a| a == "--watch") {
+        return match upload::cli::watch(&args) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("watch: {e}");
+                std::process::exit(1);
+            }
+        };
+    }
+    if args.iter().any(|a| a == "--push") {
+        return match upload::cli::run(&args) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("push: {e}");
+                std::process::exit(1);
+            }
+        };
+    }
     let after = |flag: &str| {
         args.iter()
             .position(|a| a == flag)
@@ -185,6 +206,11 @@ struct App {
     resize_to: Option<(u32, u32)>,
     /// The scene the new-document dialog is proposing, while it is open.
     new_doc: Option<newdoc::NewDoc>,
+    /// The window that sends what is open to the car, and the push it is
+    /// carrying if one is running.
+    uploader: upload::ui::Uploader,
+    /// The window that watches the car, and the link it is watching over.
+    monitor: upload::ui::Monitor,
     /// The rig this document is one display of, with the others parked, or
     /// `None` for a scene opened on its own.
     rig: Option<rig::RigSession>,
@@ -249,6 +275,8 @@ impl App {
     fn new(path: Option<PathBuf>, select: &[String]) -> Self {
         let mut app = Self {
             path,
+            uploader: upload::ui::Uploader::default(),
+            monitor: upload::ui::Monitor::default(),
             text: String::new(),
             dirty: false,
             preview: Preview::new(),

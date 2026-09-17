@@ -465,6 +465,20 @@ impl eframe::App for App {
             self.toolbar(ctx);
         }
         self.status_bar(ctx);
+        // Drawn before the canvas so a push in flight keeps its frame even
+        // while the document underneath is being edited. The text is fetched
+        // only when somebody presses Send.
+        {
+            let text = self.text.clone();
+            let broken = self.preview.error.is_some();
+            self.monitor.show(ctx);
+            self.uploader.show(ctx, move || {
+                // The same rule `save` follows: a scene that will not parse
+                // is not a scene, and sending one would put a display in a
+                // state nobody could see to fix.
+                (!broken && !text.is_empty()).then(|| text.into_bytes())
+            });
+        }
         // Above the canvas and below the toolbar: the loom has to be read
         // against the scene it is driven by, not from a tab away.
         self.gpio_strip(ctx);

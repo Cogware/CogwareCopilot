@@ -25,6 +25,18 @@ rfd = "0.15"
 # Implements the critical section the gauge table's cells are guarded by.
 critical-section = { version = "1", features = ["std"] }
 
+# The wire the car is spoken to over, and the two ways of carrying it.
+#
+# `cogware-can` is where the frames are defined, so the editor and the server
+# cannot drift apart about what one looks like.
+cogware-can = { git = "https://codeberg.org/Cogware/CogwareCan.git" }
+# Bluetooth that works the same on Windows and Linux. It is async, so it runs
+# on a thread of its own; see `upload::bluetooth`.
+btleplug = "0.13"
+tokio = { version = "1", features = ["rt", "time", "macros"] }
+# The stream the radio's reports arrive on.
+futures = "0.3"
+
 [lints.rust]
 missing_docs = "deny"
 unsafe_op_in_unsafe_fn = "deny"
