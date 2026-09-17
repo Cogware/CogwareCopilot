@@ -308,12 +308,22 @@ impl Changed {
     }
 }
 
+/// How long each lamp of a boot sweep is held, when a rig does not say.
+///
+/// Slow enough to watch one bulb at a time, fast enough that the whole run is
+/// over before anybody wonders whether the dash is stuck.
+pub const SWEEP_STEP_US: u64 = 120_000;
+
 /// A display's pins: how many there are, and what each is wired to.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pins {
     count: u8,
     pins: Vec<Pin>,
     debounce_us: u64,
+    /// The pins a boot sweep walks, in the order it walks them, and how long
+    /// each is held. Empty for a display that asks for none.
+    sweep: Vec<u8>,
+    sweep_step_us: u64,
     /// The raw word last accepted, before any active level is applied.
     settled: u32,
     /// The raw word last seen, which may still be bouncing.
@@ -329,7 +339,7 @@ impl Pins {
     /// A display with no pins, which is what a rig that says nothing gets.
     #[must_use]
     pub fn none() -> Self {
-        Self::default()
+        Self { sweep_step_us: SWEEP_STEP_US, ..Self::default() }
     }
 
     /// How many pins this display has. They are numbered 1..=this.
@@ -432,6 +442,71 @@ impl Pins {
         let changed = self.settled ^ bits;
         self.settled = bits;
         Changed(changed)
+    }
+
+    /// The boot sweep as a word to drive the port with, or `None` once it is
+    /// over or if the rig asked for none.
+    ///
+    /// A wave over this display's own pins, driven by this display, before and
+    /// regardless of anything on the bus. It has to be local: the wave is a
+    /// check of these bulbs, and a master running it centrally would be
+    /// flashing lamps at a node that has not subscribed yet -- or at one that
+    /// is not powered, which is exactly when somebody is watching.
+    ///
+    /// `now_us` is the same monotonic microsecond count [`Self::feed`] takes.
+    /// Returns the word for the lamp whose turn it is, so the board writes it
+    /// the same way it writes [`Self::outputs`].
+    #[must_use]
+    pub fn sweep(&self, now_us: u64, started_us: u64) -> Option<u32> {
+        if self.sweep.is_empty() || self.sweep_step_us == 0 {
+            return None;
+        }
+        let step = now_us.saturating_sub(started_us) / self.sweep_step_us;
+        let at = usize::try_from(step).ok()?;
+        // One past the end is the step that puts the last lamp out; anything
+        // beyond that is the sweep being over.
+        let pin = self.sweep.get(at)?;
+        Some(1 << (pin - 1))
+    }
+
+    /// How long a full boot sweep takes, so a board knows when it is done
+    /// without having to reason about the step count itself.
+    #[must_use]
+    pub fn sweep_us(&self) -> u64 {
+        self.sweep_step_us * self.sweep.len() as u64
+    }
+
+    /// The pins the boot sweep walks, in order.
+    #[must_use]
+    pub fn sweep_pins(&self) -> &[u8] {
+        &self.sweep
+    }
+
+    /// The gauges a node needs to subscribe to for these pins to work.
+    ///
+    /// An output reads its lamp out of the indicator banks, and a node only
+    /// receives what it asked for -- so without this a relay wired to a real
+    /// bulb stays dark however the scene is drawn. The banks are ordinary
+    /// gauge rows, so this is the same list a scene's bindings produce and
+    /// belongs beside them in whatever the node subscribes with.
+    ///
+    /// Inputs are not here. A pin reporting a stalk does not read the banks;
+    /// its lamp comes back because the master broadcasts it, and whether this
+    /// display draws it is the scene's business.
+    #[must_use]
+    pub fn wanted(&self) -> Vec<u8> {
+        let drives_a_lamp = self
+            .pins
+            .iter()
+            .any(|p| p.dir == Dir::Out && matches!(p.what, What::Lamp(_)));
+        if drives_a_lamp {
+            alloc::vec![
+                cogware_can::INDICATORS1.id as u8,
+                cogware_can::INDICATORS2.id as u8,
+            ]
+        } else {
+            Vec::new()
+        }
     }
 
     /// What the output pins should be driven to, as a word shaped like the one
@@ -585,15 +660,56 @@ pub(crate) fn pins(val: &Value) -> Result<Pins, PinError> {
         }
     }
 
+    let (sweep, sweep_step_us) = sweep(val, count)?;
+
     Ok(Pins {
         count,
         pins,
         debounce_us,
+        sweep,
+        sweep_step_us,
         settled: 0,
         pending: 0,
         since_us: 0,
         seen: false,
     })
+}
+
+/// Read the optional `boot_sweep` block: which pins it walks and how fast.
+///
+/// The order is the file's, not the pin numbering's, because it is a wave
+/// somebody watches: what matters is the bulbs lighting in the order they sit
+/// in the binnacle, whatever pins they happen to land on.
+fn sweep(val: &Value, count: u8) -> Result<(Vec<u8>, u64), PinError> {
+    let Some(block) = val.get("boot_sweep") else {
+        return Ok((Vec::new(), SWEEP_STEP_US));
+    };
+    if matches!(block, Value::Null) {
+        return Ok((Vec::new(), SWEEP_STEP_US));
+    }
+
+    let step_us = match block.get("step_ms") {
+        None | Some(Value::Null) => SWEEP_STEP_US,
+        Some(v) => {
+            let ms = v.as_i64().ok_or(PinError::BadField { field: "step_ms" })?;
+            u64::try_from(ms)
+                .map_err(|_| PinError::BadField { field: "step_ms" })?
+                .saturating_mul(1_000)
+        }
+    };
+
+    let mut order = Vec::new();
+    if let Some(list) = block.get("pins") {
+        for entry in list.as_array().ok_or(PinError::BadList)? {
+            let n = entry.as_i64().unwrap_or(-1);
+            let pin = u8::try_from(n)
+                .ok()
+                .filter(|p| *p >= 1 && *p <= count)
+                .ok_or(PinError::BadPin(n))?;
+            order.push(pin);
+        }
+    }
+    Ok((order, step_us))
 }
 
 /// Read one `pins` entry against the display's pin count.
