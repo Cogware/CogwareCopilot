@@ -662,6 +662,52 @@ fn build_kind(type_str: &str, val: &Value) -> Result<Kind, BuildError> {
                 valign,
             })
         }
+        "fps" => {
+            // No "text" is required, unlike a label: the first measurement
+            // replaces whatever is here, so making a scene author invent a
+            // placeholder would be asking for a value that cannot survive.
+            let text = val
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("--")
+                .to_string();
+            let suffix = val
+                .get("suffix")
+                .and_then(Value::as_str)
+                .unwrap_or(" fps")
+                .to_string();
+            Ok(Kind::Fps {
+                text,
+                color: colour(val, "color", "#ffffffff")?,
+                scale: match val.get("scale") {
+                    Some(v) => {
+                        let n = v.as_i64().ok_or(BuildError::BadField { field: "scale" })?;
+                        u8::try_from(n.max(1))
+                            .map_err(|_| BuildError::BadField { field: "scale" })?
+                    }
+                    None => 1,
+                },
+                align: match val.get("align") {
+                    Some(v) => match v.as_str() {
+                        Some("left") => Align::Left,
+                        Some("center") => Align::Center,
+                        Some("right") => Align::Right,
+                        _ => return Err(BuildError::BadField { field: "align" }),
+                    },
+                    None => Align::Left,
+                },
+                valign: match val.get("valign") {
+                    Some(v) => match v.as_str() {
+                        Some("top") => VAlign::Top,
+                        Some("middle") => VAlign::Middle,
+                        Some("bottom") => VAlign::Bottom,
+                        _ => return Err(BuildError::BadField { field: "valign" }),
+                    },
+                    None => VAlign::Top,
+                },
+                suffix,
+            })
+        }
         "image" => {
             let image = val
                 .get("image")
@@ -1039,6 +1085,44 @@ mod tests {
         match top(&go(&doc(src)).expect("a lamp must build")).kind {
             Kind::Led { off, .. } => off,
             ref other => panic!("expected a lamp, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_rate_readout_builds_without_a_text_and_takes_the_usual_suffix() {
+        // No "text": the first measurement replaces whatever is there, so a
+        // scene must not be made to invent a value that cannot survive.
+        let src = r#"{"type":"fps","rect":[0,0,120,16]}"#;
+        match top(&go(&doc(src)).expect("a rate readout must build")).kind {
+            Kind::Fps {
+                ref suffix,
+                scale,
+                ref text,
+                ..
+            } => {
+                assert_eq!(suffix, " fps");
+                assert_eq!(scale, 1);
+                assert!(!text.is_empty(), "something must be drawn before the first measurement");
+            }
+            ref other => panic!("expected a rate readout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_rate_readout_takes_the_suffix_and_alignment_a_scene_gives_it() {
+        let src = r#"{"type":"fps","rect":[0,0,120,16],"suffix":"","align":"right","scale":3}"#;
+        match top(&go(&doc(src)).expect("a rate readout must build")).kind {
+            Kind::Fps {
+                ref suffix,
+                align,
+                scale,
+                ..
+            } => {
+                assert_eq!(suffix, "", "an empty suffix must survive, not fall back");
+                assert_eq!(align, Align::Right);
+                assert_eq!(scale, 3);
+            }
+            ref other => panic!("expected a rate readout, got {other:?}"),
         }
     }
 

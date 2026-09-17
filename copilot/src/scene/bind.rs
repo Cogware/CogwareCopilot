@@ -296,6 +296,10 @@ const UNITS: &[Unit] = &[
     Unit::KILOMETRES,
     Unit::BYTES,
     Unit::LITRES,
+    Unit::GRAMS,
+    Unit::KG_PER_H,
+    Unit::L_PER_H,
+    Unit::G_FORCE,
     Unit::FAHRENHEIT,
     Unit::KELVIN,
     Unit::PSI,
@@ -307,6 +311,9 @@ const UNITS: &[Unit] = &[
     Unit::MILLIVOLT,
     Unit::MICROSECONDS,
     Unit::MINUTES,
+    Unit::KILOGRAMS,
+    Unit::G_PER_S,
+    Unit::M_PER_S2,
     Unit::GALLONS_US,
     Unit::GALLONS_UK,
 ];
@@ -323,6 +330,8 @@ pub fn unit_by_symbol(symbol: &str) -> Option<Unit> {
         "kph" => "km/h",
         "lambda" => "λ",
         "us" => "µs",
+        "G" | "g-force" => "G",
+        "m/s2" => "m/s²",
         other => other,
     };
     UNITS.iter().copied().find(|u| u.symbol == canonical)

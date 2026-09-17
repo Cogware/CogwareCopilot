@@ -325,6 +325,38 @@ pub enum Kind {
         /// Where the text sits down the node's box.
         valign: VAlign,
     },
+    /// The rate the toolkit is drawing at, as text.
+    ///
+    /// A scene places this where it suits the panel rather than having a rate
+    /// painted over the top of it, which is what a host that measured its own
+    /// frames used to have to do. `text` is maintained by
+    /// [`crate::render::fps::show`]; a scene may author it, and the first
+    /// measurement replaces whatever it said.
+    ///
+    /// It is deliberately not a gauge binding. A frame rate is the toolkit's
+    /// own business, not the car's: nothing broadcasts it, and a display with
+    /// no bus at all still has one.
+    ///
+    /// Drawing a rate does change the rate, which is the awkwardness in
+    /// measuring anything from inside it. What keeps that small is that the
+    /// text only changes when the *displayed* number does -- once a window,
+    /// not once a frame -- so this joins the damage set about twice a second
+    /// instead of sixty times.
+    Fps {
+        /// What is drawn. Replaced by each new measurement.
+        text: String,
+        /// Text colour.
+        color: Color,
+        /// Integer magnification, 1 for the font's own size.
+        scale: u8,
+        /// Where the text sits across the node's box.
+        align: Align,
+        /// Where the text sits down the node's box.
+        valign: VAlign,
+        /// Written after the number. A space in front of it is the caller's
+        /// to include; empty leaves the bare figure.
+        suffix: String,
+    },
     /// A still image, by its index in the scene's image table.
     Image {
         /// Index into the scene's image table.
@@ -1067,7 +1099,9 @@ impl Kind {
     #[must_use]
     pub fn text(&self) -> Option<&str> {
         match self {
-            Kind::Label { text, .. } | Kind::SevenSeg { text, .. } => Some(text.as_str()),
+            Kind::Label { text, .. }
+            | Kind::SevenSeg { text, .. }
+            | Kind::Fps { text, .. } => Some(text.as_str()),
             _ => None,
         }
     }
@@ -1077,7 +1111,9 @@ impl Kind {
     pub fn with_text(&self, t: &str) -> Option<Kind> {
         let mut k = self.clone();
         match &mut k {
-            Kind::Label { text, .. } | Kind::SevenSeg { text, .. } => *text = t.into(),
+            Kind::Label { text, .. }
+            | Kind::SevenSeg { text, .. }
+            | Kind::Fps { text, .. } => *text = t.into(),
             _ => return None,
         }
         Some(k)

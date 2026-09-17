@@ -36,6 +36,7 @@ agree about where a value sits without the scene file restating it.
 | `gradient` | A fill ramping between two colours, down or across. |
 | `grid` | Lines ruled across the box, for the etched grid a real panel's glass carries. |
 | `polygon` | A filled shape through listed points, even-odd so a notch stays a notch. |
+| `fps` | The rate the toolkit is drawing at, as text, placed by the scene rather than painted over it. See below. |
 
 ## Planned
 
@@ -537,6 +538,48 @@ the bright one at low alpha -- that lands as the bright one. It is why
 `sevenseg`'s unlit segments and `led`'s `off` colour are both specified the
 long way round. Antialiasing is the one exception, and it blends by reading the
 surface back rather than by asking it to.
+
+## The frame rate as a widget
+
+A host used to count its own frames and paint the figure over whatever the
+scene had drawn, in a corner it chose. `fps` makes it a widget instead, so it
+sits in the layout like anything else and moves without a rebuild of the
+firmware:
+
+```jsonc
+{ "type": "fps", "rect": [8, 8, 120, 16], "color": "#7d8590",
+  "scale": 2, "align": "right", "suffix": " fps" }
+```
+
+`text` is not required and any value given is a placeholder: the first
+measurement replaces it. `suffix` is written after the number and defaults to
+` fps`; set it to `""` for the bare figure.
+
+It is not a gauge binding, and could not be. A frame rate is the toolkit's own
+business rather than the car's -- nothing broadcasts it, and a display with no
+bus at all still has one.
+
+The host's only part is the clock, because this crate has none:
+
+```rust
+let mut meter = copilot::render::fps::Meter::default();
+// once a frame
+if let Some(rate) = meter.frame(millis_since_boot()) {
+    copilot::render::fps::show(&mut scene.tree, rate);
+}
+```
+
+### Measuring something from inside it
+
+Drawing a rate costs frames, so a rate widget changes the number it reports.
+That cannot be abolished, only kept small, and the window is what keeps it
+small: the text is rewritten when the *displayed* figure changes -- about
+twice a second -- not once a frame. Between changes the widget is untouched,
+marks no damage, and costs the compositor nothing.
+
+The figure is therefore an average over the window rather than an instant
+rate, which is also the more readable number: an instant rate taken between
+two frames swings through every value.
 
 ## Deliberately absent
 
