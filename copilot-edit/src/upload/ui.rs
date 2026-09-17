@@ -119,11 +119,13 @@ impl Monitor {
     /// takes one at a time, and a feed that opened its own would be refused
     /// by a board that is perfectly well.
     pub fn feed(&mut self, car: &copilot::cogware_can::drive::Car) {
-        // A dash does not need sixty sets of readings a second, and a radio
-        // certainly does not: over Bluetooth a frame a frame would fill the
-        // channel and leave the reports that say how it is going stuck behind
-        // the drive. Ten a second is smoother than any needle can move.
-        const EVERY: std::time::Duration = std::time::Duration::from_millis(100);
+        // Twenty-five a second: about what a car's own bus gives a dash, and
+        // a hundred and eighty bytes a second, which no link here notices.
+        // Ten was tried first and read as laggy -- a needle stepping rather
+        // than moving -- and sixty only fills the channel the reports come
+        // back on. A set that will not fit is dropped rather than queued: the
+        // next one is forty milliseconds away and is newer.
+        const EVERY: std::time::Duration = std::time::Duration::from_millis(40);
         if self.last_feed.is_some_and(|at| at.elapsed() < EVERY) {
             return;
         }
