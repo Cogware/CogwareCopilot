@@ -31,6 +31,10 @@ CLAUDE.md
 .roo/
 .roomodes
 
+# The knowledge graph built over this tree. Regenerable with `graphify
+# extract`, and it embeds absolute host paths.
+graphify-out/
+
 # The house rules the code is written to: kept out of the published tree on
 # purpose, so anyone reading the repository is reading the toolkit.
 instructions.md
