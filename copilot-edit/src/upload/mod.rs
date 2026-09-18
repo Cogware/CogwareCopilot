@@ -779,9 +779,25 @@ pub fn feed_gauges(
     link: &mut dyn Transport,
     car: &cogware_can::drive::Car,
 ) -> Result<(), Error> {
-    let mut payload = Vec::with_capacity(cogware_can::drive::DRIVEN.len() * GAUGE_ENTRY);
-    for (id, _) in cogware_can::drive::DRIVEN {
-        let Some(value) = car.reading(*id) else { continue };
+    let readings: Vec<(u16, i32)> = cogware_can::drive::DRIVEN
+        .iter()
+        .filter_map(|(id, _)| car.reading(*id).map(|v| (*id, v)))
+        .collect();
+    feed_readings(link, &readings)
+}
+
+/// Send a set of readings to the master, whatever produced them.
+///
+/// The car is one source and the sweep is another, and a log played back is a
+/// third. None of that is this function's business: what reaches the bus is a
+/// gauge id and a number, and the point of sending any of them is the same --
+/// the layout is read on the glass it will live on rather than in a preview.
+pub fn feed_readings(
+    link: &mut dyn Transport,
+    readings: &[(u16, i32)],
+) -> Result<(), Error> {
+    let mut payload = Vec::with_capacity(readings.len() * GAUGE_ENTRY);
+    for (id, value) in readings {
         payload.extend_from_slice(&id.to_le_bytes());
         payload.extend_from_slice(&value.to_le_bytes());
     }

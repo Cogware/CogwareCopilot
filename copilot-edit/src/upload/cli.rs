@@ -52,6 +52,28 @@ pub fn watch(args: &[String]) -> Result<(), String> {
     // window does: the car takes one connection at a time, so a second one
     // opened to drive it would be refused by a board that is perfectly well.
     let driving = args.iter().any(|a| a == "--drive");
+    // A log the car recorded, played instead of the modelled one.
+    let log = match args.iter().position(|a| a == "--log").and_then(|i| args.get(i + 1)) {
+        Some(path) => {
+            let log = crate::datalog::Log::read(std::path::Path::new(path))?;
+            println!(
+                "{}: {} rows over {:.0}s, filling {}",
+                log.name,
+                log.rows(),
+                log.seconds(),
+                log.filled.join(", ")
+            );
+            if !log.skipped.is_empty() {
+                println!("  no gauge for: {}", log.skipped.join(", "));
+            }
+            Some(log)
+        }
+        None => None,
+    };
+    // The sweep, which is what proves a needle reaches both ends of its
+    // scale. Every gauge the table knows, run end to end together.
+    let sweeping = args.iter().any(|a| a == "--sweep");
+    let mut swept_s = 0.0f32;
     let mut car = cogware_can::drive::Car::new();
     let mut link = open(args)?;
     println!("watching {}", link.describe());
@@ -117,26 +139,60 @@ pub fn watch(args: &[String]) -> Result<(), String> {
                 }
             }
         }
-        if driving {
+        if driving || sweeping {
             // Its own elapsed time rather than the sleep below, so a slow
             // round drives the car further instead of slowing it down.
-            car.advance(fed.elapsed().as_micros() as u64);
+            let step_us = fed.elapsed().as_micros() as u64;
             fed = std::time::Instant::now();
-            super::feed_gauges(link.as_mut(), &car).map_err(|e| e.to_string())?;
+            let readings: Vec<(u16, i32)> = if sweeping {
+                // Four seconds up and down, which is what the editor's own
+                // sweep runs at.
+                swept_s += step_us as f32 / 1_000_000.0;
+                let phase = (swept_s / 2.0) % 2.0;
+                let at = if phase <= 1.0 { phase } else { 2.0 - phase };
+                cogware_can::ALL_GAUGES
+                    .iter()
+                    .filter_map(|g| {
+                        // Only what a display could be showing: a sweep of
+                        // the whole table would put a hundred and forty
+                        // channels on a bus that carries twelve.
+                        cogware_can::drive::DRIVEN
+                            .iter()
+                            .any(|(id, _)| *id == g.id)
+                            .then(|| (g.id, (at * 100.0 * g.unit.scale as f32) as i32))
+                    })
+                    .collect()
+            } else if let Some(log) = &log {
+                swept_s += step_us as f32 / 1_000_000.0;
+                log.at(swept_s)
+            } else {
+                car.advance(step_us);
+                cogware_can::drive::DRIVEN
+                    .iter()
+                    .filter_map(|(id, _)| car.reading(*id).map(|v| (*id, v)))
+                    .collect()
+            };
+            super::feed_readings(link.as_mut(), &readings).map_err(|e| e.to_string())?;
             // Once a second, what is actually going down the link -- so a
             // reading that looks wrong on the glass can be compared against
             // what was sent rather than guessed at.
             sent += 1;
             if sent % 25 == 0 {
-                println!(
-                    "    sending: kmh={:.1} rpm={:.0} gear={} tps={:.0}",
-                    car.kmh, car.rpm, car.gear, car.throttle
-                );
+                if sweeping {
+                    println!("    sweeping: {} channels", readings.len());
+                } else if log.is_some() {
+                    println!("    playing: {:.1}s in, {} channels", swept_s, readings.len());
+                } else {
+                    println!(
+                        "    sending: kmh={:.1} rpm={:.0} gear={} tps={:.0}",
+                        car.kmh, car.rpm, car.gear, car.throttle
+                    );
+                }
             }
         }
         // Twenty-five a second while driving, which is what the window sends;
         // ten otherwise, which is as often as the counters are worth reading.
-        std::thread::sleep(std::time::Duration::from_millis(if driving {
+        std::thread::sleep(std::time::Duration::from_millis(if driving || sweeping {
             40
         } else {
             100

@@ -96,8 +96,13 @@ pub struct Driver {
     /// coolant sitting at ninety while everything else moves -- which is what
     /// a dash actually looks like and what a layout has to be read against.
     pub driving: bool,
-    /// The car, when one is driving.
+    /// The car, when one is driving and no log is loaded.
     pub car: copilot::cogware_can::drive::Car,
+    /// A log the car actually recorded, played back instead of the simulated
+    /// one. Loaded by the person, so `None` is the ordinary state.
+    pub log: Option<crate::datalog::Log>,
+    /// How far into the log the playback has got, in seconds.
+    pub log_at_s: f32,
     /// Seconds for one full up-and-down sweep. Default 4.0.
     pub period_s: f32,
     phase: f32,
@@ -115,6 +120,8 @@ impl Default for Driver {
             driving: false,
             to_car: false,
             car: copilot::cogware_can::drive::Car::new(),
+            log: None,
+            log_at_s: 0.0,
             period_s: 4.0,
             phase: 0.0,
         }
@@ -329,6 +336,25 @@ impl Driver {
     /// zero or less is treated as 4.0 to avoid division by zero.
     pub fn tick(&mut self, delta_us: u64) {
         if self.driving {
+            // A log, if one is loaded: what the car really did beats what a
+            // model says it would have. Written through the same channels the
+            // simulated car uses, so everything downstream -- bindings, units,
+            // the canvas, the bus -- cannot tell which was playing.
+            if self.log.is_some() {
+                self.log_at_s += delta_us as f32 / 1_000_000.0;
+                let now = self.log_at_s;
+                let readings = self.log.as_ref().map(|l| l.at(now)).unwrap_or_default();
+                for (id, raw) in readings {
+                    let Some(spec) = copilot::cogware_can::gauge_by_id(id) else {
+                        continue;
+                    };
+                    let Some(ch) = self.gauges.get_mut(spec.name) else {
+                        continue;
+                    };
+                    ch.value = raw as f32 / spec.unit.scale as f32;
+                }
+                return;
+            }
             // The car moves on its own clock and writes through the same
             // channels a slider does, so everything downstream -- bindings,
             // units, the canvas -- is unchanged by which one is driving.
@@ -357,6 +383,37 @@ impl Driver {
         if self.phase > 2.0 {
             self.phase -= 2.0;
         }
+    }
+
+    /// What this driver would put on the bus right now.
+    ///
+    /// The sweep belongs here as much as the car does: it is the one thing
+    /// that proves a needle reaches both ends of its scale, and proving that
+    /// on the preview rather than on the glass proves it about the preview.
+    /// A log plays through the same list, because by the time a reading is on
+    /// the bus what produced it no longer shows.
+    #[must_use]
+    pub fn readings(&self) -> Vec<(u16, i32)> {
+        if self.driving && self.log.is_none() {
+            return copilot::cogware_can::drive::DRIVEN
+                .iter()
+                .filter_map(|(id, _)| self.car.reading(*id).map(|v| (*id, v)))
+                .collect();
+        }
+        // Whatever the bound gauges are showing, which is where both the log
+        // and the sweep have already written.
+        let sweeping = self.sweep;
+        let at = self.sweep_value();
+        self.gauges
+            .iter()
+            .filter_map(|(name, ch)| {
+                let spec = copilot::cogware_can::ALL_GAUGES
+                    .iter()
+                    .find(|g| g.name == *name)?;
+                let value = ch.current(sweeping, at);
+                Some((spec.id, (value * spec.unit.scale as f32).round() as i32))
+            })
+            .collect()
     }
 
     /// The sweep position, 0.0..=1.0.

@@ -118,7 +118,7 @@ impl Monitor {
     /// Reuses the watch connection rather than opening a second one: the car
     /// takes one at a time, and a feed that opened its own would be refused
     /// by a board that is perfectly well.
-    pub fn feed(&mut self, car: &copilot::cogware_can::drive::Car) {
+    pub fn feed(&mut self, readings: &[(u16, i32)]) {
         // Twenty-five a second: about what a car's own bus gives a dash, and
         // a hundred and eighty bytes a second, which no link here notices.
         // Ten was tried first and read as laggy -- a needle stepping rather
@@ -133,7 +133,7 @@ impl Monitor {
             return;
         };
         self.last_feed = Some(std::time::Instant::now());
-        if let Err(e) = super::feed_gauges(link.as_mut(), car) {
+        if let Err(e) = super::feed_readings(link.as_mut(), readings) {
             self.trouble = Some(e);
             self.watching = None;
         }

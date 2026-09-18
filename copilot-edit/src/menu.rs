@@ -199,9 +199,58 @@ impl App {
                     {
                         self.driver.sweep = false;
                     }
-                    ui.add_enabled_ui(self.driver.driving, |ui| {
+                    // Either mode can be sent: the sweep is the one that
+                    // proves a needle reaches both ends, and proving that on
+                    // the preview proves it about the preview.
+                    ui.add_enabled_ui(self.driver.driving || self.driver.sweep, |ui| {
                         ui.checkbox(&mut self.driver.to_car, "Send to the car");
                     });
+                    // A log the car really recorded, played instead of the
+                    // modelled one. What a model cannot invent is the sensor
+                    // that drops out and the idle that hunts, which is most
+                    // of what a layout has to stay readable through.
+                    let playing = self.driver.log.as_ref().map(|log| {
+                        (
+                            format!("{} ({:.0}s)", log.name, log.seconds()),
+                            format!(
+                                "filling {}{}",
+                                log.filled.join(", "),
+                                if log.skipped.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!("\nno gauge for: {}", log.skipped.join(", "))
+                                }
+                            ),
+                        )
+                    });
+                    match playing {
+                        Some((label, hover)) => {
+                            if ui.button("Stop the log").clicked() {
+                                self.driver.log = None;
+                                self.driver.log_at_s = 0.0;
+                            }
+                            ui.label(label).on_hover_text(hover);
+                        }
+                        None => {
+                            if ui.button("Play a log…").clicked()
+                                && let Some(p) = rfd::FileDialog::new()
+                                    .add_filter("logs", &["msl", "csv", "tsv", "txt", "log"])
+                                    .pick_file()
+                            {
+                                match crate::datalog::Log::read(&p) {
+                                    Ok(log) => {
+                                        self.driver.log = Some(log);
+                                        self.driver.log_at_s = 0.0;
+                                        self.driver.driving = true;
+                                        self.driver.sweep = false;
+                                    }
+                                    // Said where the person is looking rather
+                                    // than on a console they are not.
+                                    Err(e) => self.status = e,
+                                }
+                            }
+                        }
+                    }
                 });
                 ui.separator();
                 if self.dirty {

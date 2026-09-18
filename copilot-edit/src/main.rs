@@ -21,6 +21,7 @@ mod bind_ui;
 mod canvas;
 mod close;
 mod curve;
+mod datalog;
 mod drive;
 mod gpio_strip;
 mod handle;

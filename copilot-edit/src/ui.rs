@@ -510,8 +510,12 @@ impl eframe::App for App {
             // Sent down the link the monitor already holds, and only while
             // somebody asked for it: this writes the car's gauge table, so it
             // is not something to do quietly in the background.
-            if self.driver.enabled && self.driver.driving && self.driver.to_car {
-                self.monitor.feed(&self.driver.car);
+            // Driving or sweeping, either one: a sweep run only on the
+            // preview proves the preview, and what somebody wants proved is
+            // that the needle on the glass reaches both ends of its scale.
+            if self.driver.enabled && self.driver.to_car && (self.driver.driving || self.driver.sweep)
+            {
+                self.monitor.feed(&self.driver.readings());
             }
             self.monitor.show(ctx);
             self.uploader.show(ctx, move || {
