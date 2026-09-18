@@ -213,7 +213,7 @@ impl App {
                         (
                             format!("{} ({:.0}s)", log.name, log.seconds()),
                             format!(
-                                "filling {}{}",
+                                "measured: {}{}\nthe rest is the model",
                                 log.filled.join(", "),
                                 if log.skipped.is_empty() {
                                     String::new()
@@ -221,34 +221,34 @@ impl App {
                                     format!("\nno gauge for: {}", log.skipped.join(", "))
                                 }
                             ),
+                            log.is_built_in(),
                         )
                     });
-                    match playing {
-                        Some((label, hover)) => {
-                            if ui.button("Stop the log").clicked() {
-                                self.driver.log = None;
-                                self.driver.log_at_s = 0.0;
-                            }
-                            ui.label(label).on_hover_text(hover);
+                    if let Some((label, hover, built_in)) = playing {
+                        ui.label(label).on_hover_text(hover);
+                        // Back to the built-in trace rather than to nothing:
+                        // a drive with no measured data in it at all is what
+                        // this stopped being the default.
+                        if !built_in && ui.button("Back to US06").clicked() {
+                            self.driver.log = Some(crate::datalog::Log::us06());
+                            self.driver.log_at_s = 0.0;
                         }
-                        None => {
-                            if ui.button("Play a log…").clicked()
-                                && let Some(p) = rfd::FileDialog::new()
-                                    .add_filter("logs", &["msl", "csv", "tsv", "txt", "log"])
-                                    .pick_file()
-                            {
-                                match crate::datalog::Log::read(&p) {
-                                    Ok(log) => {
-                                        self.driver.log = Some(log);
-                                        self.driver.log_at_s = 0.0;
-                                        self.driver.driving = true;
-                                        self.driver.sweep = false;
-                                    }
-                                    // Said where the person is looking rather
-                                    // than on a console they are not.
-                                    Err(e) => self.status = e,
-                                }
+                    }
+                    if ui.button("Play a log…").clicked()
+                        && let Some(p) = rfd::FileDialog::new()
+                            .add_filter("logs", &["msl", "csv", "tsv", "txt", "log"])
+                            .pick_file()
+                    {
+                        match crate::datalog::Log::read(&p) {
+                            Ok(log) => {
+                                self.driver.log = Some(log);
+                                self.driver.log_at_s = 0.0;
+                                self.driver.driving = true;
+                                self.driver.sweep = false;
                             }
+                            // Said where the person is looking rather than on
+                            // a console they are not.
+                            Err(e) => self.status = e,
                         }
                     }
                 });

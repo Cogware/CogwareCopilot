@@ -98,8 +98,13 @@ pub struct Driver {
     pub driving: bool,
     /// The car, when one is driving and no log is loaded.
     pub car: copilot::cogware_can::drive::Car,
-    /// A log the car actually recorded, played back instead of the simulated
-    /// one. Loaded by the person, so `None` is the ordinary state.
+    /// A log of measured data, played over the top of the simulated car.
+    ///
+    /// Defaults to the built-in US06 trace rather than to nothing, so a drive
+    /// is a real one out of the box: what the schedule measured is what the
+    /// speed reads, and the model is left filling only the channels no
+    /// published schedule carries. Somebody's own log replaces it and covers
+    /// however much of the dash it has columns for.
     pub log: Option<crate::datalog::Log>,
     /// How far into the log the playback has got, in seconds.
     pub log_at_s: f32,
@@ -120,7 +125,7 @@ impl Default for Driver {
             driving: false,
             to_car: false,
             car: copilot::cogware_can::drive::Car::new(),
-            log: None,
+            log: Some(crate::datalog::Log::us06()),
             log_at_s: 0.0,
             period_s: 4.0,
             phase: 0.0,
@@ -340,21 +345,6 @@ impl Driver {
             // model says it would have. Written through the same channels the
             // simulated car uses, so everything downstream -- bindings, units,
             // the canvas, the bus -- cannot tell which was playing.
-            if self.log.is_some() {
-                self.log_at_s += delta_us as f32 / 1_000_000.0;
-                let now = self.log_at_s;
-                let readings = self.log.as_ref().map(|l| l.at(now)).unwrap_or_default();
-                for (id, raw) in readings {
-                    let Some(spec) = copilot::cogware_can::gauge_by_id(id) else {
-                        continue;
-                    };
-                    let Some(ch) = self.gauges.get_mut(spec.name) else {
-                        continue;
-                    };
-                    ch.value = raw as f32 / spec.unit.scale as f32;
-                }
-                return;
-            }
             // The car moves on its own clock and writes through the same
             // channels a slider does, so everything downstream -- bindings,
             // units, the canvas -- is unchanged by which one is driving.
@@ -368,6 +358,25 @@ impl Driver {
                 };
                 let Some(raw) = self.car.reading(*id) else { continue };
                 ch.value = raw as f32 / spec.unit.scale as f32;
+            }
+
+            // Then the log over the top, so a channel somebody measured beats
+            // the same channel worked out from a model. The built-in trace
+            // carries road speed alone and leaves the rest as it found it;
+            // a log off a real car covers as much of the dash as it logged.
+            if self.log.is_some() {
+                self.log_at_s += delta_us as f32 / 1_000_000.0;
+                let now = self.log_at_s;
+                let measured = self.log.as_ref().map(|l| l.at(now)).unwrap_or_default();
+                for (id, raw) in measured {
+                    let Some(spec) = copilot::cogware_can::gauge_by_id(id) else {
+                        continue;
+                    };
+                    let Some(ch) = self.gauges.get_mut(spec.name) else {
+                        continue;
+                    };
+                    ch.value = raw as f32 / spec.unit.scale as f32;
+                }
             }
             return;
         }
@@ -394,10 +403,18 @@ impl Driver {
     /// the bus what produced it no longer shows.
     #[must_use]
     pub fn readings(&self) -> Vec<(u16, i32)> {
-        if self.driving && self.log.is_none() {
+        if self.driving {
+            // Straight off the channels `tick` just wrote, which is the car
+            // with whatever was measured laid over it -- so the bus carries
+            // the same numbers the preview is showing and not the model the
+            // log was meant to correct.
             return copilot::cogware_can::drive::DRIVEN
                 .iter()
-                .filter_map(|(id, _)| self.car.reading(*id).map(|v| (*id, v)))
+                .filter_map(|(id, _)| {
+                    let spec = copilot::cogware_can::gauge_by_id(*id)?;
+                    let ch = self.gauges.get(spec.name)?;
+                    Some((*id, (ch.value * spec.unit.scale as f32).round() as i32))
+                })
                 .collect();
         }
         // Whatever the bound gauges are showing, which is where both the log

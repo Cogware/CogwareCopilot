@@ -87,6 +87,42 @@ impl Log {
             .collect()
     }
 
+    /// The drive every build has, with no file to go and find.
+    ///
+    /// The EPA's US06 dynamometer schedule: a car driven hard on a rolling
+    /// road, published by the United States government and measured rather
+    /// than modelled. It carries road speed and nothing else, which is what
+    /// the published schedule is -- so it fills the speed and leaves the rest
+    /// to whatever else is driving, instead of inventing channels and calling
+    /// them a log.
+    ///
+    /// One sample a second, which is the rate it was published at. Playing it
+    /// faster would not add anything: the trace is the seconds, and between
+    /// two of them the car really was somewhere this file does not say.
+    #[must_use]
+    pub fn us06() -> Log {
+        let speed = cogware_can::trace::SPEED_DKMH;
+        let vss = cogware_can::ALL_GAUGES
+            .iter()
+            .find(|g| g.name == "VSS")
+            .expect("the gauge table has a road speed");
+        Log {
+            name: "US06 (built in)".into(),
+            times_s: (0..speed.len()).map(|i| i as f32).collect(),
+            // Tenths of a km/h at both ends, so the published numbers go
+            // across as they were published.
+            channels: alloc_channel(vss.id, speed),
+            filled: vec![vss.name],
+            skipped: Vec::new(),
+        }
+    }
+
+    /// Whether this is the built-in trace rather than somebody's own log.
+    #[must_use]
+    pub fn is_built_in(&self) -> bool {
+        self.name.starts_with("US06")
+    }
+
     /// Read a log from a file.
     pub fn read(path: &Path) -> Result<Log, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -208,6 +244,11 @@ impl Log {
     }
 }
 
+/// One channel's worth of already-scaled samples.
+fn alloc_channel(id: u16, raw: &[u16]) -> Vec<Channel> {
+    vec![Channel { id, raw: raw.iter().map(|v| i32::from(*v)).collect() }]
+}
+
 /// Whether a field parses as a number.
 fn is_number(s: &str) -> bool {
     !s.is_empty() && s.parse::<f32>().is_ok()
@@ -314,5 +355,29 @@ s\trpm\t%\tC\tAFR\t-\n\
         let csv = "Time,RPM\n0.0,900\n0.2,950\n0.1,1000\n";
         let err = Log::parse("bad.csv", csv).unwrap_err();
         assert!(err.contains("backwards"), "{err}");
+    }
+
+    #[test]
+    fn the_built_in_drive_is_the_published_trace_second_by_second() {
+        let log = Log::us06();
+        assert!(log.is_built_in());
+        assert_eq!(log.rows(), cogware_can::trace::SPEED_DKMH.len());
+        assert_eq!(log.filled, vec!["VSS"], "the schedule is a speed and nothing else");
+        assert!(log.skipped.is_empty());
+
+        let vss = cogware_can::ALL_GAUGES.iter().find(|g| g.name == "VSS").unwrap();
+        let at = |t: f32| log.at(t).into_iter().find(|(id, _)| *id == vss.id).map(|(_, r)| r);
+        // Straight through, in the tenths of a km/h both ends count in.
+        for second in [0usize, 10, 60, 200] {
+            assert_eq!(
+                at(second as f32),
+                Some(i32::from(cogware_can::trace::SPEED_DKMH[second])),
+                "second {second} does not match the published trace"
+            );
+        }
+        // It stands still at the start, which is how the schedule opens.
+        assert_eq!(at(0.0), Some(0));
+        // And somewhere in the middle it is moving properly.
+        assert!(at(60.0).unwrap() > 400, "a minute in the car is going");
     }
 }

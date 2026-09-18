@@ -68,7 +68,9 @@ pub fn watch(args: &[String]) -> Result<(), String> {
             }
             Some(log)
         }
-        None => None,
+        // The built-in trace when nothing was named: a drive measured on a
+        // dyno rather than one worked out from scratch.
+        None => Some(crate::datalog::Log::us06()),
     };
     // The sweep, which is what proves a needle reaches both ends of its
     // scale. Every gauge the table knows, run end to end together.
@@ -162,15 +164,26 @@ pub fn watch(args: &[String]) -> Result<(), String> {
                             .then(|| (g.id, (at * 100.0 * g.unit.scale as f32) as i32))
                     })
                     .collect()
-            } else if let Some(log) = &log {
-                swept_s += step_us as f32 / 1_000_000.0;
-                log.at(swept_s)
             } else {
+                // The model first, then whatever was measured over the top of
+                // it: a channel somebody logged beats the same channel worked
+                // out from a model, and the model still fills the ones no log
+                // carries.
                 car.advance(step_us);
-                cogware_can::drive::DRIVEN
+                swept_s += step_us as f32 / 1_000_000.0;
+                let mut out: Vec<(u16, i32)> = cogware_can::drive::DRIVEN
                     .iter()
                     .filter_map(|(id, _)| car.reading(*id).map(|v| (*id, v)))
-                    .collect()
+                    .collect();
+                if let Some(log) = &log {
+                    for (id, raw) in log.at(swept_s) {
+                        match out.iter_mut().find(|(i, _)| *i == id) {
+                            Some(slot) => slot.1 = raw,
+                            None => out.push((id, raw)),
+                        }
+                    }
+                }
+                out
             };
             super::feed_readings(link.as_mut(), &readings).map_err(|e| e.to_string())?;
             // Once a second, what is actually going down the link -- so a
@@ -180,8 +193,13 @@ pub fn watch(args: &[String]) -> Result<(), String> {
             if sent % 25 == 0 {
                 if sweeping {
                     println!("    sweeping: {} channels", readings.len());
-                } else if log.is_some() {
-                    println!("    playing: {:.1}s in, {} channels", swept_s, readings.len());
+                } else if let Some(l) = &log {
+                    println!(
+                        "    {}: {:.0}s in, measured {}",
+                        l.name,
+                        swept_s % l.seconds().max(1.0),
+                        l.filled.join(", ")
+                    );
                 } else {
                     println!(
                         "    sending: kmh={:.1} rpm={:.0} gear={} tps={:.0}",
