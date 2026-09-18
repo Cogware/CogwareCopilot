@@ -265,7 +265,7 @@ fn arc<S: Surface + ?Sized>(
 
     // Capped like a bank's cells, and for the same reason: a ring asking for
     // more segments than it has pixels of rim is a smear, not a gauge.
-    let n = segments.min(4096) as i32;
+    let n = segments.min(crate::widget::MAX_SEGMENTS) as i32;
     // The gap is signed with the sweep, so an anticlockwise dial cuts its
     // segments the same way round as a clockwise one.
     let gap = deg_to_brad(gap_deg);
@@ -281,14 +281,10 @@ fn arc<S: Surface + ?Sized>(
         return;
     }
 
-    // Ceiling by hand, as a bank does: a reading part way into a segment
-    // lights it, so the dial reads where the needle is.
-    let scaled = value * n as f32;
-    let mut count = scaled as i32;
-    if (count as f32) < scaled {
-        count += 1;
-    }
-    let count = count.clamp(0, n);
+    // How many segments the reading lights. Shared with the bank and with
+    // the damage check, so a dial cannot light one number of segments while
+    // something else decides whether that counts as a change.
+    let count = crate::widget::lit_segments(value, segments) as i32;
 
     // How many segments the mark covers. A size in degrees is rounded to the
     // segments it touches, because a mark that ended halfway through one

@@ -11,6 +11,40 @@ use alloc::vec::Vec;
 
 use crate::Color;
 
+/// Most segments a ring or a bank will draw.
+///
+/// A gauge asking for more cells than its rim has pixels is a smear, not an
+/// instrument, and the loop that draws them has to terminate on any input a
+/// scene can name.
+pub const MAX_SEGMENTS: u32 = 4096;
+
+/// How many of `segments` a reading of `value` lights.
+///
+/// Ceiling, not rounding: a reading part way into a segment lights it, so a
+/// gauge barely off zero reads as barely off zero rather than as empty.
+///
+/// This is the one place that rule lives. Both the dial and the bank draw
+/// from it, and [`Kind::reading_damage`] decides whether anything moved with
+/// it -- because when the damage check kept its own copy and truncated where
+/// these ceil, every reading that was not an exact multiple of a segment lit
+/// a different number of cells than the damage check believed. The widget
+/// redrew with nothing marking it, and the segments it had lit a moment ago
+/// stayed on the glass with nothing to repaint them.
+#[must_use]
+pub fn lit_segments(value: f32, segments: u32) -> u32 {
+    if segments == 0 {
+        return 0;
+    }
+    let n = segments.min(MAX_SEGMENTS);
+    let scaled = value * n as f32;
+    // By hand, because this crate is `no_std` and `f32::ceil` is not.
+    let mut count = scaled as i32;
+    if (count as f32) < scaled {
+        count += 1;
+    }
+    count.clamp(0, n as i32) as u32
+}
+
 /// Where a label's text sits in its box.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Align {
@@ -937,10 +971,16 @@ impl Kind {
                 // to their segment is what stops a value that never quite
                 // holds still -- a mixture, a pressure -- repainting a wedge
                 // of antialiased ring every frame for no visible reason.
+                //
+                // Snapped through `lit_segments`, which is the renderer's own
+                // rule and not a second copy of it. A copy is what this was,
+                // and it truncated where the dial ceils: the two agreed only
+                // on exact multiples of a segment, so for every other reading
+                // the ring lit a different number of segments than the damage
+                // check believed it did. Nothing marked those pixels, nothing
+                // repainted them, and the old segments stayed on the glass.
                 let (old, new) = if segments > 0 {
-                    // Truncating rather than `floor`: this crate is no_std,
-                    // and the values are already clamped to 0..=1.
-                    let snap = |v: f32| (v * segments as f32) as u32 as f32 / segments as f32;
+                    let snap = |v: f32| lit_segments(v, segments) as f32 / segments as f32;
                     (snap(old), snap(new))
                 } else {
                     (old, new)
@@ -998,8 +1038,7 @@ impl Kind {
             // the same saving: the readings that never quite hold still were
             // repainting every bar on the dash every frame.
             Kind::SegBar { segments, .. } if segments > 0 => {
-                let snap = |v: f32| (v * segments as f32) as u32;
-                if snap(old) == snap(new) {
+                if lit_segments(old, segments) == lit_segments(new, segments) {
                     return 0;
                 }
                 whole(out)
@@ -1159,5 +1198,86 @@ impl Kind {
         } else {
             None
         }
+    }
+
+}
+
+#[cfg(test)]
+mod segment_tests {
+    use super::*;
+
+    /// A dial cut into twelve, as an instrument actually is.
+    fn dial(segments: u32) -> Kind {
+        Kind::Arc {
+            start: 0,
+            end: 270,
+            value: 0.0,
+            thickness: 8,
+            fill: Color::WHITE,
+            track: Color::BLACK,
+            zones: Vec::new(),
+            segments,
+            gap: 2,
+            cursor: None,
+            cursor_size: 0,
+            lights: Lights::Bar,
+        }
+    }
+
+    #[test]
+    fn a_segmented_dial_reports_damage_whenever_it_lights_a_different_number() {
+        // The bug this guards, and it was visible on the glass: the damage
+        // check kept its own copy of the segment rule and truncated where the
+        // renderers ceil. The two agreed only on exact multiples of a
+        // segment, so for most readings the ring lit a different number of
+        // segments than the damage check believed -- and the pixels it had
+        // just stopped lighting were never marked, never repainted, and stayed
+        // on the panel until something unrelated happened to cover them.
+        //
+        // So the invariant is not "the snapping is tidy", it is "if the
+        // renderer would draw it differently, damage is reported". Walked
+        // across the whole range because the disagreement lived at the
+        // boundaries, which is where a hand-picked pair misses it.
+        const SEGMENTS: u32 = 12;
+        let arc = dial(SEGMENTS);
+        let at = crate::Rect::new(0, 0, 100, 100);
+        let mut out = [crate::Rect::ZERO; MAX_READING_RECTS];
+
+        let steps = 400;
+        for i in 0..steps {
+            let old = i as f32 / steps as f32;
+            let new = (i + 1) as f32 / steps as f32;
+            let drawn_differently = lit_segments(old, SEGMENTS) != lit_segments(new, SEGMENTS);
+            let marked = arc.reading_damage(at, old, new, &mut out) > 0;
+            assert_eq!(
+                drawn_differently,
+                marked,
+                "{old} -> {new}: the dial lights {} then {} segments",
+                lit_segments(old, SEGMENTS),
+                lit_segments(new, SEGMENTS),
+            );
+        }
+    }
+
+    #[test]
+    fn a_smooth_dial_still_reports_every_move() {
+        // `segments: 0` is the default and must not be quantised at all.
+        let arc = dial(0);
+        let at = crate::Rect::new(0, 0, 100, 100);
+        let mut out = [crate::Rect::ZERO; MAX_READING_RECTS];
+        assert!(arc.reading_damage(at, 0.500, 0.501, &mut out) > 0);
+    }
+
+    #[test]
+    fn a_reading_barely_off_zero_lights_its_first_segment() {
+        // Ceiling, not rounding: the rule the renderers were already using,
+        // and the reason this is shared rather than reimplemented.
+        assert_eq!(lit_segments(0.0, 12), 0, "nothing is nothing");
+        assert_eq!(lit_segments(0.0001, 12), 1, "barely on is on");
+        assert_eq!(lit_segments(1.0, 12), 12, "full is full");
+        assert_eq!(lit_segments(2.0, 12), 12, "and cannot overfill");
+        assert_eq!(lit_segments(-1.0, 12), 0, "nor underfill");
+        assert_eq!(lit_segments(f32::NAN, 12), 0, "nonsense reads empty");
+        assert_eq!(lit_segments(0.5, 0), 0, "no segments lights none");
     }
 }

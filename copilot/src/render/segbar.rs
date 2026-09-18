@@ -77,7 +77,7 @@ pub fn seg_bar<S: Surface + ?Sized>(
 
     // Capped to keep the loop bounded on absurd input; 4096 cells is far more
     // than any gauge needs.
-    let n = segments.min(4096) as i32;
+    let n = segments.min(crate::widget::MAX_SEGMENTS) as i32;
     let g = gap as f32;
 
     // The cells and the gaps between them share the axis exactly.
@@ -117,9 +117,6 @@ pub fn seg_bar<S: Surface + ?Sized>(
     let antialias = antialias && g > 0.0 && (!divided || dg > 0.0);
 
     // The reading, clamped and NaN-proofed, then the ceiling by hand:
-    // `f32::ceil` lives in `std`, and this crate's whole point is running
-    // where there is none. A cast truncates towards zero, so one more is
-    // added whenever anything was thrown away.
     let v = if value.is_nan() {
         0.0
     } else {
@@ -132,12 +129,10 @@ pub fn seg_bar<S: Surface + ?Sized>(
     } else {
         height.clamp(0.0, 1.0)
     };
-    let scaled = v * n as f32;
-    let mut lit = scaled as i32;
-    if (lit as f32) < scaled {
-        lit += 1;
-    }
-    let lit = lit.clamp(0, n);
+    // How many cells the reading lights. Shared with the dial and with the
+    // damage check, so a bank cannot light one number of cells while
+    // something else decides whether that counts as a change.
+    let lit = crate::widget::lit_segments(v, segments) as i32;
 
     // How many cells the mark covers, counting back from the reading. Zero
     // and one both mean the single cell it stands on.
