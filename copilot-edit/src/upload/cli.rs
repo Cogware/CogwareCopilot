@@ -79,6 +79,16 @@ pub fn watch(args: &[String]) -> Result<(), String> {
                 if status.panel_up() { "OLED " } else { "" },
                 if status.loopback() { "LOOPBACK" } else { "" },
             );
+            // Each node's own account of its drawing, relayed by the master:
+            // the numbers that used to be painted into the corners of the
+            // screens, now where somebody can act on them.
+            let mut line = line;
+            for (node, h, _) in view.health() {
+                line.push_str(&format!(
+                    "  {node:#04x}: {}fps {}us {}px {}r",
+                    h.fps, h.compose_us, h.painted, h.rects
+                ));
+            }
             if shown.as_deref() != Some(line.as_str()) {
                 println!("{line}");
                 shown = Some(line);
