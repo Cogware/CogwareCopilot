@@ -379,7 +379,13 @@ impl Push {
         while self.sent < self.image.len() {
             // What is already on its way and not yet taken, against what the
             // server said it could hold.
-            let outstanding = self.sent as u32 - self.staged;
+            //
+            // Saturating, because the server can report more staged than this
+            // push has sent: a transfer that was interrupted leaves its
+            // staging behind, and the first report of the next one describes
+            // somebody else's bytes. That is not this push's outstanding work,
+            // so it counts as none rather than as a number below zero.
+            let outstanding = (self.sent as u32).saturating_sub(self.staged);
             if outstanding + CHUNK as u32 > self.free {
                 if tracing() {
                     eprintln!(
@@ -843,6 +849,21 @@ mod network_tests {
         // Sync, kind, a two-byte length, then the payload; the tail is a CRC.
         let len = u16::from_le_bytes([frame[3], frame[4]]) as usize;
         frame[5..5 + len].to_vec()
+    }
+
+    #[test]
+    fn a_report_from_somebody_else_s_transfer_does_not_panic() {
+        // A push that was interrupted leaves its staging on the server, and
+        // the first report of the next one describes those bytes rather than
+        // this push's. Subtracting one from the other went below zero and
+        // took the whole program with it.
+        use super::tests_support::Fake;
+        let mut link = Fake::with_room(4096);
+        let mut push = Push::new(0x02, 1, 0, vec![0u8; 8192]);
+        // The server says it already holds more than this push has sent.
+        push.staged = 60_000;
+        push.free = 4096;
+        push.feed(&mut link).expect("carries on rather than panicking");
     }
 
     #[test]

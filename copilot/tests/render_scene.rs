@@ -1307,3 +1307,41 @@ fn a_segmented_arc_does_not_repaint_within_one_segment() {
     // Across the boundary into the next one: something to paint.
     assert!(arc.reading_damage(at, 0.51, 0.55, &mut rects) > 0);
 }
+
+/// A bank of cells only looks different when a different number is lit.
+///
+/// The cluster carries six of these -- the tacho bar across the screen, fuel,
+/// temperature, oil, volts -- and every one repainted its whole box whenever
+/// the reading behind it twitched.
+#[test]
+fn a_segbar_does_not_repaint_within_one_cell() {
+    use copilot::widget::{Kind, MAX_READING_RECTS};
+    use copilot::Rect;
+
+    let green = copilot::Color::rgba(0, 200, 57, 255);
+    let bar = Kind::SegBar {
+        value: 0.0,
+        segments: 40,
+        gap: 2,
+        fill: green,
+        fill_to: green,
+        track: copilot::Color::rgba(0, 62, 11, 255),
+        track_shape: Default::default(),
+        zones: Vec::new(),
+        cursor: None,
+        cursor_size: 0,
+        lights: Default::default(),
+        vertical: false,
+        profile: Vec::new(),
+        height: 1.0,
+        divisions: 0,
+        div_gap: 0,
+    };
+    let at = Rect::new(0, 0, 900, 60);
+    let mut rects = [Rect::ZERO; MAX_READING_RECTS];
+
+    // Both inside the same fortieth: nothing to paint.
+    assert_eq!(bar.reading_damage(at, 0.501, 0.512, &mut rects), 0);
+    // Over the edge into the next cell: something to paint.
+    assert!(bar.reading_damage(at, 0.51, 0.56, &mut rects) > 0);
+}

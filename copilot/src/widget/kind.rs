@@ -993,6 +993,17 @@ impl Kind {
                 }
                 n
             }
+            // A bank of cells only looks different when a different number of
+            // them is lit. Same reasoning as the segmented ring above, and
+            // the same saving: the readings that never quite hold still were
+            // repainting every bar on the dash every frame.
+            Kind::SegBar { segments, .. } if segments > 0 => {
+                let snap = |v: f32| (v * segments as f32) as u32;
+                if snap(old) == snap(new) {
+                    return 0;
+                }
+                whole(out)
+            }
             _ => whole(out),
         }
     }
