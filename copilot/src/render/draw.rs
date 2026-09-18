@@ -229,15 +229,10 @@ fn arc<S: Surface + ?Sized>(
                 Some(z) => z.mark(),
                 None => mark,
             };
-            let wide = if cursor_size > 0 {
-                deg_to_brad(cursor_size)
-            } else {
-                // As wide as the ring is thick, so the mark looks square at
-                // whatever radius the scene gives it. An arc's length is its
-                // angle times its radius, so the angle is the length over it.
-                let mid = ((inner + outer) / 2.0).max(1.0);
-                (((outer - inner) / mid) * (TURN as f32) / core::f32::consts::TAU) as i32
-            };
+            // The one rule for how wide a mark is; `reading_damage` widens
+            // the repaint by the same figure so the band's trailing edge is
+            // always covered.
+            let wide = crate::widget::mark_reach(cursor_size, inner, outer);
             let wide = if sweep < 0 { -wide } else { wide };
             let edge = a0.saturating_add(lit);
             // Clamped to the sweep, so a reading at either end keeps the whole

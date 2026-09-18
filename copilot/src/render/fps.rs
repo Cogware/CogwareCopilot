@@ -104,6 +104,32 @@ impl Meter {
         Some(self.rate)
     }
 
+    /// Close the window at `now_ms` without counting a frame.
+    ///
+    /// For a loop that only draws when something moved: it still has to say
+    /// so when nothing has, or the readout keeps whatever number it had when
+    /// the picture went still and reports a rate the panel stopped doing.
+    /// Counting those passes instead is the other mistake -- a loop spinning
+    /// at a kilohertz over a scene that repaints nothing would read as a
+    /// thousand frames a second, which is how fast it is doing nothing.
+    pub fn tick(&mut self, now_ms: u64) -> Option<u16> {
+        let opened = *self.opened_ms.get_or_insert(now_ms);
+        if now_ms < opened {
+            self.opened_ms = Some(now_ms);
+            self.frames = 0;
+            return None;
+        }
+        let elapsed = now_ms - opened;
+        if elapsed < self.window_ms {
+            return None;
+        }
+        let per_second = (u64::from(self.frames) * 1_000 + elapsed / 2) / elapsed;
+        self.rate = u16::try_from(per_second).unwrap_or(u16::MAX);
+        self.opened_ms = Some(now_ms);
+        self.frames = 0;
+        Some(self.rate)
+    }
+
     /// The rate last worked out. Zero until the first window closes.
     #[must_use]
     pub const fn rate(&self) -> u16 {
@@ -293,5 +319,22 @@ mod tests {
         )
         .expect("root takes a child");
         assert_eq!(show(&mut tree, 60), 0);
+    }
+
+    #[test]
+    fn a_panel_that_has_gone_still_reads_zero_rather_than_its_last_rate() {
+        // The readout has to be able to fall. A loop that draws only what
+        // moved stops calling `frame` entirely when nothing does, and a meter
+        // that only advances on a frame would sit there reporting the rate it
+        // managed just before the picture settled.
+        let mut m = Meter::new(100);
+        for i in 0..10 {
+            m.frame(i * 10);
+        }
+        assert_eq!(m.tick(100), Some(100), "ten frames in a tenth of a second");
+        // Now nothing draws at all for two whole windows.
+        assert_eq!(m.tick(150), None, "not due yet");
+        assert_eq!(m.tick(200), Some(0), "and then it admits it");
+        assert_eq!(m.rate(), 0);
     }
 }

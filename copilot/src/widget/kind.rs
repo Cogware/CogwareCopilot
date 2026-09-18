@@ -18,6 +18,33 @@ use crate::Color;
 /// scene can name.
 pub const MAX_SEGMENTS: u32 = 4096;
 
+/// How far back from the reading a dial's mark reaches, in brad.
+///
+/// The mark is not centred on the reading: it is a band ending at the leading
+/// edge of the fill and running backwards from it, which is where a bank's
+/// marked cell sits too. So a reading that moves drags a band of this width
+/// behind it, and everything that band has left has to be repainted.
+///
+/// Shared with the renderer, and shared for the reason [`lit_segments`] is:
+/// when [`Kind::reading_damage`] did not know about this it marked only the
+/// wedge between the old reading and the new one, the mark's trailing edge
+/// fell outside it, and the dial kept a bright stub of cursor everywhere the
+/// reading had been.
+///
+/// `inner` and `outer` are the ring's radii; a mark with no size of its own is
+/// as wide as the ring is thick, so that it looks square at whatever radius
+/// the scene gives it.
+#[must_use]
+pub fn mark_reach(cursor_size: u32, inner: f32, outer: f32) -> i32 {
+    if cursor_size > 0 {
+        return (i64::from(cursor_size) * i64::from(crate::trig::TURN) / 360) as i32;
+    }
+    // An arc's length is its angle times its radius, so the angle is the
+    // length over it.
+    let mid = ((inner + outer) / 2.0).max(1.0);
+    (((outer - inner) / mid) * (crate::trig::TURN as f32) / core::f32::consts::TAU) as i32
+}
+
 /// How many of `segments` a reading of `value` lights.
 ///
 /// Ceiling, not rounding: a reading part way into a segment lights it, so a
@@ -963,6 +990,8 @@ impl Kind {
                 end,
                 thickness,
                 segments,
+                cursor,
+                cursor_size,
                 ..
             } => {
                 // A ring cut into segments only looks different when a
@@ -992,10 +1021,31 @@ impl Kind {
                 let sweep = to_brad(end).saturating_sub(a0);
                 let angle = |v: f32| a0.saturating_add((sweep as f32 * v) as i32);
                 let inner = (radius - thickness.max(1) as i32).max(0);
-                out[0] = grow(
-                    sector_bounds(cx, cy, inner, radius, angle(old), angle(new)),
-                    2,
-                );
+                let (mut from, mut to) = (angle(old), angle(new));
+                // The mark trails the reading, so the wedge between two
+                // readings is not all that changed: the band the mark had at
+                // the older of them reaches further back still, and if it is
+                // not repainted the dial keeps a stub of cursor at every
+                // reading it has passed through.
+                //
+                // Widened at whichever end the mark trails from, which is the
+                // low end of a clockwise sweep and the high end of an
+                // anticlockwise one. A segmented dial marks whole segments, so
+                // it reaches at least one of them.
+                if cursor.is_some() {
+                    let mut reach = mark_reach(cursor_size, inner as f32, radius as f32);
+                    if segments > 0 {
+                        reach = reach.max(sweep.abs() / segments.max(1) as i32);
+                    }
+                    if sweep >= 0 {
+                        from = from.min(to).saturating_sub(reach);
+                        to = to.max(angle(old)).max(angle(new));
+                    } else {
+                        to = to.max(angle(old)).saturating_add(reach);
+                        from = from.min(angle(old)).min(angle(new));
+                    }
+                }
+                out[0] = grow(sector_bounds(cx, cy, inner, radius, from, to), 2);
                 1
             }
             Kind::Needle {

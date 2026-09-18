@@ -18,7 +18,7 @@ mod kind;
 pub use hit::hit_test;
 pub use kind::{
     Align, BindTarget, Kind, Lights, MAX_READING_RECTS, MAX_SEGMENTS, Newest, TrackShape, VAlign,
-    Zone, lit_segments,
+    Zone, lit_segments, mark_reach,
 };
 
 /// Index of a node within a [`Tree`].
