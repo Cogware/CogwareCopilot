@@ -39,6 +39,7 @@ fn open(args: &[String]) -> Result<Box<dyn Transport>, String> {
 ///
 /// ```text
 /// copilot-edit --watch [--link bluetooth|wifi|lan] [--addr HOST:PORT] [--for SECONDS]
+///              [--drive] [--gauges]
 /// ```
 pub fn watch(args: &[String]) -> Result<(), String> {
     let seconds: u64 = args
@@ -47,11 +48,18 @@ pub fn watch(args: &[String]) -> Result<(), String> {
         .and_then(|i| args.get(i + 1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
+    // Feeding on the same link the reports come back on, exactly as the
+    // window does: the car takes one connection at a time, so a second one
+    // opened to drive it would be refused by a board that is perfectly well.
+    let driving = args.iter().any(|a| a == "--drive");
+    let mut car = cogware_can::drive::Car::new();
     let mut link = open(args)?;
     println!("watching {}", link.describe());
 
     let mut view = Watch::new();
     let started = std::time::Instant::now();
+    let mut fed = std::time::Instant::now();
+    let mut sent = 0u32;
     let mut shown = None;
     while started.elapsed().as_secs() < seconds {
         view.step(link.as_mut()).map_err(|e| e.to_string())?;
@@ -99,7 +107,30 @@ pub fn watch(args: &[String]) -> Result<(), String> {
                 }
             }
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        if driving {
+            // Its own elapsed time rather than the sleep below, so a slow
+            // round drives the car further instead of slowing it down.
+            car.advance(fed.elapsed().as_micros() as u64);
+            fed = std::time::Instant::now();
+            super::feed_gauges(link.as_mut(), &car).map_err(|e| e.to_string())?;
+            // Once a second, what is actually going down the link -- so a
+            // reading that looks wrong on the glass can be compared against
+            // what was sent rather than guessed at.
+            sent += 1;
+            if sent % 25 == 0 {
+                println!(
+                    "    sending: kmh={:.1} rpm={:.0} gear={} tps={:.0}",
+                    car.kmh, car.rpm, car.gear, car.throttle
+                );
+            }
+        }
+        // Twenty-five a second while driving, which is what the window sends;
+        // ten otherwise, which is as often as the counters are worth reading.
+        std::thread::sleep(std::time::Duration::from_millis(if driving {
+            40
+        } else {
+            100
+        }));
     }
     if view.latest().is_none() {
         return Err("the car never said anything".into());
