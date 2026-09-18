@@ -319,7 +319,40 @@ fn arc<S: Surface + ?Sized>(
             fill
         };
         let a = a0.saturating_add(i.saturating_mul(step.saturating_add(gap)));
-        super::aa::arc(surface, clip, c, inner, outer, a, step, colour, antialias);
+        // Clipped to the wedge this segment can actually reach, not to the
+        // whole damaged box.
+        //
+        // `aa::arc` scans every row of the clip it is given and tests every
+        // pixel in it, which is right for one ring covering that box and
+        // thirty times too much work for thirty segments that each cover a
+        // thirtieth of it. A dial cut into thirty was costing thirty full
+        // rasterisations of the same rectangle, and a scene with three such
+        // dials paid it ninety times: a 180x30 box under them took 93 ms,
+        // against about a millisecond of real work.
+        //
+        // Grown by two before the intersection because an antialiased edge is
+        // shaded from samples a pixel either side of the geometry, and a
+        // bound that fits the wedge exactly would cut that blending off.
+        let bounds = crate::geom::sector_bounds(
+            c.0 as i32,
+            c.1 as i32,
+            inner as i32,
+            // Rounded outwards by hand: `f32::ceil` is std, and a radius a
+            // pixel too large only widens a bound that is already padded.
+            outer as i32 + 1,
+            a,
+            a.saturating_add(step),
+        );
+        let reach = Rect::new(
+            bounds.left() - 4,
+            bounds.top() - 4,
+            bounds.size.w + 8,
+            bounds.size.h + 8,
+        );
+        let Some(seg_clip) = clip.intersection(reach) else {
+            continue;
+        };
+        super::aa::arc(surface, seg_clip, c, inner, outer, a, step, colour, antialias);
     }
 }
 
@@ -2011,6 +2044,82 @@ mod widget_tests {
         assert_eq!(pixels_of(&s, [75, 255, 0]), 0, "the mark wrapped round");
     }
 
+    #[test]
+    fn clipping_a_segmented_ring_paints_what_the_whole_one_would() {
+        // Every segment is now rasterised against its own wedge rather than
+        // against the whole damaged box, because scanning the full box once
+        // per segment made a thirty-segment dial cost thirty times what it
+        // needed to. That is only a saving if it is invisible: inside any
+        // clip, the picture has to be the one the unclipped draw would have
+        // left, so this paints both and compares every pixel.
+        let full = {
+            let mut s = surf64();
+            ring(&mut s, 0.62, 30, Some(Color::rgb(255, 0, 0)), Lights::Bar);
+            s
+        };
+        // A band across the middle, and a corner the ring barely reaches.
+        for clip in [Rect::new(0, 26, 64, 12), Rect::new(4, 4, 20, 20)] {
+            let mut part = surf64();
+            let (i, a, f) = (
+                crate::asset::ImageTable::new(),
+                crate::asset::AnimTable::new(),
+                crate::font::default_font(),
+            );
+            draw_kind(
+                &mut part,
+                &Kind::Arc {
+                    start: 0,
+                    end: 360,
+                    value: 0.62,
+                    thickness: 10,
+                    fill: Color::WHITE,
+                    track: Color::rgb(0, 0, 255),
+                    zones: alloc::vec::Vec::new(),
+                    segments: 30,
+                    gap: 6,
+                    cursor: Some(Color::rgb(255, 0, 0)),
+                    cursor_size: 0,
+                    lights: Lights::Bar,
+                },
+                Rect::new(0, 0, 60, 60),
+                clip,
+                Resources {
+                    images: &i,
+                    anims: &a,
+                    font: &f,
+                    menus: &[],
+                },
+                // The same flag `draw64` uses for `full`, or the comparison
+                // is between antialiasing and not, which is not what this is
+                // checking.
+                false,
+            );
+            for y in clip.top()..clip.bottom() {
+                for x in clip.left()..clip.right() {
+                    let (px, py) = (x as usize, y as usize);
+                    let o = py * part.stride() + px * 4;
+                    assert_eq!(
+                        part.pixels()[o..o + 4],
+                        full.pixels()[o..o + 4],
+                        "{x},{y} differs inside {clip:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_segmented_ring_still_paints_every_pixel_it_used_to() {
+        // Each segment is rasterised against its own wedge rather than the
+        // whole clip, which is thirty times less work and has to be exactly
+        // as many pixels. A bound drawn a shade too tight would lose the
+        // outer rim of every segment -- a loss that reads as a dial gone dim
+        // rather than as an obvious fault, so it is pinned by count here
+        // instead of being left to the eye.
+        let mut s = surf64();
+        ring(&mut s, 0.62, 30, Some(Color::rgb(255, 0, 0)), Lights::Bar);
+        assert_eq!(count64(&s), 789, "the segmented ring changed shape");
+    }
     #[test]
     fn a_segmented_ring_leaves_gaps_a_smooth_one_does_not() {
         // The point of the segments: a solid arc says "about this much", a
