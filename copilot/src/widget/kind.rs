@@ -928,8 +928,26 @@ impl Kind {
                 start,
                 end,
                 thickness,
+                segments,
                 ..
             } => {
+                // A ring cut into segments only looks different when a
+                // different number of them is lit, so a change within one
+                // repaints pixels that are already right. Snapping both ends
+                // to their segment is what stops a value that never quite
+                // holds still -- a mixture, a pressure -- repainting a wedge
+                // of antialiased ring every frame for no visible reason.
+                let (old, new) = if segments > 0 {
+                    // Truncating rather than `floor`: this crate is no_std,
+                    // and the values are already clamped to 0..=1.
+                    let snap = |v: f32| (v * segments as f32) as u32 as f32 / segments as f32;
+                    (snap(old), snap(new))
+                } else {
+                    (old, new)
+                };
+                if old == new {
+                    return 0;
+                }
                 let a0 = to_brad(start);
                 let sweep = to_brad(end).saturating_sub(a0);
                 let angle = |v: f32| a0.saturating_add((sweep as f32 * v) as i32);

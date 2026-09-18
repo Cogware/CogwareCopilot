@@ -1274,3 +1274,36 @@ fn a_display_hands_its_whole_loom_over_in_one_frame() {
     }
     assert!(cogware_can::indicators::get(Indicator::TurnLeft));
 }
+
+/// A segmented ring only looks different when a different count is lit.
+///
+/// A mixture or a pressure never quite holds still, and repainting a wedge of
+/// antialiased ring for a change nobody can see is what put a gauge showing
+/// one down to a few frames a second.
+#[test]
+fn a_segmented_arc_does_not_repaint_within_one_segment() {
+    use copilot::widget::{Kind, MAX_READING_RECTS};
+    use copilot::Rect;
+
+    let arc = Kind::Arc {
+        start: 225,
+        end: 495,
+        value: 0.0,
+        thickness: 16,
+        fill: copilot::Color::rgba(0, 200, 57, 255),
+        track: copilot::Color::rgba(0, 62, 11, 255),
+        segments: 30,
+        gap: 2,
+        cursor: None,
+        lights: Default::default(),
+        zones: Default::default(),
+        cursor_size: 0,
+    };
+    let at = Rect::new(0, 0, 480, 480);
+    let mut rects = [Rect::ZERO; MAX_READING_RECTS];
+
+    // Both ends inside the same thirtieth: nothing to paint.
+    assert_eq!(arc.reading_damage(at, 0.501, 0.515, &mut rects), 0);
+    // Across the boundary into the next one: something to paint.
+    assert!(arc.reading_damage(at, 0.51, 0.55, &mut rects) > 0);
+}

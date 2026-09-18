@@ -660,14 +660,14 @@ pub(crate) fn pins(val: &Value) -> Result<Pins, PinError> {
         }
     }
 
-    let (sweep, sweep_step_us) = sweep(val, count)?;
+    let sweep = sweep(val, count)?;
 
     Ok(Pins {
         count,
         pins,
         debounce_us,
         sweep,
-        sweep_step_us,
+        sweep_step_us: SWEEP_STEP_US,
         settled: 0,
         pending: 0,
         since_us: 0,
@@ -680,36 +680,28 @@ pub(crate) fn pins(val: &Value) -> Result<Pins, PinError> {
 /// The order is the file's, not the pin numbering's, because it is a wave
 /// somebody watches: what matters is the bulbs lighting in the order they sit
 /// in the binnacle, whatever pins they happen to land on.
-fn sweep(val: &Value, count: u8) -> Result<(Vec<u8>, u64), PinError> {
+///
+/// Just the pins. How long each is held is [`SWEEP_STEP_US`] and not the
+/// rig's to set: nobody asked to tune it, and the key that carried it put a
+/// short string in this function that LLVM's Xtensa backend could not select,
+/// which stopped the ESP32 nodes building at all.
+fn sweep(val: &Value, count: u8) -> Result<Vec<u8>, PinError> {
     let Some(block) = val.get("boot_sweep") else {
-        return Ok((Vec::new(), SWEEP_STEP_US));
+        return Ok(Vec::new());
     };
     if matches!(block, Value::Null) {
-        return Ok((Vec::new(), SWEEP_STEP_US));
+        return Ok(Vec::new());
     }
-
-    let step_us = match block.get("step_ms") {
-        None | Some(Value::Null) => SWEEP_STEP_US,
-        Some(v) => {
-            let ms = v.as_i64().ok_or(PinError::BadField { field: "step_ms" })?;
-            u64::try_from(ms)
-                .map_err(|_| PinError::BadField { field: "step_ms" })?
-                .saturating_mul(1_000)
-        }
-    };
-
     let mut order = Vec::new();
-    if let Some(list) = block.get("pins") {
-        for entry in list.as_array().ok_or(PinError::BadList)? {
-            let n = entry.as_i64().unwrap_or(-1);
-            let pin = u8::try_from(n)
-                .ok()
-                .filter(|p| *p >= 1 && *p <= count)
-                .ok_or(PinError::BadPin(n))?;
-            order.push(pin);
-        }
+    for entry in block.as_array().ok_or(PinError::BadList)? {
+        let n = entry.as_i64().unwrap_or(-1);
+        let pin = u8::try_from(n)
+            .ok()
+            .filter(|p| *p >= 1 && *p <= count)
+            .ok_or(PinError::BadPin(n))?;
+        order.push(pin);
     }
-    Ok((order, step_us))
+    Ok(order)
 }
 
 /// Read one `pins` entry against the display's pin count.
