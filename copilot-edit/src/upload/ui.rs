@@ -207,6 +207,7 @@ impl Monitor {
                 }
                 ui.separator();
                 gauges(ui, watch, &mut self.all_gauges);
+                Self::nodes(ui, watch);
             }
             None => {
                 ui.spinner();
@@ -218,6 +219,46 @@ impl Monitor {
             self.watching = None;
         }
     }
+
+/// What each display says about its own drawing.
+///
+/// These numbers used to be painted into a corner of each screen, where
+/// every window of them cost a repaint of their own and the glass showed
+/// workshop diagnostics to the driver. The bus carries them to the master
+/// and the master here, which is where somebody acts on them.
+fn nodes(ui: &mut egui::Ui, watch: &Watch) {
+    let health = watch.health();
+    if health.is_empty() {
+        return;
+    }
+    ui.separator();
+    ui.label("nodes");
+    egui::Grid::new("nodes").num_columns(5).show(ui, |ui| {
+        ui.label("node");
+        ui.label("fps");
+        ui.label("compose");
+        ui.label("pixels");
+        ui.label("rects");
+        ui.end_row();
+        for (node, h, _at) in health {
+            ui.label(format!("0x{node:02X}"));
+            ui.label(h.fps.to_string());
+            ui.label(format!("{} us", h.compose_us));
+            ui.label(h.painted.to_string());
+            ui.label(h.rects.to_string());
+            ui.end_row();
+        }
+    });
+    // A node that has stopped reporting keeps its last line, so the age of
+    // the stalest one is what says whether these are live numbers or a
+    // eulogy.
+    if let Some((_, _, oldest)) = health.iter().min_by_key(|(_, _, at)| *at) {
+        let age = oldest.elapsed();
+        if age > std::time::Duration::from_secs(5) {
+            ui.small(format!("oldest report {} s ago", age.as_secs()));
+        }
+    }
+}
 
     /// Where the master is told which network to join.
     ///

@@ -14,7 +14,8 @@
 
 use std::time::{Duration, Instant};
 
-use cogware_can::wire::{self, Readings, Sample, Status, KIND_PING, KIND_READINGS, KIND_STATUS};
+use cogware_can::bus::Health;
+use cogware_can::wire::{self, Readings, Sample, Status, KIND_HEALTH, KIND_PING, KIND_READINGS, KIND_STATUS};
 
 use super::{Error, Transport};
 
@@ -61,6 +62,13 @@ pub struct Watch {
     /// hide exactly the fault this is for.
     gauges: Vec<Sample>,
     gauges_at: Option<Instant>,
+    /// What each node last said about its own drawing, by node id.
+    ///
+    /// Replaced per node as reports arrive, and never aged out: a node that
+    /// has gone quiet is worth showing with its last numbers and a stale
+    /// mark, not worth forgetting, because "no report" and "node absent"
+    /// are different faults and only the second should erase a line.
+    health: Vec<(u8, Health, Instant)>,
     asked: Instant,
     incoming: Vec<u8>,
     decoder: wire::Decoder,
@@ -82,6 +90,7 @@ impl Watch {
             gauges_at: None,
             pending: Vec::new(),
             building: false,
+            health: Vec::new(),
             next_part: 0,
             // Far enough back that the first step asks at once.
             asked: Instant::now() - ASK_EVERY,
@@ -162,6 +171,13 @@ impl Watch {
         self.at.is_some_and(|at| at.elapsed() > QUIET_FOR)
     }
 
+    /// What each node has last reported about its own drawing, oldest
+    /// report first, with when it arrived.
+    #[must_use]
+    pub fn health(&self) -> &[(u8, Health, Instant)] {
+        &self.health
+    }
+
     /// Take whatever has arrived, and ask again if it is time.
     pub fn step(&mut self, link: &mut dyn Transport) -> Result<(), Error> {
         link.poll(&mut self.incoming)?;
@@ -179,6 +195,17 @@ impl Watch {
                     }
                 }
                 KIND_READINGS => self.part(len),
+                KIND_HEALTH => {
+                    let payload = &self.decoder.payload()[..len];
+                    if let (Some(&node), Some(health)) =
+                        (payload.first(), Health::decode(payload.get(1..).unwrap_or(&[])))
+                    {
+                        match self.health.iter_mut().find(|(n, _, _)| *n == node) {
+                            Some(slot) => *slot = (node, health, Instant::now()),
+                            None => self.health.push((node, health, Instant::now())),
+                        }
+                    }
+                }
                 // Reports go past here too while a push is running on the
                 // same link; they belong to the push, not to this view.
                 _ => {}
