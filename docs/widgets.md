@@ -111,7 +111,7 @@ a tachometer with no range is pinned full from one rev per minute. `label` and
 `sevenseg` take it as text, formatted to `decimals` places and space-padded on
 the left to `pad` characters, so a three-cell speedo reads `  7` rather than
 `7  `; there `min` and `max` are optional and only describe the span the
-editor's dummy values sweep.
+editor's preview values sweep.
 
 `unit` is optional. Without it the reading is in the gauge's own unit (kPa,
 °C, km/h, V ...); with it the reading is converted first, and it has to be a
@@ -330,7 +330,7 @@ marker takes the band's own colour, which is a marker nobody can see -- and the
 redline is exactly where knowing the reading matters most. With one, both
 survive: the band still says the reading is in the redline and the marker still
 says where in it. Usually the same hue a shade or two brighter, which is what
-the editor's **mark** box fills in when it is ticked.
+the editor's **Marker colour > Use a separate colour** control supplies when enabled.
 
 `warn`, `warn_fill`, `danger` and `danger_fill` are the two-band shorthand and
 still mean exactly what they did, so no scene written before this needs an

@@ -13,13 +13,100 @@ cargo run -p copilot-edit -- examples/z31.rig          # edit a car's three scre
 cargo run -p copilot-edit -- examples/touch.rig        # pages, tell-tales and the pins behind them
 ```
 
+## Editing a scene
+
+The top rows separate document commands, canvas settings and preview playback.
+Use **Open**, **Save**, **Undo** and **Redo** directly, or the menus for the rest.
+**Add widget** groups readable widget names by purpose; the scene format keeps
+its existing identifiers. Select a widget on the canvas or in the tree, then
+use **Widget properties** to edit it. Controls are grouped with units, searchable
+data sources and visible validation. Touch actions use **Apply touch action**
+and **Revert changes** so incomplete typing does not change the scene.
+**Scene source** edits the same document.
+
+- **File > New scene**, **Open scene or rig** and **Examples** ask before
+  discarding unsaved scenes, including other displays in a rig. **Save all scenes**
+  saves those documents together and reports any files that could not be saved.
+  In a rig, **Export scene copy** saves another copy without changing the file
+  referenced by the rig; it does not copy external assets.
+- **Fit scene** restores the whole canvas view. **100%** uses one screen point
+  per scene pixel. **Snap to edges** and **Grid** control placement; hold Ctrl
+  while dragging to bypass snapping.
+- **Preview** controls simulated or recorded readings without modifying the
+  document. **Playback options** contains log selection, timing and sweep speed.
+  **Send simulated readings** is a separate, explicit choice that writes values
+  to a connected controller; uploading a scene is a different operation.
+- **View > Interface size** enlarges text and controls without changing the
+  scene resolution. **Help > Editor guide and shortcuts**, or F1, explains the
+  workflows and keyboard shortcuts.
+
+Invalid source is labelled clearly and disables widget edits against an old
+preview. Repair it in **Scene source** before saving or uploading.
+**File > Format source** asks before removing comments, and Ctrl+Z restores
+the original text.
+
+## Engine simulation
+
+Enable **Use preview values**, then **Play drive**. **Playback options > Generic
+engine** is the default source, with road driving, idle, acceleration and overrun
+scenarios. **Cold engine on restart** starts at ambient temperature; otherwise
+the engine begins warm. **Restart drive** resets the simulation, including
+temperatures and cumulative fuel/distance. Disabling preview values or stopping
+playback pauses its clock.
+
+The model fills every supported engine/vehicle gauge, including gauges used
+only by GPIO outputs. RPM, road speed, gearing, throttle, manifold pressure,
+fuelling, ignition, temperatures, VVT and exhaust readings share a common engine
+state. Measured AFR has sensor lag, mixture variation and transient error rather
+than copying target AFR. This is a generic petrol-engine demonstration for
+dashboard design, not an ECU calibration or diagnostic prediction.
+
+**Fill preview values** takes a static snapshot and stops playback/sweeping.
+It changes neither scene text nor authored values. **All generated readings**
+in Playback options shows the entire catalogue, even values not bound to the
+current scene, with a name filter and clear **Simulated**, **Recorded** or
+**Nominal demo value** labels. Unsupported equipment and diagnostic counters
+use explicit nominal defaults instead of arbitrary animation. Indicator lights
+remain manual switches; the simulator never generates a protocol heartbeat.
+
+Choose **Sample drive (US06)** or **Open driving log...** to replay recorded
+data. Recorded values remain authoritative, and recorded primary inputs such
+as speed/RPM/load condition the missing simulated channels. Seeking or looping
+restarts generated transients; generated values are not recovered measurements.
+The command-line `--watch --drive` path uses the same model to fill its selected
+log (US06 unless `--log` is supplied). Transmission remains an explicit
+**Send simulated readings** choice in the editor.
+
+## Editor connections
+
+Open **File > Connections** (or **Connections** in the status bar).
+For Bluetooth, choose **Find devices**, select the controller by name and
+address, then **Connect**. Discovery and connection run in the background;
+progress is shown and either can be cancelled without stopping the editor.
+**Controller Wi-Fi** uses the controller's access point; **Local network**
+uses an address on a network the computer and controller already share.
+
+The connection window shows live readings. Closing it leaves the connection
+open; **Disconnect** explicitly ends it. **Configure controller Wi-Fi** sends
+network settings through the existing Bluetooth connection, without opening a
+second one. The protocol does not acknowledge saving those settings.
+
+**File > Upload to display** sends the open scene or rig definition. Disconnect
+the live connection first, choose the controller, target display and mode, then
+upload. The active display and mode initialise the destination; rigs offer names
+rather than only numeric addresses. Upload defaults to **Current scene**; choose
+**Rig definition** explicitly to send the rig without its scene files or assets.
+Progress follows the
+display's acknowledgement; cancelling waits for the controller to release the
+transfer and reports if that acknowledgement does not arrive.
+
 ## The crates
 
 | Crate | | |
 | --- | --- | --- |
 | `copilot` | `#![no_std]` + `alloc` | The whole toolkit. **One dependency** -- [`cogware-can`](https://codeberg.org/Cogware/CogwareCan), the gauge spec a scene binds to -- and it builds for `aarch64-unknown-none`. |
 | `copilot-sim` | std | A window that renders a scene and reloads it when the file changes. |
-| `copilot-edit` | std | Visual editor: live preview, outliner, drag to move, dummy values. |
+| `copilot-edit` | std | Visual editor: live preview, outliner, drag to move, preview values. |
 | `fontconv` | std, host only | Converts a TTF into the bitmap atlas `copilot::font` reads. |
 
 Nothing flows the other way. A bare-metal consumer links `copilot` and pays for
@@ -123,6 +210,7 @@ A display can also say what its spare pins are wired to:
     { "pin": 3, "indicator": "HIGH_BEAM", "active": "low", "pull": "up" },
     { "pin": 5, "action": "menu", "menu": "display", "button": "centre" },
     { "pin": 6, "dir": "out", "indicator": "SHIFT_LIGHT" },
+    { "pin": 7, "dir": "out", "gauge": "RPM", "above": 5000 },
   ],
   "scenes": { /* ... */ } }
 ```
@@ -134,13 +222,41 @@ endpoints it configures the port from. An input does **not** light its own
 lamp: it reports the change with `bus::BusView::report_lamp`, the master folds
 the bit into the real `INDICATORS` frame, and the lamp comes back on the bus —
 on this screen and every other one at once. `Pins::lamp_states` hands the whole
-loom over in one frame after a boot or a bus drop. The editor's **Pins** button edits
-the lot, with a picker for all sixty-four tell-tales.
+loom over in one frame after a boot or a bus drop. The editor's **GPIO pins** button edits
+the lot, with a picker for all sixty-four tell-tales. Its logical pin numbers
+are not physical connector numbers. Drafts require review before saving, and
+the dialog protects them when changing pins or displays or closing. Saving
+updates the rig file, not connected hardware; these changes are separate from
+scene undo.
+
+For a value-driven output, choose **Use as > Value threshold** (which selects
+Output), set the gauge, comparison and threshold, then review and save. For example,
+**RPM > 5000** commands HIGH above 5000 and LOW at or below it. Thresholds use the
+gauge's own unit shown beside the value, not a widget's converted or scaled
+display value. The rig accepts `above`, `at_least`, `below` or `at_most`, with
+exactly one comparison per output and no simultaneous indicator or button action.
+A missing gauge reading commands LOW; the latest received reading remains in use
+until the bus layer updates or clears it.
+
+The GPIO preview is one compact row of numbered lights. Hover for the wire label,
+mapping and state; click a light to configure its pin. Scroll horizontally for
+more pins rather than wrapping the labels. **Preview values** includes gauges
+and indicators used only by GPIO, even if no widget displays them. Enable
+**Use preview values** to try a threshold; sweeping and drive playback use the
+same comparison as the runtime. Green means an output command is on, amber an
+input indicator is on, and a hollow light means no preview state is available.
+The strip never reads or drives physical pins.
+
+Physical outputs require firmware built with this GPIO runtime, subscribing to
+`Pins::wanted()` and applying `Pins::outputs()`. Uploading a rig does not update
+firmware. HIGH/LOW here are output commands; physical pin assignment, electrical
+inversion and driver circuitry remain the board's responsibility.
 
 The mode names are yours. Nothing in the format or the code knows "sport"
 from "rockcrawl" — a mode is whatever the car needs one for, and the editor's
-Modes dialog (the `+` beside the tabs) adds, renames and removes them,
-writing a scene file per display as it goes. Every display names a scene for
+**Manage modes** dialog (beside the mode tabs) adds, renames and removes them,
+with an explicit review before a file-changing operation. Adding a mode
+creates a scene file per display; removing one retains its scene files. Every display names a scene for
 every mode: a mode with no scene is an error rather than a fallback, because
 a car in track mode with a blank gauge is the failure the file exists to rule
 out. Switching modes at speed is CogwareCan's job — this crate only makes the

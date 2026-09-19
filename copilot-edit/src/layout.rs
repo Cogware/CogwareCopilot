@@ -76,7 +76,7 @@ impl View {
 /// it is the glass that clips -- so this is the preview telling the truth
 /// about what will be seen rather than about what is drawn.
 pub(crate) fn mask_round(ui: &egui::Ui, rect: egui::Rect) {
-    let painter = ui.painter().with_clip_rect(rect);
+    let painter = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
     let r = rect.width().min(rect.height()) / 2.0;
     // From the circle out to past the corner: the corner is r√2 away, and a
     // stroke straddles its radius, so a width of r centred at 1.5r covers
@@ -92,7 +92,7 @@ pub(crate) fn mask_round(ui: &egui::Ui, rect: egui::Rect) {
 impl App {
     /// The sizes of every display in rig order, or just the scene's own.
     pub(crate) fn display_sizes(&self) -> Vec<(u32, u32)> {
-        let mine = self.preview.scene_size();
+        let mine = display_size(&self.preview);
         let Some(rig) = &self.rig else {
             return vec![mine];
         };
@@ -103,7 +103,7 @@ impl App {
                 if i == rig.active {
                     mine
                 } else {
-                    d.preview.scene_size()
+                    display_size(&d.preview)
                 }
             })
             .collect()
@@ -124,6 +124,7 @@ impl App {
         now_us: u64,
         delta_us: u64,
     ) -> Option<usize> {
+        let interactive = self.curve.is_none() && !self.document_blocked();
         let rig = self.rig.as_mut()?;
         let driver = &self.driver;
         let mut clicked = None;
@@ -134,7 +135,7 @@ impl App {
             let Some(&offset) = row.offsets.get(i) else {
                 continue;
             };
-            let size = doc.preview.scene_size();
+            let size = display_size(&doc.preview);
             let here = view.shifted(offset);
             let (sw, sh) = here.shown(size);
             let placed = egui::Rect::from_min_size(
@@ -171,30 +172,77 @@ impl App {
             }
 
             if let Some(texture) = doc.texture.as_ref().map(|t| t.id()) {
-                let resp = ui.put(
-                    placed,
-                    egui::Image::new((texture, egui::vec2(sw, sh))).sense(egui::Sense::click()),
-                );
+                ui.put(placed, egui::Image::new((texture, egui::vec2(sw, sh))));
                 if doc.preview.shape == Shape::Round {
                     mask_round(ui, placed);
                 }
-                let name = &rig.rig.displays[i].name;
-                let node = rig.rig.displays[i].node;
-                let resp =
-                    resp.on_hover_text(format!("{name} · node 0x{node:02X}. Click to edit."));
-                if resp.clicked() {
-                    clicked = Some(i);
-                }
+            } else {
+                ui.painter()
+                    .rect_filled(placed, 0.0, ui.visuals().faint_bg_color);
             }
-            // A display that did not load says so where it would have been.
-            if let Some(e) = &doc.preview.error {
-                ui.painter().text(
-                    placed.center(),
-                    egui::Align2::CENTER_CENTER,
-                    e,
-                    egui::FontId::proportional(13.0),
-                    egui::Color32::RED,
+            let display = &rig.rig.displays[i];
+            let action = if !interactive {
+                "Choose Done before switching displays."
+            } else if doc.preview.error.is_some() {
+                "Click to view the scene source."
+            } else {
+                "Click to edit this display."
+            };
+            let error = doc.preview.error.as_deref().unwrap_or("");
+            let resp = ui
+                .interact(
+                    placed,
+                    ui.id().with(("rig display", i)),
+                    if interactive {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    },
+                )
+                .on_hover_text(format!(
+                    "{} · node 0x{:02X}\n{action}\n{error}",
+                    display.name, display.node
+                ));
+            if interactive && resp.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
+            if interactive && resp.clicked() {
+                clicked = Some(i);
+            }
+            let label = if doc.preview.error.is_some() {
+                format!(
+                    "{} · {}",
+                    display.name,
+                    if doc.preview.tree.is_some() {
+                        "preview out of date"
+                    } else {
+                        "preview unavailable"
+                    }
+                )
+            } else {
+                format!("{} · node 0x{:02X}", display.name, display.node)
+            };
+            let visible = placed.intersect(ui.clip_rect());
+            if visible.width() > 30.0 && visible.height() > 20.0 {
+                let colour = if doc.preview.error.is_some() {
+                    egui::Color32::YELLOW
+                } else {
+                    ACTIVE
+                };
+                let galley = ui.painter().layout(
+                    label,
+                    egui::FontId::proportional(12.0),
+                    colour,
+                    (visible.width() - 12.0).max(1.0),
                 );
+                let origin = visible.min + egui::vec2(6.0, 6.0);
+                let paint = ui.painter_at(visible);
+                paint.rect_filled(
+                    egui::Rect::from_min_size(origin, galley.size()).expand(3.0),
+                    3.0,
+                    egui::Color32::from_black_alpha(210),
+                );
+                paint.galley(origin, galley, colour);
             }
         }
         clicked
@@ -209,9 +257,145 @@ impl App {
     }
 }
 
+fn display_size(preview: &crate::preview::Preview) -> (u32, u32) {
+    if preview.tree.is_some() {
+        preview.scene_size()
+    } else {
+        // A failed scene still needs a visible, clickable place in the rig,
+        // rather than the renderer's one-pixel uninitialised surface.
+        (320, 240)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rig_app(broken: bool) -> App {
+        let scene = r#"{"width":80,"height":80,"root":{"type":"line","rect":[0,0,80,80],"name":"curve","points":[[0,0],[1,1]]}}"#;
+        let mut a = crate::tests::app(scene, "curve");
+        let mut parked = crate::preview::Preview::new();
+        if broken {
+            parked.error = Some("Scene file could not be read".into());
+        } else {
+            parked.load(scene, std::path::Path::new("."));
+        }
+        let doc = |preview| crate::rig::Doc {
+            path: None,
+            text: scene.into(),
+            dirty: false,
+            preview,
+            undo: Vec::new(),
+            redo: Vec::new(),
+            texture: None,
+        };
+        a.rig = Some(crate::rig::RigSession {
+            rig: copilot::rig::parse(
+                r#"{"modes":["normal"],"displays":[
+              {"name":"one","node":1,"scenes":{"normal":"one.scene"}},
+              {"name":"two","node":2,"scenes":{"normal":"two.scene"}}]}"#,
+            )
+            .unwrap(),
+            text: String::new(),
+            path: "test.rig".into(),
+            mode: 0,
+            active: 0,
+            docs: vec![doc(crate::preview::Preview::new()), doc(parked)],
+        });
+        a
+    }
+
+    fn others_frame(a: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> Option<usize> {
+        let mut clicked = None;
+        let row = row(&a.display_sizes());
+        let _ = ctx.run(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(700.0, 500.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default().show(ctx, |ui| {
+                    clicked = a.draw_others(
+                        ui,
+                        ctx,
+                        &View {
+                            origin: (20.0, 100.0),
+                            scale: 1.0,
+                        },
+                        &row,
+                        0,
+                        0,
+                    );
+                });
+            },
+        );
+        clicked
+    }
+
+    #[test]
+    fn a_display_without_a_texture_can_be_clicked_to_repair_it() {
+        let mut a = rig_app(true);
+        let ctx = egui::Context::default();
+        assert_eq!(a.display_sizes(), vec![(80, 80), (320, 240)]);
+        let _ = others_frame(&mut a, &ctx, vec![]);
+        let pos = egui::pos2(200.0, 180.0);
+        let mut clicked = None;
+        for pressed in [true, false] {
+            clicked = others_frame(
+                &mut a,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            )
+            .or(clicked);
+        }
+        assert_eq!(clicked, Some(1));
+    }
+
+    #[test]
+    fn other_displays_cannot_steal_a_curve_edit() {
+        let mut a = rig_app(false);
+        a.start_curve(a.selected.unwrap(), crate::curve::Shape::Points, "points");
+        let ctx = egui::Context::default();
+        let _ = others_frame(&mut a, &ctx, vec![]);
+        let pos = egui::pos2(200.0, 140.0);
+        for pressed in [true, false] {
+            assert_eq!(
+                others_frame(
+                    &mut a,
+                    &ctx,
+                    vec![
+                        egui::Event::PointerMoved(pos),
+                        egui::Event::PointerButton {
+                            pos,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE
+                        },
+                    ]
+                ),
+                None
+            );
+        }
+        assert_eq!(a.active_display(), Some(0));
+    }
+
+    #[test]
+    fn a_failed_display_has_a_reachable_placeholder() {
+        let preview = crate::preview::Preview::new();
+        assert_eq!(display_size(&preview), (320, 240));
+    }
 
     #[test]
     fn a_row_places_displays_left_to_right_with_a_gap_and_centres_them() {

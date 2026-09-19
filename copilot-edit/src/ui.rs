@@ -13,6 +13,9 @@ use copilot::widget::NodeId;
 use crate::canvas::Gesture;
 use crate::{App, COARSE_NUDGE, Pane};
 
+#[cfg(test)]
+mod workflow_tests;
+
 /// The tint behind the selected widget's source.
 ///
 /// The same magenta as the outline on the preview, faint enough to read
@@ -35,9 +38,25 @@ impl App {
     /// the text pane a place to *read* about a widget rather than a place to
     /// go looking for it.
     fn source_pane(&mut self, ui: &mut egui::Ui) {
+        if let Some(error) = &self.preview.error {
+            ui.colored_label(
+                egui::Color32::from_rgb(255, 176, 64),
+                "Scene needs attention",
+            );
+            ui.label("Fix the source below before editing widgets or saving. The preview may show the last valid version.");
+            ui.collapsing("Error details", |ui| {
+                ui.monospace(error);
+            });
+        } else {
+            ui.small(
+                "Edit the scene as text. Changes update the preview; Ctrl+Z undoes your edits.",
+            );
+        }
+        ui.separator();
         let marks: Vec<Range<usize>> = self
             .members()
             .into_iter()
+            .filter(|_| self.preview.error.is_none())
             .filter_map(|id| self.span_of(id))
             .collect();
         let reveal = self.reveal.then(|| marks.first().cloned()).flatten();
@@ -76,6 +95,7 @@ impl App {
                 ui.fonts(|f| f.layout_job(job))
             };
             let out = egui::TextEdit::multiline(&mut self.text)
+                .id(egui::Id::new("scene_source_editor"))
                 .code_editor()
                 .desired_width(f32::INFINITY)
                 .desired_rows(40)
@@ -115,7 +135,7 @@ impl App {
         });
     }
 
-    /// The dummy values: one row per named reading, each with the value it
+    /// The preview values: one row per named reading, each with the value it
     /// holds, the range its sweep covers, and whether it sweeps at all.
     ///
     /// Per reading rather than one sweep for everything, because the
@@ -123,23 +143,33 @@ impl App {
     /// range", and a coolant gauge's range is not a tachometer's. The other
     /// readings can be held still while one is watched.
     fn values_pane(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Dummy values");
+        ui.heading("Preview values");
         ui.label(
             egui::RichText::new(
-                "Preview only. Never written to the file, so sweeping a gauge \
-                 to check its geometry cannot become what ships. Bind a widget \
-                 to a gauge, or name a bar, arc, needle, segbar, led or label, \
-                 and it appears here.",
+                "Not saved in the document. Values stay in the preview unless \
+                 you enable Send simulated readings with a live connection. \
+                 Bind a widget or GPIO output to a gauge, or name a supported widget, \
+                 to control its reading here.",
             )
             .small()
             .weak(),
         );
         ui.separator();
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut self.driver.enabled, "Apply");
+        ui.horizontal_wrapped(|ui| {
+            ui.checkbox(&mut self.driver.enabled, "Use preview values")
+                .on_hover_text(
+                    "Override the document's readings in the preview without editing it.",
+                );
             ui.add_enabled_ui(self.driver.enabled, |ui| {
-                ui.checkbox(&mut self.driver.sweep, "Sweep");
-                ui.label("period");
+                if ui
+                    .checkbox(&mut self.driver.sweep, "Sweep gauges")
+                    .on_hover_text("Move readings through their ranges. Stops drive playback.")
+                    .changed()
+                    && self.driver.sweep
+                {
+                    self.driver.driving = false;
+                }
+                ui.label("Cycle time");
                 ui.add(
                     egui::DragValue::new(&mut self.driver.period_s)
                         .range(0.5..=60.0)
@@ -148,18 +178,27 @@ impl App {
                 )
                 .on_hover_text("Seconds for one trip from min to max and back");
             });
+            if ui.button("Fill preview values").on_hover_text(
+                "Populate all bound gauges and GPIO values from the selected simulator/log. Stops playback; does not send readings."
+            ).clicked() {
+                self.driver.fill_preview_values();
+            }
             if ui
-                .button("Reset to file")
-                .on_hover_text("Every value back to what the scene says")
+                .button("Reset preview values")
+                .on_hover_text(
+                    "Stop playback and restore the values authored in the scene without changing the file.",
+                )
                 .clicked()
             {
+                self.driver.driving = false;
+                self.driver.sweep = false;
                 self.driver.reset();
             }
         });
         let sweeping = self.driver.enabled && self.driver.sweep;
         let sweep = self.driver.sweep_value();
         if sweeping {
-            ui.label(format!("sweep {sweep:.2}"));
+            ui.label(format!("Sweep position: {sweep:.2}"));
         }
         ui.separator();
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -169,16 +208,14 @@ impl App {
                 && d.labels.is_empty()
                 && d.lamps.is_empty()
             {
-                ui.weak("No bound or named widgets to drive.");
+                ui.weak("Bind a widget or GPIO output to a gauge to preview its reading here.");
                 return;
             }
             if !self.driver.lamps.is_empty() {
                 ui.label(
-                    egui::RichText::new(
-                        "Tell-tales. One switch per lamp, not one per bank: the two                          bitfield gauges carry thirty-two lamps each.",
-                    )
-                    .small()
-                    .weak(),
+                    egui::RichText::new("Indicator lights. Each switch controls one lamp.")
+                        .small()
+                        .weak(),
                 );
                 egui::Grid::new("lamps")
                     .num_columns(4)
@@ -197,7 +234,7 @@ impl App {
                     });
                 ui.horizontal(|ui| {
                     if ui
-                        .button("All lit")
+                        .button("All lights on")
                         .on_hover_text("What the bus spec's CheckBulb does at ignition-on")
                         .clicked()
                     {
@@ -205,7 +242,7 @@ impl App {
                             *on = true;
                         }
                     }
-                    if ui.button("All out").clicked() {
+                    if ui.button("All lights off").clicked() {
                         for on in self.driver.lamps.values_mut() {
                             *on = false;
                         }
@@ -219,10 +256,13 @@ impl App {
                 }
             }
             if !self.driver.gauges.is_empty() {
+                if self.driver.enabled && self.driver.driving {
+                    ui.small("Playing source values. Pause Play drive to adjust readings manually.");
+                }
                 ui.label(
                     egui::RichText::new(
                         "Gauges, in the unit the bus carries each in. One slider \
-                         moves every widget bound to it; the range is the widgets' own.",
+                         moves every widget and GPIO condition using it; the range includes their thresholds.",
                     )
                     .small()
                     .weak(),
@@ -253,9 +293,12 @@ impl App {
                                         .fixed_decimals(1)
                                         .suffix(suffix),
                                 );
+                            } else if self.driver.enabled && self.driver.driving {
+                                ui.monospace(format!("{:.2}{suffix}", ch.value));
                             } else {
                                 ui.add(
                                     egui::Slider::new(&mut ch.value, lo..=hi)
+                                        .clamping(egui::SliderClamping::Edits)
                                         .fixed_decimals(1)
                                         .suffix(suffix),
                                 );
@@ -335,24 +378,37 @@ impl App {
     /// Checked first because a focused text field swallows what it is given,
     /// and undo has to work while the caret is in the source pane.
     fn shortcuts(&mut self, ctx: &egui::Context) {
+        if self.document_blocked() {
+            return;
+        }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::F1)) {
+            self.help_open = true;
+        }
+        let source_focused =
+            ctx.memory(|memory| memory.focused() == Some(egui::Id::new("scene_source_editor")));
+        let document_undo = source_focused || !ctx.wants_keyboard_input();
         // Ctrl+Z / Ctrl+Shift+Z, checked before the panels so a text field
         // holding focus does not swallow them.
-        let (want_undo, want_redo) = ctx.input_mut(|i| {
-            (
-                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z),
-                i.consume_key(
-                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
-                    egui::Key::Z,
-                ) | i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y),
-            )
-        });
+        let (want_undo, want_redo) = if document_undo {
+            ctx.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z),
+                    i.consume_key(
+                        egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                        egui::Key::Z,
+                    ) | i.consume_key(egui::Modifiers::COMMAND, egui::Key::Y),
+                )
+            })
+        } else {
+            (false, false)
+        };
         if want_redo {
             self.redo();
         } else if want_undo {
             self.undo();
         }
 
-        let unfocused = ctx.memory(|m| m.focused().is_none());
+        let unfocused = !ctx.wants_keyboard_input() && self.preview.error.is_none();
         if unfocused && ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::A)) {
             self.select_all();
         }
@@ -395,46 +451,62 @@ impl App {
         // Saving is not gated on a selection, and belongs wherever the caret
         // is: losing an edit because a text field had focus is the one thing a
         // save shortcut exists to prevent.
+        if ctx.input_mut(|i| {
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::S,
+            )
+        }) {
+            self.save_as();
+        }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::S)) {
             self.save();
+        }
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
+            self.choose_document();
         }
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::N)) {
             self.new_doc = Some(crate::newdoc::NewDoc::default());
         }
     }
 
-    /// The line along the bottom: what just happened, and what is missing.
-    /// Whether the car is on the other end, in the corner where it is always
-    /// visible.
-    ///
-    /// Three states rather than two: a link that is open but has heard
-    /// nothing looks exactly like a working one until you notice nothing is
-    /// arriving, and that is the case worth seeing.
+    /// Keep connection progress visible even when its window is closed.
     fn link_light(&mut self, ui: &mut egui::Ui) {
-        use crate::upload::ui::LinkState;
-        const GREEN: egui::Color32 = egui::Color32::from_rgb(90, 200, 110);
-        const AMBER: egui::Color32 = egui::Color32::from_rgb(255, 170, 40);
-        const GREY: egui::Color32 = egui::Color32::from_rgb(130, 130, 130);
-
-        let (colour, text) = match self.monitor.link_state() {
-            LinkState::Off => (GREY, "Not connected".to_string()),
-            LinkState::Open { what, heard } => match heard {
-                // Two seconds: the server answers far faster than that, so
-                // anything older means it has stopped rather than is busy.
-                Some(age) if age.as_secs_f32() < 2.0 => (GREEN, format!("Connected to {what}")),
-                Some(age) => (AMBER, format!("{what}, silent for {:.0}s", age.as_secs_f32())),
-                None => (AMBER, format!("{what}, no answer yet")),
-            },
-        };
-        ui.colored_label(colour, "\u{25cf}");
-        if ui.button(text).clicked() {
-            self.monitor.toggle();
+        let activity = self.uploader.activity();
+        let uploading = activity.is_some();
+        let (colour, text) = activity
+            .map(|text| (None, text))
+            .unwrap_or_else(|| link_status(self.monitor.link_state()));
+        if let Some(colour) = colour {
+            ui.colored_label(colour, "\u{25cf}");
+        } else {
+            ui.spinner();
+        }
+        ui.label(text);
+        if ui
+            .button(if uploading {
+                "Upload details..."
+            } else {
+                "Connections…"
+            })
+            .on_hover_text(if uploading {
+                "Show upload progress or cancel the current operation."
+            } else {
+                crate::menu::CONNECTIONS_HINT
+            })
+            .clicked()
+        {
+            if uploading {
+                self.uploader.open(self.uploader.sending_rig());
+            } else {
+                self.monitor.open();
+            }
         }
     }
 
     fn status_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 self.link_light(ui);
                 ui.separator();
                 ui.label(&self.status);
@@ -445,20 +517,26 @@ impl App {
         });
     }
 
-    /// The tabbed pane holding the properties, the source and the dummy
+    /// The tabbed pane holding the properties, the source and the preview
     /// values.
     fn side_pane(&mut self, ctx: &egui::Context) {
         egui::SidePanel::right("side")
             .default_width(460.0)
+            // Capped, because the panel remembers the width its contents
+            // asked for: one overlong row would widen it for good.
+            .width_range(320.0..=620.0)
             .resizable(true)
             .show(ctx, |ui| {
-                if self.curve.is_some() {
+                if self.curve.is_some() || self.document_blocked() {
                     ui.disable();
                 }
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.pane, Pane::Props, "Properties");
-                    ui.selectable_value(&mut self.pane, Pane::Source, "Scene");
-                    ui.selectable_value(&mut self.pane, Pane::Values, "Dummy values");
+                ui.horizontal_wrapped(|ui| {
+                    ui.selectable_value(&mut self.pane, Pane::Props, "Widget properties")
+                        .on_hover_text("Edit the selected widget's appearance and layout.");
+                    ui.selectable_value(&mut self.pane, Pane::Source, "Scene source")
+                        .on_hover_text("Edit the scene's JSON source. Changes update the preview.");
+                    ui.selectable_value(&mut self.pane, Pane::Values, "Preview values")
+                        .on_hover_text("Try gauge readings without changing the document.");
                 });
                 ui.separator();
                 match self.pane {
@@ -475,6 +553,7 @@ impl eframe::App for App {
         let now_us = self.started.elapsed().as_micros() as u64;
         let delta_us = now_us.saturating_sub(self.last_us);
         self.last_us = now_us;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Title(self.document_title()));
         self.driver.tick(delta_us);
 
         // Order matters: the shortcuts run before any panel can take focus,
@@ -497,7 +576,7 @@ impl eframe::App for App {
         self.status_bar(ctx);
         // Drawn before the canvas so a push in flight keeps its frame even
         // while the document underneath is being edited. The text is fetched
-        // only when somebody presses Send.
+        // only when somebody starts an upload.
         {
             let text = self.text.clone();
             let broken = self.preview.error.is_some();
@@ -506,30 +585,32 @@ impl eframe::App for App {
             // board then cannot parse and falls back from -- so which one is
             // going decides which text is fetched, not just which kind.
             let rig_text = self.rig.as_ref().map(|r| r.text.clone());
-            let sending_rig = self.uploader.sending_rig();
             // Sent down the link the monitor already holds, and only while
             // somebody asked for it: this writes the car's gauge table, so it
             // is not something to do quietly in the background.
             // Driving or sweeping, either one: a sweep run only on the
             // preview proves the preview, and what somebody wants proved is
             // that the needle on the glass reaches both ends of its scale.
-            if self.driver.enabled && self.driver.to_car && (self.driver.driving || self.driver.sweep)
+            if self.driver.enabled
+                && self.driver.to_car
+                && (self.driver.driving || self.driver.sweep)
             {
                 self.monitor.feed(&self.driver.readings());
             }
-            self.monitor.show(ctx);
-            self.uploader.show(ctx, move || {
-                if sending_rig {
-                    // Checked the same way a scene is: a rig that will not
-                    // parse is not a rig, and the card holds only one.
-                    let text = rig_text?;
-                    return copilot::rig::parse(&text).ok().map(|_| text.into_bytes());
-                }
-                // The same rule `save` follows: a scene that will not parse
-                // is not a scene, and sending one would put a display in a
-                // state nobody could see to fix.
-                (!broken && !text.is_empty()).then(|| text.into_bytes())
-            });
+            self.monitor.show(ctx, self.uploader.busy());
+            self.uploader
+                .show(ctx, self.monitor.busy(), move |sending_rig| {
+                    if sending_rig {
+                        // Checked the same way a scene is: a rig that will not
+                        // parse is not a rig, and the card holds only one.
+                        let text = rig_text?;
+                        return copilot::rig::parse(&text).ok().map(|_| text.into_bytes());
+                    }
+                    // The same rule `save` follows: a scene that will not parse
+                    // is not a scene, and sending one would put a display in a
+                    // state nobody could see to fix.
+                    (!broken && !text.is_empty()).then(|| text.into_bytes())
+                });
         }
         // Above the canvas and below the toolbar: the loom has to be read
         // against the scene it is driven by, not from a tab away.
@@ -541,14 +622,46 @@ impl eframe::App for App {
         self.reveal = false;
         self.resolution_dialog(ctx);
         self.new_dialog(ctx);
-        self.modes_window(ctx);
-        self.pins_window(ctx);
+        if !self.document_blocked() {
+            self.modes_window(ctx);
+            self.pins_window(ctx);
+        }
         self.switch_prompt(ctx);
         self.canvas(ctx, now_us, delta_us);
+        self.document_prompt(ctx);
+        self.help_window(ctx);
 
         // Animation and sweeping both need a steady repaint; egui is
         // otherwise event-driven and would show a frozen frame.
         ctx.request_repaint();
+    }
+}
+
+/// A pending connection needs a spinner, not the same light as a silent open link.
+fn link_status(state: crate::upload::ui::LinkState) -> (Option<egui::Color32>, String) {
+    use crate::upload::ui::LinkState;
+    const GREEN: egui::Color32 = egui::Color32::from_rgb(90, 200, 110);
+    const AMBER: egui::Color32 = egui::Color32::from_rgb(255, 170, 40);
+    const GREY: egui::Color32 = egui::Color32::from_rgb(130, 130, 130);
+
+    match state {
+        LinkState::Off => (Some(GREY), "Not connected".to_string()),
+        LinkState::Connecting { what } => (None, what),
+        LinkState::Open { what, heard } => match heard {
+            // Two seconds is well beyond the server's normal response time.
+            Some(age) if age.as_secs_f32() < 2.0 => (Some(GREEN), format!("Connected to {what}")),
+            Some(age) => (
+                Some(AMBER),
+                format!(
+                    "Connected to {what} · no response for {:.0}s",
+                    age.as_secs_f32()
+                ),
+            ),
+            None => (
+                Some(AMBER),
+                format!("Connected to {what} · waiting for first response"),
+            ),
+        },
     }
 }
 
@@ -613,6 +726,113 @@ mod tests {
     use super::*;
 
     #[test]
+    fn connecting_status_keeps_progress_text_and_uses_a_spinner() {
+        use crate::upload::ui::LinkState;
+        let progress = "Connecting over Bluetooth…";
+        let (colour, text) = link_status(LinkState::Connecting {
+            what: progress.to_string(),
+        });
+        assert_eq!(colour, None);
+        assert_eq!(text, progress);
+        assert_eq!(link_status(LinkState::Off).1, "Not connected");
+    }
+
+    #[test]
+    fn open_link_status_distinguishes_waiting_fresh_and_stale_responses() {
+        use crate::upload::ui::LinkState;
+        use std::time::Duration;
+        let status = |heard| {
+            link_status(LinkState::Open {
+                what: "Dashboard".to_string(),
+                heard,
+            })
+        };
+        let (waiting_colour, waiting) = status(None);
+        let (fresh_colour, fresh) = status(Some(Duration::from_millis(1999)));
+        let (stale_colour, stale) = status(Some(Duration::from_secs(2)));
+        assert_eq!(
+            waiting,
+            "Connected to Dashboard · waiting for first response"
+        );
+        assert_eq!(fresh, "Connected to Dashboard");
+        assert_eq!(stale, "Connected to Dashboard · no response for 2s");
+        assert!(waiting_colour.is_some());
+        assert!(fresh_colour.is_some());
+        assert_eq!(waiting_colour, stale_colour);
+        assert_ne!(waiting_colour, fresh_colour);
+    }
+
+    #[test]
+    fn preview_sweep_stops_playback_without_enabling_transmission() {
+        fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::FullOutput {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(460.0, 800.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| app.values_pane(ui));
+                },
+            )
+        }
+
+        let ctx = egui::Context::default();
+        let mut app = App::new(None, &[]);
+        app.driver.enabled = true;
+        app.driver.driving = true;
+        app.driver.sweep = false;
+        app.driver.to_car = false;
+        let document = app.text.clone();
+        let output = frame(&mut app, &ctx, Vec::new());
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Sweep gauges" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("the preview pane offers a labelled sweep control");
+        for pressed in [true, false] {
+            let _ = frame(
+                &mut app,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(app.driver.sweep);
+        assert!(!app.driver.driving);
+        assert!(!app.driver.to_car);
+        assert_eq!(app.text, document);
+    }
+
+    #[test]
+    fn toolbar_preserves_the_transmission_choice() {
+        for sending in [false, true] {
+            let ctx = egui::Context::default();
+            let mut app = App::new(None, &[]);
+            app.driver.enabled = true;
+            app.driver.driving = true;
+            app.driver.to_car = sending;
+            let _ = ctx.run(egui::RawInput::default(), |ctx| app.toolbar(ctx));
+            assert_eq!(app.driver.to_car, sending);
+        }
+    }
+
+    #[test]
     fn pieces_cut_exactly_at_the_marks() {
         assert_eq!(
             pieces(10, std::slice::from_ref(&(2..5))),
@@ -646,3 +866,6 @@ mod tests {
         assert_eq!(pieces(0, &[]), vec![]);
     }
 }
+
+#[cfg(test)]
+mod playback_tests;

@@ -14,6 +14,11 @@ use copilot::Color;
 use copilot::input::Axis;
 use copilot::widget::{Align, Kind, VAlign};
 
+/// Consistent, validated controls shared by the property editors.
+pub(crate) mod controls;
+/// Human-readable field labels without changing the scene vocabulary.
+pub(crate) mod presentation;
+
 /// One editable property, named as the scene format names it.
 #[derive(Clone, PartialEq, Debug)]
 pub enum Value {
@@ -68,10 +73,7 @@ impl Value {
                 out.push('"');
                 out
             }
-            // Two decimals: a fraction dragged in a slider is a human's
-            // approximation, and writing seven digits of float noise into a
-            // file people read is how a scene stops being legible.
-            Value::Frac(f) | Value::Ratio(f) => format!("{f:.2}"),
+            Value::Frac(f) | Value::Ratio(f) => f.to_string(),
             Value::Count(n) => n.to_string(),
             Value::Whole(n) => n.to_string(),
             Value::Flag(b) => b.to_string(),
@@ -138,6 +140,34 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("wrap", Value::Flag(*wrap)),
             ("swipe", Value::Flag(*swipe)),
         ],
+        Kind::Menu {
+            menu,
+            color,
+            selected,
+            editing,
+            scale,
+        } => vec![
+            ("menu", Value::Text(menu.clone())),
+            ("color", Value::Color(*color)),
+            ("selected", Value::Color(*selected)),
+            ("editing", Value::Color(*editing)),
+            ("scale", Value::Count(u32::from(*scale))),
+        ],
+        Kind::Fps {
+            text,
+            color,
+            scale,
+            align,
+            valign,
+            suffix,
+        } => vec![
+            ("text", Value::Text(text.clone())),
+            ("suffix", Value::Text(suffix.clone())),
+            ("color", Value::Color(*color)),
+            ("scale", Value::Count(u32::from(*scale))),
+            ("align", Value::Choice(align_word(*align), ALIGNMENTS)),
+            ("valign", Value::Choice(valign_word(*valign), VALIGNMENTS)),
+        ],
         Kind::Frame { color } => vec![("color", Value::Color(*color))],
         Kind::Label {
             text,
@@ -165,7 +195,7 @@ pub fn fields(kind: &Kind) -> Vec<(&'static str, Value)> {
             ("playing", Value::Flag(*playing)),
             // Speed is not a fraction: half is 0.5 and double is 2.0, and
             // clamping it to one would take away the faster half.
-            ("speed", Value::Frac(*speed)),
+            ("speed", Value::Ratio(*speed)),
         ],
         Kind::Bar {
             value,
@@ -407,6 +437,8 @@ mod tests {
 
     /// Every kind the editor offers, by the name the scene format uses.
     const KINDS: &[&str] = &[
+        "menu",
+        "fps",
         "panel",
         "pager",
         "roundrect",
@@ -438,6 +470,7 @@ mod tests {
     /// whether the inspector's name was understood.
     fn doc(kind: &str, set: Option<(&str, String)>) -> String {
         let required: &[(&str, &str)] = match kind {
+            "menu" => &[("menu", "\"display\"")],
             "label" | "sevenseg" => &[("text", "\"x\"")],
             "image" => &[("image", "0")],
             "anim" => &[("anim", "0")],
@@ -571,9 +604,30 @@ mod tests {
     }
 
     #[test]
-    fn a_fraction_is_written_short_enough_to_read() {
-        assert_eq!(Value::Frac(0.123_456_79).to_scene(), "0.12");
-        assert_eq!(Value::Frac(1.0).to_scene(), "1.00");
+    fn playback_speed_is_not_a_fraction() {
+        for speed in [-2.0, 0.0, 0.5, 3.0] {
+            let kind = kind_of(&doc("anim", Some(("speed", speed.to_string()))));
+            assert!(fields(&kind).contains(&("speed", Value::Ratio(speed))));
+        }
+    }
+
+    #[test]
+    fn every_offered_field_has_a_human_label_and_guidance() {
+        for k in KINDS {
+            let kind = kind_of(&doc(k, None));
+            for (name, _) in fields(&kind) {
+                let (label, hint, _) = presentation::field(&kind, name);
+                assert!(!label.is_empty() && !label.contains('_'), "{k}.{name}");
+                assert!(!hint.is_empty(), "{k}.{name}");
+                assert_ne!(hint, "Edit the scene value.", "{k}.{name}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_typed_fraction_keeps_its_precision() {
+        assert_eq!(Value::Frac(0.123_456_79).to_scene(), "0.12345679");
+        assert_eq!(Value::Frac(1.0).to_scene(), "1");
     }
 
     #[test]

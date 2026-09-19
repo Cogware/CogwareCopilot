@@ -22,9 +22,11 @@ mod canvas;
 mod close;
 mod curve;
 mod datalog;
+mod document;
 mod drive;
 mod gpio_strip;
 mod handle;
+mod help;
 mod inspect;
 mod layout;
 mod menu;
@@ -36,16 +38,19 @@ mod outliner;
 mod pins;
 mod pins_ui;
 mod place;
+mod playback_ui;
 mod preview;
 mod rescale;
 mod rig;
 mod select;
 mod shrink;
+mod simulation;
 mod snap;
 mod starter;
+mod toolbar;
 mod touch_ui;
-mod upload;
 mod ui;
+mod upload;
 mod view;
 mod zones_ui;
 
@@ -100,6 +105,17 @@ fn main() -> eframe::Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     // A push with no window. The editor is where this code lives and where a
     // person uses it; a terminal is how it gets tested and scripted.
+    // Reads a file and says what is in it; touches no link, so it works with
+    // the car switched off.
+    if args.iter().any(|a| a == "--check-log") {
+        return match upload::cli::check_log(&args) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("check-log: {e}");
+                std::process::exit(1);
+            }
+        };
+    }
     if args.iter().any(|a| a == "--watch") {
         return match upload::cli::watch(&args) {
             Ok(()) => Ok(()),
@@ -184,6 +200,8 @@ struct App {
     path: Option<PathBuf>,
     text: String,
     dirty: bool,
+    /// Separate temporary property drafts when documents reuse a path or node ID.
+    document_epoch: u64,
     preview: Preview,
     driver: Driver,
     texture: Option<egui::TextureHandle>,
@@ -222,6 +240,10 @@ struct App {
     /// The mode a switch is waiting on an answer about, while the prompt
     /// asking what to do with the unsaved work is up.
     switching: Option<usize>,
+    /// A document replacement awaiting Save, Discard or Cancel.
+    pending_action: Option<document::Action>,
+    /// Whether the built-in editor guide is open.
+    help_open: bool,
     /// The curve being shaped on the preview, while one is.
     curve: Option<curve::CurveEdit>,
     /// Whether the unsaved-changes prompt is up.
@@ -280,6 +302,7 @@ impl App {
             monitor: upload::ui::Monitor::default(),
             text: String::new(),
             dirty: false,
+            document_epoch: 0,
             preview: Preview::new(),
             driver: Driver::default(),
             texture: None,
@@ -298,6 +321,8 @@ impl App {
             modes: None,
             pins_dialog: None,
             switching: None,
+            pending_action: None,
+            help_open: false,
             curve: None,
             asking_close: false,
             closing: false,
@@ -357,16 +382,8 @@ impl App {
     fn reload(&mut self) {
         let base = self.base();
         self.preview.load(&self.text, &base);
+        self.sync_driver();
         if let Some(t) = &self.preview.tree {
-            // The other displays' gauges too, so a slider for a gauge only
-            // they show still exists, and one they share stays one slider.
-            let others: Vec<(&Tree, &[copilot::scene::Binding])> = self
-                .rig
-                .iter()
-                .flat_map(|r| r.docs.iter())
-                .filter_map(|d| Some((d.preview.tree.as_ref()?, d.preview.bindings.as_slice())))
-                .collect();
-            self.driver.sync(t, &self.preview.bindings, &others);
             // A NodeId that no longer exists would select some other widget,
             // so a shrinking tree drops the selection rather than moving it.
             if self.selected.is_some_and(|id| t.get(id).is_none()) {
@@ -575,9 +592,10 @@ impl App {
 
 /// A widget's name and kind, the way the outliner shows it.
 fn describe_node(node: &Node) -> String {
+    let title = starter::widget_title(kind_name(&node.kind));
     match &node.name {
-        Some(n) => format!("{n}  ({})", kind_name(&node.kind)),
-        None => kind_name(&node.kind).to_string(),
+        Some(n) => format!("{n}  ({title})"),
+        None => title.to_string(),
     }
 }
 

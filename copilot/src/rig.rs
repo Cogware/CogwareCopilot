@@ -103,7 +103,7 @@ pub enum RigError {
 }
 
 /// One screen on the bus.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Display {
     /// What a person calls it: "cluster", "left gauge".
     pub name: String,

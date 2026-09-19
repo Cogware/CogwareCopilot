@@ -1,53 +1,46 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The commands, and the menus that offer them.
-//!
-//! One list of commands, each with a name, so that the menu bar, a right-click
-//! on the preview and a right-click on a row of the outliner all offer the
-//! same things and cannot drift apart. A menu only *chooses* a command;
-//! running it is a separate step. That is what lets a menu be drawn while the
-//! tree it is drawn from is still borrowed, since the tree is replaced by the
-//! command and not by the menu.
+//! Shared commands keep the main menus and context menus consistent.
 
-use crate::{App, Pane, place};
+use crate::{App, Pane, document::Action, place};
 
-/// One thing a menu can ask for.
+/// Connection settings can be inspected without interrupting an active session.
+pub(crate) const CONNECTIONS_HINT: &str =
+    "Open connection settings and live readings without disconnecting an active session.";
+
+/// An operation shared by the menu bar, outliner and canvas.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Command {
-    /// Put the document back one edit.
+    /// Restore the previous edit.
     Undo,
-    /// Redo the edit last undone.
+    /// Reapply the last undone edit.
     Redo,
-    /// Show the properties pane.
+    /// Show the selected widget's properties.
     Properties,
-    /// Copy the selection in beside itself.
+    /// Copy the selected widgets.
     Duplicate,
-    /// Remove the selection.
+    /// Remove the selected widgets.
     Delete,
-    /// Draw the selection one place later, so it sits on top of more.
+    /// Draw the selection one step nearer the front.
     Raise,
-    /// Draw the selection one place earlier.
+    /// Draw the selection one step nearer the back.
     Lower,
-    /// Make the selection a child of the widget above it.
+    /// Nest the selection under its previous sibling.
     Inwards,
-    /// Make the selection a sibling of its parent.
+    /// Move the selection out of its parent.
     Outwards,
-    /// Select the selection's parent.
+    /// Select the containing widget.
     SelectParent,
-    /// Clear the selection.
+    /// Clear selection.
     Deselect,
-    /// Select every sibling of the selection, or every top-level widget.
+    /// Select siblings or top-level widgets.
     SelectAll,
-    /// Add a widget of this kind inside the selection.
+    /// Add the named scene-format widget.
     Add(&'static str),
-    /// Put the selection somewhere exact inside its parent.
+    /// Position or size the selection inside its parent.
     Arrange(place::Placement),
 }
 
-/// The widget kinds the Add menu offers, in the order it offers them.
-///
-/// Grouped by what they are for rather than alphabetically: the boxes, then
-/// the text, then the gauges, then the drawn shapes. Image and animation are
-/// absent because each needs a file the menu cannot ask for.
+/// Widget types that can be created without external assets or a rig menu.
 pub(crate) const KINDS: &[&str] = &[
     "panel",
     "pager",
@@ -70,9 +63,21 @@ pub(crate) const KINDS: &[&str] = &[
 ];
 
 impl App {
-    /// Carry out `cmd` against the current selection.
-    pub(crate) fn run(&mut self, cmd: Command) {
-        match cmd {
+    pub(crate) fn run(&mut self, command: Command) {
+        if self.document_blocked() {
+            self.status = "Finish or cancel the open document dialog before editing.".into();
+            return;
+        }
+        if self.preview.error.is_some()
+            && !matches!(
+                command,
+                Command::Undo | Command::Redo | Command::Properties | Command::Deselect
+            )
+        {
+            self.status = "Fix the errors in Scene source before editing widgets.".into();
+            return;
+        }
+        match command {
             Command::Undo => self.undo(),
             Command::Redo => self.redo(),
             Command::Properties => self.pane = Pane::Props,
@@ -90,479 +95,296 @@ impl App {
         }
     }
 
-    /// The command bar across the top.
-    pub(crate) fn toolbar(&mut self, ctx: &egui::Context) {
-        let mut cmd = None;
-        let mut mode = None;
-        let mut open_modes = None;
-        let mut open_pins = None;
-        let has = self.selected.is_some();
-        let (can_undo, can_redo) = (!self.undo.is_empty(), !self.redo.is_empty());
-        egui::TopBottomPanel::top("bar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                // Menus rather than a row of buttons: the row grew past the
-                // width of a laptop screen, and a command that has fallen off
-                // the end of a toolbar may as well not exist.
-                ui.menu_button("File", |ui| self.file_menu(ui));
-                ui.menu_button("Edit", |ui| {
-                    cmd = cmd.or(edit_menu(ui, has, can_undo, can_redo));
-                });
-                ui.menu_button("Add", |ui| cmd = cmd.or(add_menu(ui)));
-                ui.menu_button("Arrange", |ui| cmd = cmd.or(arrange_menu(ui)));
-                ui.separator();
-                ui.checkbox(&mut self.snapping, "Snap").on_hover_text(
-                    "Pull a dragged edge onto other widgets' edges and centres. \
-                     Hold Ctrl while dragging to place freely. Shift-click, \
-                     Ctrl-click or drag a band over the background to select \
-                     more than one.",
-                );
-                ui.add_enabled_ui(self.snapping, |ui| {
-                    ui.label("grid");
-                    ui.add(
-                        egui::DragValue::new(&mut self.grid)
-                            .speed(1.0)
-                            .range(0..=256),
-                    )
-                    .on_hover_text("Spacing in scene pixels; 0 turns it off");
-                });
-                ui.separator();
-                let mut aa = self.preview.antialias;
-                if ui
-                    .checkbox(&mut aa, "Antialias")
-                    .on_hover_text(
-                        "Blend the edges of needles, rings, curves, bars and cells \
-                         across the whole scene. One widget can differ: see the \
-                         antialias row in Properties.",
-                    )
-                    .changed()
-                {
-                    self.set_scene_field("antialias", &aa.to_string());
-                }
-                if ui
-                    .button("Fit")
-                    .on_hover_text("Show the whole scene")
-                    .clicked()
-                {
-                    self.camera.fit();
-                }
-                if ui
-                    .button("1:1")
-                    .on_hover_text("One screen point per scene pixel")
-                    .clicked()
-                {
-                    self.camera.actual_size();
-                }
-                let (sw, sh) = self.preview.scene_size();
-                ui.weak(format!("{sw}x{sh}"));
-                if let Some(rig) = &self.rig {
-                    let d = rig.display();
-                    ui.weak(format!("{} · 0x{:02X}", d.name, d.node))
-                        .on_hover_text("The display being edited; click another to switch");
-                    ui.separator();
-                    // One click swaps every display's scene: the modes are a
-                    // property of the rig, not of the display in front.
-                    for (i, m) in rig.rig.modes.iter().enumerate() {
-                        if ui.selectable_label(i == rig.mode, m).clicked() {
-                            mode = Some(i);
-                        }
-                    }
-                    let showing = rig.mode;
-                    if ui
-                        .button("+")
-                        .on_hover_text("Add, rename or remove a mode")
-                        .clicked()
-                    {
-                        open_modes = Some(showing);
-                    }
-                    ui.separator();
-                    // Beside the modes because both edit the rig rather than
-                    // the scene, and a person looking for one is in the same
-                    // frame of mind as a person looking for the other.
-                    if ui
-                        .button("Pins")
-                        .on_hover_text("What this display's spare GPIO are wired to")
-                        .clicked()
-                    {
-                        open_pins = Some((rig.active, rig.display().pins.count()));
-                    }
-                }
-                ui.separator();
-                ui.checkbox(&mut self.driver.enabled, "Dummy values");
-                ui.add_enabled_ui(self.driver.enabled, |ui| {
-                    // One or the other: both writing the same channels would
-                    // leave whichever ran last deciding what is on the glass.
-                    if ui.checkbox(&mut self.driver.sweep, "Sweep").changed() && self.driver.sweep {
-                        self.driver.driving = false;
-                    }
-                    if ui.checkbox(&mut self.driver.driving, "Drive").changed()
-                        && self.driver.driving
-                    {
-                        self.driver.sweep = false;
-                    }
-                    // Either mode can be sent: the sweep is the one that
-                    // proves a needle reaches both ends, and proving that on
-                    // the preview proves it about the preview.
-                    ui.add_enabled_ui(self.driver.driving || self.driver.sweep, |ui| {
-                        ui.checkbox(&mut self.driver.to_car, "Send to the car");
-                    });
-                    // A log the car really recorded, played instead of the
-                    // modelled one. What a model cannot invent is the sensor
-                    // that drops out and the idle that hunts, which is most
-                    // of what a layout has to stay readable through.
-                    let playing = self.driver.log.as_ref().map(|log| {
-                        (
-                            format!("{} ({:.0}s)", log.name, log.seconds()),
-                            format!(
-                                "measured: {}{}\nthe rest is the model",
-                                log.filled.join(", "),
-                                if log.skipped.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!("\nno gauge for: {}", log.skipped.join(", "))
-                                }
-                            ),
-                            log.is_built_in(),
-                        )
-                    });
-                    if let Some((label, hover, built_in)) = playing {
-                        ui.label(label).on_hover_text(hover);
-                        // Back to the built-in trace rather than to nothing:
-                        // a drive with no measured data in it at all is what
-                        // this stopped being the default.
-                        if !built_in && ui.button("Back to US06").clicked() {
-                            self.driver.log = Some(crate::datalog::Log::us06());
-                            self.driver.log_at_s = 0.0;
-                        }
-                    }
-                    if ui.button("Play a log…").clicked()
-                        && let Some(p) = rfd::FileDialog::new()
-                            .add_filter("logs", &["msl", "csv", "tsv", "txt", "log"])
-                            .pick_file()
-                    {
-                        match crate::datalog::Log::read(&p) {
-                            Ok(log) => {
-                                self.driver.log = Some(log);
-                                self.driver.log_at_s = 0.0;
-                                self.driver.driving = true;
-                                self.driver.sweep = false;
-                            }
-                            // Said where the person is looking rather than on
-                            // a console they are not.
-                            Err(e) => self.status = e,
-                        }
-                    }
-                });
-                ui.separator();
-                if self.dirty {
-                    ui.colored_label(egui::Color32::YELLOW, "modified");
-                }
-                if let Some(e) = &self.preview.error {
-                    ui.colored_label(egui::Color32::RED, e);
-                }
-            });
-        });
-        if let Some(c) = cmd {
-            self.run(c);
-        }
-        if let Some(m) = mode {
-            self.set_mode(m);
-        }
-        if let Some(showing) = open_modes {
-            self.modes = Some(crate::modes_ui::ModesDialog::new(showing));
-        }
-        if let Some((display, count)) = open_pins {
-            self.pins_dialog = Some(crate::pins_ui::PinsDialog::new(display, count));
-        }
-    }
-
-    /// The File menu: the things that touch the disk, and the whole-document
-    /// operations that are one step from it.
-    fn file_menu(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn file_menu(&mut self, ui: &mut egui::Ui) {
         if item(
             ui,
             true,
-            "New…",
+            "New scene...",
             "Ctrl+N",
-            "Start a scene: size, colour and settings",
+            "Choose a display size and start a scene.",
         ) {
             self.new_doc = Some(crate::newdoc::NewDoc::default());
         }
-        if item(ui, true, "Open…", "", "")
-            && let Some(p) = rfd::FileDialog::new()
-                .add_filter("scene", &["scene", "json"])
-                .pick_file()
-        {
-            self.close_rig();
-            self.path = Some(p);
-            self.open_current();
-        }
-        // One entry rather than two: connecting and watching are the same
-        // window, and a person looking for "how do I connect" does not think
-        // to look under "watch".
         if item(
             ui,
             true,
-            "Connection…",
-            "",
-            "Connect over Bluetooth, the car's network or a shared one, and see what it says",
+            "Open scene or rig...",
+            "Ctrl+O",
+            "Open a scene or all displays in a rig.",
         ) {
-            self.monitor.toggle();
+            self.choose_document();
         }
-        if item(
-            ui,
-            true,
-            "Send to the car…",
-            "",
-            "Push this scene to a display over Bluetooth or the car's own network",
-        ) {
-            self.uploader.open(self.rig.is_some());
-        }
-        if item(
-            ui,
-            true,
-            "Open rig…",
-            "",
-            "Every display on the bus, side by side, with a tab per mode",
-        ) && let Some(p) = rfd::FileDialog::new()
-            .add_filter("rig", &["rig"])
-            .pick_file()
-        {
-            self.open_rig(p);
-        }
-        // A submenu rather than four more rows: the examples are a shelf to
-        // browse, and the disk commands under them are what the File menu is
-        // for. Each one is a whole document, so it sits with New and Open
-        // rather than anywhere else.
-        let mut example = None;
+        let mut chosen = None;
         ui.menu_button("Examples", |ui| {
-            for (label, hint, ex) in crate::EXAMPLES {
+            for (index, (label, hint, _)) in crate::EXAMPLES.iter().enumerate() {
                 if item(ui, true, label, "", hint) {
-                    example = Some((*label, ex));
+                    chosen = Some(index);
                 }
             }
         });
-        if let Some((label, ex)) = example {
-            self.open_example(label, ex);
+        if let Some(index) = chosen {
+            self.request_document(Action::Example(index));
         }
         ui.separator();
-        if item(ui, true, "Save", "Ctrl+S", "") {
+        let valid = self.preview.error.is_none();
+        if item(
+            ui,
+            valid,
+            "Save scene",
+            "Ctrl+S",
+            "Save the active scene. Fix scene errors before saving.",
+        ) {
             self.save();
         }
-        if item(ui, true, "Save as…", "", "") {
+        if item(
+            ui,
+            valid,
+            if self.rig.is_some() {
+                "Export scene copy..."
+            } else {
+                "Save scene as..."
+            },
+            "Ctrl+Shift+S",
+            "Save to another file. In a rig, export a copy without changing which file the rig uses.",
+        ) {
             self.save_as();
         }
         if item(
             ui,
             self.rig.is_some(),
-            "Save all",
+            "Save all scenes",
             "",
-            "Every display of the rig that has changes",
+            "Save changed scenes on every display in this rig.",
         ) {
             self.save_all();
         }
         ui.separator();
+        if item(ui, true, "Connections...", "", CONNECTIONS_HINT) {
+            self.monitor.open();
+        }
         if item(
             ui,
             true,
-            "Reformat",
+            "Upload to display...",
             "",
-            "Rewrite the text through the crate's own writer. Drops comments.",
+            "Choose a connection and send the scene or rig definition to a display.",
         ) {
-            self.tidy();
+            self.open_upload();
         }
-        if item(ui, true, "Scene resolution…", "", "") {
+        ui.separator();
+        if item(
+            ui,
+            valid,
+            "Resize scene...",
+            "",
+            "Scale widget positions, sizes and text to a new resolution. Undo is available.",
+        ) {
             self.resize_to = Some(self.preview.scene_size());
+        }
+        if item(
+            ui,
+            valid,
+            "Format scene source...",
+            "",
+            "Confirm before removing comments and reformatting. Undo restores the original.",
+        ) {
+            self.request_document(Action::Reformat);
         }
     }
 }
 
-/// One menu entry, which closes the menu when picked.
-///
-/// The shortcut is shown beside the label rather than documented elsewhere,
-/// so a person who has found the command with the mouse is told how not to
-/// need the mouse next time.
-fn item(ui: &mut egui::Ui, enabled: bool, label: &str, shortcut: &str, hint: &str) -> bool {
+pub(crate) fn item(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    label: &str,
+    shortcut: &str,
+    hint: &str,
+) -> bool {
     let mut button = egui::Button::new(label);
     if !shortcut.is_empty() {
         button = button.shortcut_text(shortcut);
     }
-    let mut r = ui.add_enabled(enabled, button);
+    let mut response = ui.add_enabled(enabled, button);
     if !hint.is_empty() {
-        r = r.on_hover_text(hint);
+        response = response.on_hover_text(hint).on_disabled_hover_text(hint);
     }
-    if r.clicked() {
+    if response.clicked() {
         ui.close_menu();
-        return true;
+        true
+    } else {
+        false
     }
-    false
 }
 
-/// The Edit menu.
 pub(crate) fn edit_menu(
     ui: &mut egui::Ui,
     has_selection: bool,
     can_undo: bool,
     can_redo: bool,
 ) -> Option<Command> {
-    let mut out = None;
-    if item(ui, can_undo, "Undo", "Ctrl+Z", "") {
-        out = Some(Command::Undo);
+    let mut command = None;
+    if item(
+        ui,
+        can_undo,
+        "Undo",
+        "Ctrl+Z",
+        "Restore the previous edit. Each drag is one step.",
+    ) {
+        command = Some(Command::Undo);
     }
-    if item(ui, can_redo, "Redo", "Ctrl+Y", "") {
-        out = Some(Command::Redo);
+    if item(
+        ui,
+        can_redo,
+        "Redo",
+        "Ctrl+Y",
+        "Reapply the last edit you undid.",
+    ) {
+        command = Some(Command::Redo);
     }
     ui.separator();
-    out.or(selection_items(ui, has_selection))
+    command.or(selection_items(ui, has_selection))
 }
 
-/// The commands that act on the selection, shared by the Edit menu and both
-/// right-click menus.
 fn selection_items(ui: &mut egui::Ui, has: bool) -> Option<Command> {
-    let mut out = None;
-    let mut group = |ui: &mut egui::Ui, items: &[(&str, &str, &str, Command)]| {
-        for &(label, shortcut, hint, cmd) in items {
-            if item(ui, has, label, shortcut, hint) {
-                out = Some(cmd);
-            }
+    let mut command = None;
+    for (label, shortcut, hint, action) in [
+        (
+            "Widget properties",
+            "",
+            "Select a widget to inspect and edit it.",
+            Command::Properties,
+        ),
+        (
+            "Duplicate",
+            "Ctrl+D",
+            "Make a copy of the selected widgets.",
+            Command::Duplicate,
+        ),
+        (
+            "Delete",
+            "Del",
+            "Remove selected widgets. Undo restores them.",
+            Command::Delete,
+        ),
+        (
+            "Bring forward",
+            "",
+            "Move one step towards the front, over the next sibling.",
+            Command::Raise,
+        ),
+        (
+            "Send backward",
+            "",
+            "Move one step towards the back, under the previous sibling.",
+            Command::Lower,
+        ),
+        (
+            "Nest in previous widget",
+            "",
+            "Make the selection a child of the widget above it in the tree.",
+            Command::Inwards,
+        ),
+        (
+            "Move out of parent",
+            "",
+            "Make the selection a sibling of its current parent.",
+            Command::Outwards,
+        ),
+        (
+            "Select parent",
+            "",
+            "Select the widget containing the selection.",
+            Command::SelectParent,
+        ),
+        (
+            "Clear selection",
+            "Esc",
+            "Leave all widgets unselected.",
+            Command::Deselect,
+        ),
+    ] {
+        if item(ui, has, label, shortcut, hint) {
+            command = Some(action);
         }
-    };
-    group(
-        ui,
-        &[
-            ("Properties", "", "", Command::Properties),
-            ("Duplicate", "Ctrl+D", "", Command::Duplicate),
-            ("Delete", "Del", "", Command::Delete),
-        ],
-    );
+    }
     ui.separator();
-    group(
-        ui,
-        &[
-            (
-                "Raise",
-                "",
-                "Draw it on top of the widget after it",
-                Command::Raise,
-            ),
-            (
-                "Lower",
-                "",
-                "Draw it underneath the widget before it",
-                Command::Lower,
-            ),
-            (
-                "Move inwards",
-                "",
-                "Make it a child of the widget above it",
-                Command::Inwards,
-            ),
-            (
-                "Move outwards",
-                "",
-                "Make it a sibling of its parent",
-                Command::Outwards,
-            ),
-        ],
-    );
-    ui.separator();
-    group(
-        ui,
-        &[
-            ("Select parent", "", "", Command::SelectParent),
-            ("Deselect", "Esc", "", Command::Deselect),
-        ],
-    );
     if item(
         ui,
         true,
-        "Select all",
+        "Select all siblings",
         "Ctrl+A",
-        "Every sibling of the selection, or every top-level widget",
+        "Select widgets sharing this parent, or top-level widgets if none is selected.",
     ) {
-        out = Some(Command::SelectAll);
+        command = Some(Command::SelectAll);
     }
-    out
+    command
 }
 
-/// The Add menu.
 pub(crate) fn add_menu(ui: &mut egui::Ui) -> Option<Command> {
-    ui.label(
-        egui::RichText::new("Inside the selection, or the root")
-            .small()
-            .weak(),
-    );
-    let mut out = None;
-    for kind in KINDS {
-        if item(ui, true, kind, "", "") {
-            out = Some(Command::Add(kind));
-        }
-    }
-    out
-}
-
-/// The Arrange menu.
-pub(crate) fn arrange_menu(ui: &mut egui::Ui) -> Option<Command> {
-    ui.label(egui::RichText::new("Relative to the parent").small().weak());
-    let mut out = None;
-    let mut group = |ui: &mut egui::Ui, items: &[(&str, place::Placement)]| {
-        for &(label, how) in items {
-            if item(ui, true, label, "", "") {
-                out = Some(Command::Arrange(how));
+    ui.weak("Added inside the selected widget, or the scene's root.");
+    let mut command = None;
+    for (title, kinds) in [
+        ("Layout and backgrounds", &KINDS[..6]),
+        ("Text and readouts", &KINDS[6..8]),
+        ("Gauges and indicators", &KINDS[8..15]),
+        ("Lines, charts and shapes", &KINDS[15..]),
+    ] {
+        ui.separator();
+        ui.strong(title);
+        for kind in kinds {
+            if item(
+                ui,
+                true,
+                crate::starter::widget_title(kind),
+                "",
+                crate::starter::widget_hint(kind),
+            ) {
+                command = Some(Command::Add(kind));
             }
         }
-    };
-    group(
-        ui,
-        &[
-            ("Centre", place::Placement::CenterX),
-            ("Middle", place::Placement::CenterY),
-        ],
-    );
-    ui.separator();
-    group(
-        ui,
-        &[
-            ("Left edge", place::Placement::Left),
-            ("Right edge", place::Placement::Right),
-            ("Top edge", place::Placement::Top),
-            ("Bottom edge", place::Placement::Bottom),
-        ],
-    );
-    ui.separator();
-    group(
-        ui,
-        &[
-            ("Fill width", place::Placement::FillX),
-            ("Fill height", place::Placement::FillY),
-        ],
-    );
-    out
+    }
+    command
 }
 
-/// The right-click menu, on the preview or on a row of the outliner.
-///
-/// The selection's commands, with Add and Arrange folded in as submenus, so
-/// that nothing a person does to one widget needs the menu bar. `selected`
-/// is what the menu is about, named at the top so a right-click that landed
-/// on the wrong thing is caught before the command is.
-pub(crate) fn context_menu(ui: &mut egui::Ui, selected: Option<&str>) -> Option<Command> {
-    match selected {
-        Some(what) => {
-            ui.label(egui::RichText::new(what).strong());
-        }
-        None => {
-            ui.weak("nothing selected");
+pub(crate) fn arrange_menu(ui: &mut egui::Ui) -> Option<Command> {
+    ui.weak("Position and size within the parent widget.");
+    let mut command = None;
+    for (label, placement) in [
+        ("Centre horizontally", place::Placement::CenterX),
+        ("Centre vertically", place::Placement::CenterY),
+        ("Align left", place::Placement::Left),
+        ("Align right", place::Placement::Right),
+        ("Align top", place::Placement::Top),
+        ("Align bottom", place::Placement::Bottom),
+        ("Match parent width", place::Placement::FillX),
+        ("Match parent height", place::Placement::FillY),
+    ] {
+        if item(
+            ui,
+            true,
+            label,
+            "",
+            "Apply to the selected widgets relative to their parent.",
+        ) {
+            command = Some(Command::Arrange(placement));
         }
     }
+    command
+}
+
+pub(crate) fn context_menu(ui: &mut egui::Ui, selected: Option<&str>) -> Option<Command> {
+    ui.strong(selected.unwrap_or("Scene canvas"));
     ui.separator();
-    let mut out = selection_items(ui, selected.is_some());
+    let mut command = selection_items(ui, selected.is_some());
     ui.separator();
-    ui.menu_button("Add", |ui| out = out.or(add_menu(ui)));
-    ui.menu_button("Arrange", |ui| out = out.or(arrange_menu(ui)));
-    // A pick inside a submenu closes the submenu; the menu it hangs from is
-    // closed here so the whole thing goes away in one click.
-    if out.is_some() {
+    ui.menu_button("Add widget", |ui| command = command.or(add_menu(ui)));
+    ui.add_enabled_ui(selected.is_some(), |ui| {
+        ui.menu_button("Arrange", |ui| command = command.or(arrange_menu(ui)))
+            .response
+            .on_disabled_hover_text("Select a widget first.");
+    });
+    if command.is_some() {
         ui.close_menu();
     }
-    out
+    command
 }

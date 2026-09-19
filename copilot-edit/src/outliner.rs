@@ -11,10 +11,16 @@ use copilot::widget::{NodeId, ROOT, Tree};
 
 use crate::bind_ui::{self, BindEdit};
 use crate::canvas::{Gesture, committed, gesture};
+use crate::inspect::controls;
 use crate::menu::{self, Command};
 use crate::select::toggle_in;
 use crate::touch_ui::TouchEdit;
 use crate::{App, describe_node, inspect, kind_name};
+
+mod bands;
+mod fields;
+#[cfg(test)]
+mod interaction_tests;
 
 /// Where a dragged row is about to land, relative to the row under it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -45,7 +51,7 @@ impl App {
             .show(ctx, |ui| {
                 // Held, not hidden: the tree is still worth reading while a
                 // curve is being shaped, just not worth clicking.
-                if self.curve.is_some() {
+                if self.curve.is_some() || self.document_blocked() {
                     ui.disable();
                 }
                 ui.heading("Widgets");
@@ -60,7 +66,7 @@ impl App {
                 ui.separator();
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let Some(tree) = &self.preview.tree else {
-                        ui.weak("scene does not parse");
+                        ui.weak("The scene cannot be read yet. Correct the error in Scene source to show its widgets.");
                         return;
                     };
                     let mut rows = Rows {
@@ -81,6 +87,9 @@ impl App {
                     }
                 });
             });
+        if self.document_blocked() {
+            return;
+        }
         if let Some(c) = cmd {
             self.run(c);
         }
@@ -117,6 +126,37 @@ impl App {
     /// The selected widget's properties: its rect, its name, and the fields
     /// its kind has.
     pub(crate) fn properties_pane(&mut self, ui: &mut egui::Ui) {
+        if self.document_blocked() {
+            ui.weak("Finish or cancel the open dialog before editing widgets.");
+        }
+        if let Some(error) = &self.preview.error {
+            ui.colored_label(ui.visuals().error_fg_color, "Scene source has an error");
+            ui.label(error);
+            ui.weak("Showing the last valid scene. Fix Scene source before editing properties.");
+        }
+        // Scrolled both ways: a grid row or a long field name that does not
+        // fit scrolls here, rather than pushing the whole side pane wider
+        // and eating the canvas.
+        egui::ScrollArea::both().show(ui, |ui| {
+            ui.push_id(self.properties_scope(), |ui| {
+                ui.add_enabled_ui(
+                    self.preview.error.is_none() && !self.document_blocked(),
+                    |ui| self.selected_properties(ui),
+                );
+            });
+        });
+    }
+
+    pub(crate) fn properties_scope(&self) -> egui::Id {
+        egui::Id::new((
+            "widget-properties",
+            self.document_epoch,
+            &self.path,
+            self.selected.map(|id| id.0),
+        ))
+    }
+
+    fn selected_properties(&mut self, ui: &mut egui::Ui) {
         let Some((id, node)) = self
             .selected
             .and_then(|id| Some((id, self.preview.tree.as_ref()?.get(id)?.clone())))
@@ -125,12 +165,15 @@ impl App {
             return;
         };
         ui.heading(describe_node(&node));
+        ui.weak(crate::starter::widget_hint(kind_name(&node.kind)));
         let others = self.extra.len();
         if others > 0 {
             ui.label(
                 egui::RichText::new(format!(
-                    "and {others} more selected. Property edits go to every \
-                     selected widget of the same kind; the rect and name to this one."
+                    "{} widgets selected. Values shown belong to this primary widget. \
+                     Type-specific fields change all selected widgets of the same type. \
+                     Name, geometry, smoothing, data, touch and bands change this widget only.",
+                    others + 1
                 ))
                 .small()
                 .weak(),
@@ -144,20 +187,23 @@ impl App {
         // The gesture comes along so a dragged box is one undo step however
         // long it is dragged.
         let mut edit: Option<(&'static str, String, Option<Gesture>)> = None;
+        ui.strong("Identity and geometry");
         egui::Grid::new("props-common")
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
-                ui.label("kind");
-                ui.monospace(kind_name(&node.kind));
+                ui.label("Widget type");
+                ui.label(crate::starter::widget_title(kind_name(&node.kind)))
+                    .on_hover_text(format!("Scene type: {}", kind_name(&node.kind)));
                 ui.end_row();
 
                 // Editable, because a name is not decoration: it is how the
                 // dummy-value driver finds a widget, and how anything driving
                 // this cluster for real will find it too.
-                ui.label("name");
+                ui.label("Widget name");
                 let mut name = node.name.clone().unwrap_or_default();
-                let r = ui.text_edit_singleline(&mut name);
+                let r = ui.add(egui::TextEdit::singleline(&mut name).hint_text("Optional name"))
+                    .on_hover_text("Used by page actions, animations and data drivers. Choose a recognisable, unique name.");
                 if committed(&r) {
                     edit = Some(("name", inspect::Value::Text(name).to_scene(), gesture(&r)));
                 }
@@ -165,38 +211,42 @@ impl App {
 
                 let r = node.rect;
                 let (mut x, mut y) = (r.left(), r.top());
-                let (mut w, mut h) = (r.size.w as i32, r.size.h as i32);
+                let (mut w, mut h) = (r.size.w, r.size.h);
                 let mut changed: Option<Option<Gesture>> = None;
                 let mut note = |r: egui::Response| {
                     if committed(&r) {
                         changed = Some(gesture(&r));
                     }
                 };
-                ui.label("position");
+                ui.label("Position in parent").on_hover_text("Scene pixels from the parent's top-left. Negative positions are allowed.");
                 ui.horizontal(|ui| {
-                    note(ui.add(egui::DragValue::new(&mut x).speed(1.0).prefix("x ")));
-                    note(ui.add(egui::DragValue::new(&mut y).speed(1.0).prefix("y ")));
+                    ui.label("X");
+                    note(controls::number(ui, &mut x, 1.0, " px", None));
+                    ui.label("Y");
+                    note(controls::number(ui, &mut y, 1.0, " px", None));
                 });
                 ui.end_row();
-                ui.label("size");
+                ui.label("Width");
                 ui.horizontal(|ui| {
-                    note(ui.add(size_box(&mut w, "w ")));
-                    note(ui.add(size_box(&mut h, "h ")));
+                    note(controls::number(ui, &mut w, 1.0, " px", None));
                 });
+                ui.end_row();
+                ui.label("Height");
+                note(controls::number(ui, &mut h, 1.0, " px", None));
                 ui.end_row();
                 if let Some(g) = changed {
                     edit = Some(("rect", format!("[{x}, {y}, {w}, {h}]"), g));
                 }
                 if let Some(abs) = on_screen {
-                    ui.label("on screen");
-                    ui.monospace(format!("{}, {}", abs.left(), abs.top()));
+                    ui.label("Screen position").on_hover_text("Read-only absolute position, including parent offsets.");
+                    ui.monospace(format!("X {} px, Y {} px", abs.left(), abs.top()));
                     ui.end_row();
                 }
 
                 // Three states, not two: a widget usually draws the way its
                 // parent does, and "inherit" is how it goes back to that
                 // after being set one way.
-                ui.label("antialias");
+                ui.label("Smooth edges");
                 let now = match node.antialias {
                     None => "inherit",
                     Some(true) => "on",
@@ -204,10 +254,10 @@ impl App {
                 };
                 let mut picked = now;
                 egui::ComboBox::from_id_salt("antialias")
-                    .selected_text(now)
+                    .selected_text(smoothing_title(now))
                     .show_ui(ui, |ui| {
                         for option in ["inherit", "on", "off"] {
-                            ui.selectable_value(&mut picked, option, option);
+                            ui.selectable_value(&mut picked, option, smoothing_title(option));
                         }
                     });
                 if picked != now {
@@ -216,19 +266,69 @@ impl App {
                 ui.end_row();
             });
         ui.separator();
-        egui::Grid::new("props-kind")
-            .num_columns(2)
-            .spacing([8.0, 4.0])
-            .show(ui, |ui| {
-                if let Some(e) = properties(ui, &node.kind) {
-                    edit = Some(e);
-                }
-            });
+        if let Some(e) = fields::properties(ui, &node.kind) {
+            edit = Some(e);
+        }
+        let mut remove_field = None;
+        let removal = match &node.kind {
+            copilot::widget::Kind::Arc {
+                cursor: Some(_), ..
+            }
+            | copilot::widget::Kind::SegBar {
+                cursor: Some(_), ..
+            } => Some(("cursor", "Remove reading marker")),
+            copilot::widget::Kind::Chart {
+                fade_to: Some(_), ..
+            } => Some(("fade_to", "Do not fade older samples")),
+            _ => None,
+        };
+        if let Some((field, label)) = removal
+            && ui.button(label).clicked()
+        {
+            remove_field = Some(field);
+        }
+        let asset = match &node.kind {
+            copilot::widget::Kind::Image { image } => {
+                Some(("image", *image, self.preview.images.len()))
+            }
+            copilot::widget::Kind::Anim { anim, .. } => {
+                Some(("animation", *anim, self.preview.clips.len()))
+            }
+            _ => None,
+        };
+        if let Some((kind, index, count)) = asset {
+            let key = if kind == "image" { "images" } else { "anims" };
+            if let Ok(source) = copilot::scene::parse(&self.text)
+                && let Some(paths) = source.get(key).and_then(|value| value.as_array())
+                && let Some(path) = paths.get(index as usize).and_then(|value| value.as_str())
+            {
+                ui.label(format!("Asset: {path}"));
+            }
+            if let copilot::widget::Kind::Anim { anim, frame, .. } = &node.kind
+                && let Some(clip) = self.preview.clips.get(*anim)
+                && *frame as usize >= clip.frames.len()
+            {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    format!(
+                        "Frame {frame} is outside this animation's {} frames (first frame = 0).",
+                        clip.frames.len()
+                    ),
+                );
+            }
+            ui.weak(format!(
+                "{count} {kind} assets in this scene (indices start at 0)."
+            ));
+            if index as usize >= count {
+                ui.colored_label(ui.visuals().error_fg_color, format!("No {kind} asset at index {index}. Add an asset in Scene source or choose an existing index."));
+            }
+        }
         // A binding is per widget, not per kind -- two bars can show two
         // gauges -- so it has its own rows and goes to the primary only.
         let mut bind_edit = None;
-        if node.kind.bind_target().is_some() {
+        if node.kind.bind_target().is_some() || self.preview.bindings.iter().any(|b| b.node == id) {
             ui.separator();
+            ui.strong("Live data");
             // Every binding the widget has, not the first: a bank is bound on
             // two axes and they share one `bind` key, so the pane has to write
             // both back or it would drop whichever it did not know about.
@@ -258,6 +358,7 @@ impl App {
                 .find(|h| h.node == id)
                 .map(|h| h.action.clone());
             ui.separator();
+            ui.strong("Touch action");
             egui::Grid::new("props-touch")
                 .num_columns(2)
                 .spacing([8.0, 4.0])
@@ -273,6 +374,7 @@ impl App {
             let fill = crate::zones_ui::fill_of(&node.kind);
             let marked = crate::zones_ui::has_cursor(&node.kind);
             ui.separator();
+            ui.strong("Colour bands");
             zone_edit = crate::zones_ui::zone_rows(ui, zones, fill, marked);
         }
 
@@ -298,24 +400,15 @@ impl App {
                 .small()
                 .weak(),
         );
+        if self.document_blocked() {
+            return;
+        }
+        if let Some(field) = remove_field {
+            self.unset_field_of(id, field);
+            return;
+        }
         if let Some((z, g)) = zone_edit {
-            match z {
-                crate::zones_ui::ZoneEdit::Set(v) => {
-                    self.set_field_of(id, g, "zones", &v);
-                    // The two-band shorthand is superseded the moment a list
-                    // exists, and a key that no longer decides anything is a
-                    // key somebody will edit and wonder about.
-                    for old in ["warn", "warn_fill", "danger", "danger_fill"] {
-                        self.unset_field_of(id, old);
-                    }
-                }
-                crate::zones_ui::ZoneEdit::Unset => {
-                    self.unset_field_of(id, "zones");
-                    for old in ["warn", "warn_fill", "danger", "danger_fill"] {
-                        self.unset_field_of(id, old);
-                    }
-                }
-            }
+            self.set_colour_bands(id, g, z);
             return;
         }
         if let Some((shape, field)) = shape_curve {
@@ -387,16 +480,16 @@ impl App {
             .num_columns(2)
             .spacing([8.0, 4.0])
             .show(ui, |ui| {
-                ui.label("size");
+                ui.label("Display size");
                 ui.horizontal(|ui| {
-                    ui.monospace(format!("{w}x{h}"));
-                    if ui.small_button("change…").clicked() {
+                    ui.monospace(format!("{w} × {h} px"));
+                    if ui.small_button("Change size…").clicked() {
                         self.resize_to = Some((w, h));
                     }
                 });
                 ui.end_row();
 
-                ui.label("node");
+                ui.label("Display CAN address");
                 let was = self.preview.node.unwrap_or(0);
                 let mut node = was;
                 let r = crate::newdoc::node_field(ui, &mut node).on_hover_text(
@@ -408,14 +501,14 @@ impl App {
                 }
                 ui.end_row();
 
-                ui.label("shape");
+                ui.label("Display shape");
                 let round = self.preview.shape == Shape::Round;
                 let mut pick = round;
                 egui::ComboBox::from_id_salt("scene-shape")
-                    .selected_text(self.preview.shape.name())
+                    .selected_text(if round { "Round" } else { "Rectangular" })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut pick, false, "rect");
-                        ui.selectable_value(&mut pick, true, "round")
+                        ui.selectable_value(&mut pick, false, "Rectangular");
+                        ui.selectable_value(&mut pick, true, "Round")
                             .on_hover_text("A panel whose corners sit behind a bezel");
                     });
                 if pick != round {
@@ -557,72 +650,6 @@ impl Rows<'_> {
     }
 }
 
-/// Draw the selected widget's own properties, as rows of a two-column grid,
-/// and report the one that changed, with the gesture it belongs to.
-fn properties(
-    ui: &mut egui::Ui,
-    kind: &copilot::widget::Kind,
-) -> Option<(&'static str, String, Option<Gesture>)> {
-    let mut edit = None;
-    for (name, value) in inspect::fields(kind) {
-        let mut next = value.clone();
-        ui.label(name);
-        let changed: Option<Option<Gesture>> = match &mut next {
-            inspect::Value::Color(c) => {
-                ui.horizontal(|ui| {
-                    let mut rgba = egui::Color32::from_rgba_unmultiplied(c.r, c.g, c.b, c.a);
-                    let r = ui.color_edit_button_srgba(&mut rgba);
-                    *c = copilot::Color::rgba(rgba.r(), rgba.g(), rgba.b(), rgba.a());
-                    ui.monospace(format!("#{:02x}{:02x}{:02x}{:02x}", c.r, c.g, c.b, c.a));
-                    // The picker is a popup, and every nudge inside it comes
-                    // back as a change on the button: one undo step for as
-                    // long as the popup stays open.
-                    r.changed().then(|| {
-                        Some(Gesture {
-                            id: r.id,
-                            ends: !ui.memory(|m| m.any_popup_open()),
-                        })
-                    })
-                })
-                .inner
-            }
-            inspect::Value::Text(t) => commit(ui.text_edit_singleline(t)),
-            // A drag box rather than a slider, because parking a band
-            // threshold above the top of the scale is how a scene says it
-            // does not want that band, and a slider capped at one could not
-            // say it.
-            inspect::Value::Ratio(f) => commit(ui.add(egui::DragValue::new(f).speed(0.01))),
-            inspect::Value::Frac(f) => {
-                commit(ui.add(egui::Slider::new(f, 0.0..=1.0).fixed_decimals(2)))
-            }
-            inspect::Value::Count(n) => commit(ui.add(egui::DragValue::new(n).speed(1.0))),
-            inspect::Value::Whole(n) => commit(ui.add(egui::DragValue::new(n).speed(1.0))),
-            inspect::Value::Flag(b) => commit(ui.checkbox(b, "")),
-            inspect::Value::Choice(word, all) => {
-                let mut picked = *word;
-                let r = egui::ComboBox::from_id_salt(name)
-                    .selected_text(*word)
-                    .show_ui(ui, |ui| {
-                        let mut hit = false;
-                        for option in all.iter() {
-                            hit |= ui.selectable_value(&mut picked, option, *option).changed();
-                        }
-                        hit
-                    });
-                *word = picked;
-                r.inner.unwrap_or(false).then_some(None)
-            }
-        };
-        ui.end_row();
-        if let Some(g) = changed
-            && edit.is_none()
-        {
-            edit = Some((name, next.to_scene(), g));
-        }
-    }
-    edit
-}
-
 /// A selectable row that senses drags as well as clicks.
 ///
 /// # Why not `SelectableLabel` inside a `dnd_drag_source`
@@ -685,15 +712,11 @@ fn draggable_row(ui: &mut egui::Ui, selected: bool, text: egui::RichText) -> egu
     response
 }
 
-/// A drag box for a width or a height, which cannot go negative.
-fn size_box<'a>(v: &'a mut i32, prefix: &str) -> egui::DragValue<'a> {
-    egui::DragValue::new(v)
-        .speed(1.0)
-        .range(0..=i32::MAX)
-        .prefix(prefix)
-}
-
-/// A change a person made, with the gesture it belongs to.
-fn commit(r: egui::Response) -> Option<Option<Gesture>> {
-    committed(&r).then(|| gesture(&r))
+fn smoothing_title(value: &str) -> &str {
+    match value {
+        "inherit" => "Use parent setting",
+        "on" => "Smooth",
+        "off" => "Pixel-sharp",
+        other => other,
+    }
 }

@@ -10,6 +10,9 @@ use copilot::widget::Kind;
 
 use crate::{App, Driver};
 
+mod labels;
+pub(crate) use labels::{widget_hint, widget_title};
+
 /// One element wrapped as a single-element array.
 ///
 /// Its own function only so the brackets are written once; getting them wrong
@@ -85,6 +88,7 @@ pub(crate) fn kind_name(k: &Kind) -> &'static str {
         Kind::Menu { .. } => "menu",
         Kind::Frame { .. } => "frame",
         Kind::Label { .. } => "label",
+        Kind::Fps { .. } => "fps",
         Kind::Image { .. } => "image",
         Kind::Anim { .. } => "anim",
         Kind::Bar { .. } => "bar",
@@ -241,9 +245,14 @@ impl App {
                 self.status = format!("opened the {label} example");
             }
             Example::Rig(files) => {
-                let dir =
-                    std::env::temp_dir().join(format!("copilot-example-{}", std::process::id()));
-                let unpacked = std::fs::create_dir_all(&dir).and_then(|()| {
+                static NEXT_EXAMPLE: std::sync::atomic::AtomicU64 =
+                    std::sync::atomic::AtomicU64::new(0);
+                let dir = std::env::temp_dir().join(format!(
+                    "copilot-example-{}-{}",
+                    std::process::id(),
+                    NEXT_EXAMPLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+                ));
+                let unpacked = std::fs::create_dir(&dir).and_then(|()| {
                     files
                         .iter()
                         .try_for_each(|(name, text)| std::fs::write(dir.join(name), text))
@@ -411,7 +420,7 @@ mod tests {
         // makes the lamps checkable without a bus.
         let tree = a.preview.tree.clone().expect("a tree");
         let mut driver = Driver::default();
-        driver.sync(&tree, &a.preview.bindings, &[]);
+        driver.sync(&tree, &a.preview.bindings, &[], &[]);
         assert!(!driver.lamps.is_empty(), "no tell-tale to drive");
         assert!(
             driver.gauges.contains_key("GPS_SPEED"),

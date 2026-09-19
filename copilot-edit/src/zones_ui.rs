@@ -17,6 +17,7 @@ use copilot::Color;
 use copilot::widget::{Kind, Zone};
 
 use crate::canvas::{Gesture, committed, gesture};
+use crate::inspect::controls;
 
 /// What the rows asked for, and the gesture it belongs to.
 ///
@@ -81,7 +82,7 @@ fn to_json(zones: &[Zone]) -> String {
     let mut out = String::from("[\n");
     for z in zones {
         out.push_str(&format!(
-            "        {{ \"at\": {:.2}, \"color\": \"{}\"",
+            "        {{ \"at\": {}, \"color\": \"{}\"",
             z.at,
             hex(z.color)
         ));
@@ -106,79 +107,95 @@ pub(crate) fn zone_rows(
     marked: bool,
 ) -> Option<ZoneAsk> {
     let mut out = None;
-    let mut edited: Vec<Zone> = zones.to_vec();
+    let id = ui.id().with("band-draft");
+    let mut state = ui
+        .data(|data| data.get_temp::<BandDraft>(id))
+        .unwrap_or_else(|| BandDraft::of(zones));
+    state.sync(zones);
+    let edited = &mut state.edited;
     let mut changed: Option<Option<Gesture>> = None;
     let mut remove = None;
 
     ui.add_space(6.0);
     ui.label(
         egui::RichText::new(
-            "Bands. Each one starts where it says and runs until the next \
-             begins, so a gauge can be dangerous low and dangerous again high.",
+            "Start positions are scale fractions: 0 = minimum, 1 = maximum. \
+             Each band lasts until the next starts. Below the first band, the normal fill is used. \
+             Values above 1 keep a band outside the scale.",
         )
         .small()
         .weak(),
     );
 
-    egui::Grid::new("props-zones")
-        .num_columns(3)
-        .spacing([8.0, 4.0])
-        .show(ui, |ui| {
-            for (i, z) in edited.iter_mut().enumerate() {
-                ui.label("from");
-                // Dragged rather than typed: a band's position is judged
-                // against the gauge behind it, and a drag redraws it as it
-                // moves.
-                let r = ui.add(egui::Slider::new(&mut z.at, 0.0..=1.0).fixed_decimals(2));
-                if committed(&r) {
-                    changed = Some(gesture(&r));
-                }
+    if edited.is_empty() {
+        ui.weak("No colour bands. The gauge uses its normal fill across the scale.");
+    }
+    for (i, z) in edited.iter_mut().enumerate() {
+        ui.push_id(i, |ui| {
+            ui.group(|ui| {
                 ui.horizontal(|ui| {
-                    let mut rgba = [z.color.r, z.color.g, z.color.b, z.color.a];
-                    let r = ui
-                        .color_edit_button_srgba_unmultiplied(&mut rgba)
-                        .on_hover_text("The reading's colour in this band");
-                    if r.changed() {
-                        z.color = Color::rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
-                        changed = Some(gesture(&r));
-                    }
-                    // The marker's colour inside the band, offered only where
-                    // there is a marker to colour. Off means it takes the
-                    // band's own colour, which is a marker that disappears
-                    // into the band -- the thing worth being able to fix.
-                    if marked {
-                        let mut on = z.cursor.is_some();
-                        if ui
-                            .checkbox(&mut on, "mark")
-                            .on_hover_text(
-                                "Give the marker its own colour here, so it \
-                                 stays visible inside the band",
-                            )
-                            .changed()
-                        {
-                            z.cursor = on.then_some(brighter(z.color));
-                            changed = Some(None);
-                        }
-                        if let Some(c) = z.cursor {
-                            let mut m = [c.r, c.g, c.b, c.a];
-                            let r = ui.color_edit_button_srgba_unmultiplied(&mut m);
-                            if r.changed() {
-                                z.cursor = Some(Color::rgba(m[0], m[1], m[2], m[3]));
-                                changed = Some(gesture(&r));
-                            }
-                        }
-                    }
-                    if ui.button("×").on_hover_text("Remove this band").clicked() {
+                    ui.strong(format!("Band {}", i + 1));
+                    if ui.small_button("Remove band").clicked() {
                         remove = Some(i);
                     }
                 });
-                ui.end_row();
-            }
+                egui::Grid::new("band-fields")
+                    .num_columns(2)
+                    .show(ui, |ui| {
+                        ui.label("Starts at");
+                        let r = controls::number(ui, &mut z.at, 0.01, "", None);
+                        if committed(&r) {
+                            changed = Some(gesture(&r));
+                        }
+                        ui.end_row();
+                        ui.label("Fill colour");
+                        if let Some(g) = ui
+                            .push_id("fill", |ui| controls::colour(ui, &mut z.color))
+                            .inner
+                        {
+                            changed = Some(g);
+                        }
+                        ui.end_row();
+                        if marked || z.cursor.is_some() {
+                            ui.label("Marker colour");
+                            let mut on = z.cursor.is_some();
+                            if ui.checkbox(&mut on, "Use a separate colour").changed() {
+                                z.cursor = on.then_some(brighter(z.color));
+                                changed = Some(None);
+                            }
+                            ui.end_row();
+                            if let Some(color) = z.cursor.as_mut() {
+                                ui.label("");
+                                if let Some(g) =
+                                    ui.push_id("marker", |ui| controls::colour(ui, color)).inner
+                                {
+                                    changed = Some(g);
+                                }
+                                ui.end_row();
+                            }
+                        }
+                    });
+                if !marked && z.cursor.is_some() {
+                    ui.weak(
+                        "The separate colour takes effect when this gauge has a reading marker.",
+                    );
+                }
+            });
         });
+    }
+    if edited
+        .iter()
+        .enumerate()
+        .any(|(i, z)| edited[..i].iter().any(|earlier| earlier.at == z.at))
+    {
+        ui.weak(
+            "Two bands start at the same position; the last one at that position takes precedence.",
+        );
+    }
 
     ui.horizontal(|ui| {
         if ui
-            .button("Add a band")
+            .button("Add colour band")
             .on_hover_text("Starts at the top of the scale, in the gauge's own colour")
             .clicked()
         {
@@ -189,7 +206,8 @@ pub(crate) fn zone_rows(
             });
             changed = Some(None);
         }
-        if !zones.is_empty() && ui.button("No bands").clicked() {
+        if !zones.is_empty() && ui.button("Remove all bands")
+            .on_hover_text("Remove every colour band and return to the gauge's normal fill. Undo restores them.").clicked() {
             out = Some((ZoneEdit::Unset, None));
         }
     });
@@ -201,18 +219,48 @@ pub(crate) fn zone_rows(
     if let (None, Some(g)) = (&out, changed) {
         // Held in the order they are written so the file reads up the scale,
         // which is also the order the builder wants them in.
-        edited.sort_by(|a, b| a.at.total_cmp(&b.at));
+        let mut sorted = edited.clone();
+        sorted.sort_by(|a, b| a.at.total_cmp(&b.at));
+        state.source = to_json(&sorted);
         out = Some((
             if edited.is_empty() {
                 ZoneEdit::Unset
             } else {
-                ZoneEdit::Set(to_json(&edited))
+                ZoneEdit::Set(state.source.clone())
             },
             g,
         ));
     }
+    if matches!(out, Some((ZoneEdit::Unset, _))) {
+        state = BandDraft::of(&[]);
+    }
+    ui.data_mut(|data| data.insert_temp(id, state));
     out
 }
+
+#[derive(Clone)]
+struct BandDraft {
+    source: String,
+    edited: Vec<Zone>,
+}
+
+impl BandDraft {
+    fn of(zones: &[Zone]) -> Self {
+        Self {
+            source: to_json(zones),
+            edited: zones.to_vec(),
+        }
+    }
+
+    fn sync(&mut self, zones: &[Zone]) {
+        if to_json(zones) != self.source {
+            *self = Self::of(zones);
+        }
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests;
 
 #[cfg(test)]
 mod tests {

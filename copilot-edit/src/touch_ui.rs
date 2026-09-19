@@ -27,6 +27,17 @@ pub(crate) enum TouchEdit {
 /// are things the host is asked to do.
 pub(crate) const ACTIONS: &[&str] = &["page", "menu", "mode", "emit"];
 
+/// A human-readable action name; the scene still uses the original action key.
+pub(crate) fn action_title(action: &str) -> &str {
+    match action {
+        "page" => "Change page",
+        "menu" => "Press a menu button",
+        "mode" => "Request a drive mode",
+        "emit" => "Send a named event",
+        other => other,
+    }
+}
+
 /// A line saying what each action is for, since the word alone does not say.
 fn about(action: &str) -> &'static str {
     match action {
@@ -60,6 +71,8 @@ pub(crate) struct Draft {
     pager: String,
     /// `page`: "next", "prev", a page's name, or a number.
     to: String,
+    /// Distinguishes a page named "1" from page index 1.
+    page_named: bool,
     /// `menu`: which of the rig's menus.
     menu: String,
     /// `menu`: which button to press.
@@ -76,6 +89,7 @@ impl Default for Draft {
             action: "page",
             pager: String::new(),
             to: "next".into(),
+            page_named: false,
             menu: String::new(),
             button: Button::Centre,
             mode: String::new(),
@@ -131,6 +145,7 @@ impl Draft {
         match a {
             Action::Page { pager, to } => {
                 d.pager = pager.clone().unwrap_or_default();
+                d.page_named = matches!(to, Page::Named(_));
                 d.to = match to {
                     Page::Next => "next".into(),
                     Page::Prev => "prev".into(),
@@ -161,13 +176,16 @@ impl Draft {
                     out.push_str(&format!(r#", "pager": {}"#, quoted(self.pager.trim())));
                 }
                 // "next" is what a `page` action means with nothing else said.
-                if self.to.trim() != "next" && !self.to.trim().is_empty() {
+                if self.page_named || (self.to.trim() != "next" && !self.to.trim().is_empty()) {
                     let t = self.to.trim();
                     // A number stays a number: `"to": 1` is the index, and
                     // `"to": "1"` would be a page whose name is the digit.
-                    match t.parse::<u32>() {
-                        Ok(n) => out.push_str(&format!(r#", "to": {n}"#)),
-                        Err(_) => out.push_str(&format!(r#", "to": {}"#, quoted(t))),
+                    if !self.page_named
+                        && let Ok(n) = t.parse::<u32>()
+                    {
+                        out.push_str(&format!(r#", "to": {n}"#));
+                    } else {
+                        out.push_str(&format!(r#", "to": {}"#, quoted(t)));
                     }
                 }
             }
@@ -189,6 +207,11 @@ impl Draft {
     /// go red on a widget the author was still in the middle of setting up.
     pub(crate) fn complete(&self) -> bool {
         match self.action {
+            "page" if self.page_named => !self.to.trim().is_empty(),
+            "page" => {
+                matches!(self.to.trim(), "" | "next" | "prev")
+                    || self.to.trim().parse::<u32>().is_ok()
+            }
             "menu" => !self.menu.trim().is_empty(),
             "mode" => !self.mode.trim().is_empty(),
             "emit" => !self.emit.trim().is_empty(),
@@ -224,53 +247,101 @@ fn quoted(s: &str) -> String {
 /// [`crate::bind_ui::bind_rows`] works, so the caller only rewrites the file
 /// when there is something to write.
 pub(crate) fn touch_rows(ui: &mut egui::Ui, current: Option<&Action>) -> Option<TouchEdit> {
-    let mut draft = current.map(Draft::of);
-
-    ui.label("touch");
+    let id = ui.id().with("touch-draft");
+    let mut state = ui
+        .data(|data| data.get_temp::<TouchState>(id))
+        .unwrap_or_default();
+    state.sync(current);
+    ui.label("Respond to touch");
     let mut edit = None;
     ui.horizontal(|ui| {
-        let mut on = draft.is_some();
+        let mut on = state.draft.is_some();
         if ui
-            .checkbox(&mut on, "")
+            .checkbox(&mut on, "Enabled")
             .on_hover_text("Make this widget something a finger can press")
             .changed()
         {
-            edit = Some(if on {
-                // A fresh action turns the page, because that is the one the
-                // display can carry out on its own and the commonest by far.
-                TouchEdit::Set(Draft::default().to_scene())
+            if on {
+                state.draft = Some(Draft::default());
             } else {
-                TouchEdit::Unset
-            });
+                state.draft = None;
+                state.source = None;
+                edit = current.map(|_| TouchEdit::Unset);
+            }
         }
-        if let Some(d) = draft.as_mut() {
-            let was = d.action;
+        if let Some(d) = state.draft.as_mut() {
             egui::ComboBox::from_id_salt("touch-action")
-                .selected_text(d.action)
+                .selected_text(action_title(d.action))
                 .show_ui(ui, |ui| {
                     for a in ACTIONS {
-                        ui.selectable_value(&mut d.action, a, *a)
+                        ui.selectable_value(&mut d.action, a, action_title(a))
                             .on_hover_text(about(a));
                     }
                 });
-            if d.action != was && d.complete() {
-                edit = Some(TouchEdit::Set(d.to_scene()));
-            }
         }
     });
     ui.end_row();
 
-    let Some(d) = draft.as_mut() else {
-        return edit;
-    };
-    ui.label("").on_hover_text(about(d.action));
-    ui.label(egui::RichText::new(about(d.action)).small().weak());
-    ui.end_row();
-
-    if action_rows(ui, d) && d.complete() {
-        edit = Some(TouchEdit::Set(d.to_scene()));
+    if let Some(d) = state.draft.as_mut() {
+        ui.label("");
+        ui.label(egui::RichText::new(about(d.action)).small().weak());
+        ui.end_row();
+        action_rows(ui, d);
+        let next = d.to_scene();
+        let complete = d.complete();
+        let pending = state.source.as_deref() != Some(next.as_str());
+        if !d.complete() {
+            ui.label("");
+            ui.colored_label(
+                ui.visuals().error_fg_color,
+                match d.action {
+                    "page" if d.page_named => "Enter a page name.",
+                    "page" => "Enter a page index from 0 to 4294967295.",
+                    "menu" => "Enter the menu name from the rig.",
+                    "mode" => "Enter the drive mode name from the rig.",
+                    _ => "Enter the event name expected by the host.",
+                },
+            );
+            ui.end_row();
+        }
+        if pending {
+            ui.label("Pending changes");
+            ui.vertical(|ui| {
+                ui.weak("Not yet applied. The saved touch action stays unchanged.");
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(complete, egui::Button::new("Apply touch action"))
+                        .clicked()
+                    {
+                        state.source = Some(next.clone());
+                        edit = Some(TouchEdit::Set(next));
+                    }
+                    if ui.button("Revert changes").clicked() {
+                        state.draft = current.map(Draft::of);
+                    }
+                });
+            });
+            ui.end_row();
+        }
     }
+    ui.data_mut(|data| data.insert_temp(id, state));
     edit
+}
+
+#[derive(Clone, Default)]
+struct TouchState {
+    source: Option<String>,
+    draft: Option<Draft>,
+}
+
+impl TouchState {
+    fn sync(&mut self, current: Option<&Action>) {
+        let source = current.map(|action| Draft::of(action).to_scene());
+        if source != self.source {
+            self.draft = current.map(Draft::of);
+            self.source = source;
+        }
+    }
 }
 
 /// The rows for whichever action a draft is currently set to.
@@ -285,11 +356,11 @@ pub(crate) fn action_rows(ui: &mut egui::Ui, d: &mut Draft) -> bool {
     let mut changed = false;
     match d.action {
         "page" => {
-            ui.label("pager");
+            ui.label("Pager name");
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut d.pager)
-                        .hint_text("nearest")
+                        .hint_text("Nearest enclosing pager")
                         .desired_width(140.0),
                 )
                 .on_hover_text(
@@ -300,30 +371,56 @@ pub(crate) fn action_rows(ui: &mut egui::Ui, d: &mut Draft) -> bool {
                 .lost_focus();
             ui.end_row();
 
-            ui.label("to");
-            ui.horizontal(|ui| {
-                for word in ["next", "prev"] {
-                    if ui.selectable_label(d.to == word, word).clicked() {
-                        d.to = word.into();
-                        changed = true;
-                    }
+            ui.label("Destination");
+            let before = if d.page_named {
+                "name"
+            } else {
+                match d.to.as_str() {
+                    "next" => "next",
+                    "prev" => "prev",
+                    _ => "index",
                 }
+            };
+            let mut destination = before;
+            egui::ComboBox::from_id_salt("page-destination")
+                .selected_text(destination_title(before))
+                .show_ui(ui, |ui| {
+                    for option in ["next", "prev", "name", "index"] {
+                        ui.selectable_value(&mut destination, option, destination_title(option));
+                    }
+                });
+            if destination != before {
+                d.page_named = destination == "name";
+                d.to = match destination {
+                    "name" => String::new(),
+                    "index" => "0".into(),
+                    other => other.into(),
+                };
+                changed = true;
+            }
+            ui.end_row();
+            if matches!(destination, "name" | "index") {
+                ui.label(if d.page_named {
+                    "Page name"
+                } else {
+                    "Page index (from 0)"
+                });
                 changed |= ui
                     .add(
                         egui::TextEdit::singleline(&mut d.to)
-                            .hint_text("or a page's name")
-                            .desired_width(100.0),
-                    )
-                    .on_hover_text(
-                        "A page's name survives a page being inserted in \
-                         front of it, where counting to one does not.",
+                            .hint_text(if d.page_named {
+                                "Exact widget name"
+                            } else {
+                                "0 = first page"
+                            })
+                            .desired_width(160.0),
                     )
                     .lost_focus();
-            });
-            ui.end_row();
+                ui.end_row();
+            }
         }
         "menu" => {
-            ui.label("menu");
+            ui.label("Menu name");
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut d.menu)
@@ -333,7 +430,7 @@ pub(crate) fn action_rows(ui: &mut egui::Ui, d: &mut Draft) -> bool {
                 .lost_focus();
             ui.end_row();
 
-            ui.label("button");
+            ui.label("Menu button");
             ui.horizontal(|ui| {
                 for b in [
                     Button::Up,
@@ -342,7 +439,10 @@ pub(crate) fn action_rows(ui: &mut egui::Ui, d: &mut Draft) -> bool {
                     Button::Right,
                     Button::Centre,
                 ] {
-                    if ui.selectable_label(d.button == b, button_name(b)).clicked() {
+                    if ui
+                        .selectable_label(d.button == b, button_title(b))
+                        .clicked()
+                    {
                         d.button = b;
                         changed = true;
                     }
@@ -351,7 +451,7 @@ pub(crate) fn action_rows(ui: &mut egui::Ui, d: &mut Draft) -> bool {
             ui.end_row();
         }
         "mode" => {
-            ui.label("mode");
+            ui.label("Drive mode name");
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut d.mode)
@@ -363,7 +463,7 @@ pub(crate) fn action_rows(ui: &mut egui::Ui, d: &mut Draft) -> bool {
             ui.end_row();
         }
         "emit" => {
-            ui.label("name");
+            ui.label("Event name");
             changed |= ui
                 .add(
                     egui::TextEdit::singleline(&mut d.emit)
@@ -379,6 +479,29 @@ pub(crate) fn action_rows(ui: &mut egui::Ui, d: &mut Draft) -> bool {
     changed
 }
 
+fn destination_title(value: &str) -> &str {
+    match value {
+        "next" => "Next page",
+        "prev" => "Previous page",
+        "name" => "Page by name",
+        "index" => "Page by index",
+        other => other,
+    }
+}
+
+fn button_title(button: Button) -> &'static str {
+    match button {
+        Button::Up => "Up",
+        Button::Down => "Down",
+        Button::Left => "Left",
+        Button::Right => "Right",
+        Button::Centre => "Centre / confirm",
+    }
+}
+
+#[cfg(test)]
+mod interaction_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -389,7 +512,7 @@ mod tests {
     /// The one thing worth testing here is the round trip: the rows produce
     /// text, the parser reads it, and the two have to agree or the editor
     /// writes files it cannot open.
-    fn round(d: &Draft) -> Action {
+    pub(super) fn round(d: &Draft) -> Action {
         let src = format!(
             r#"{{"width":10,"height":10,"root":
                 {{"type":"panel","rect":[0,0,10,10],"touch":{}}}}}"#,
@@ -418,6 +541,7 @@ mod tests {
                 action,
                 pager: "pages".into(),
                 to: "gps".into(),
+                page_named: true,
                 menu: "display".into(),
                 button: Button::Left,
                 mode: "track".into(),

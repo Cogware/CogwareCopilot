@@ -17,7 +17,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use copilot::gpio::Pins;
 use copilot::scene::Binding;
+
+mod gpio;
+mod playback;
 use copilot::widget::{BindTarget, Kind, NodeId, Tree};
 
 /// One driven reading.
@@ -96,19 +100,15 @@ pub struct Driver {
     /// coolant sitting at ninety while everything else moves -- which is what
     /// a dash actually looks like and what a layout has to be read against.
     pub driving: bool,
-    /// The car, when one is driving and no log is loaded.
-    pub car: copilot::cogware_can::drive::Car,
-    /// A log of measured data, played over the top of the simulated car.
-    ///
-    /// Defaults to the built-in US06 trace rather than to nothing, so a drive
-    /// is a real one out of the box: what the schedule measured is what the
-    /// speed reads, and the model is left filling only the channels no
-    /// published schedule carries. Somebody's own log replaces it and covers
-    /// however much of the dash it has columns for.
+    /// Coherent generated readings, also filling channels missing from a log.
+    pub engine: crate::simulation::Engine,
+    /// Start the next reset at ambient temperature rather than warmed up.
+    pub cold_start: bool,
+    /// Recorded channels take precedence and condition the remaining simulated values.
     pub log: Option<crate::datalog::Log>,
     /// How far into the log the playback has got, in seconds.
     pub log_at_s: f32,
-    /// Seconds for one full up-and-down sweep. Default 4.0.
+    /// Seconds for each leg of the up-and-down sweep. Default 4.0.
     pub period_s: f32,
     phase: f32,
 }
@@ -124,8 +124,9 @@ impl Default for Driver {
             sweep: false,
             driving: false,
             to_car: false,
-            car: copilot::cogware_can::drive::Car::new(),
-            log: Some(crate::datalog::Log::us06()),
+            engine: crate::simulation::Engine::new(false),
+            cold_start: false,
+            log: None,
             log_at_s: 0.0,
             period_s: 4.0,
             phase: 0.0,
@@ -160,16 +161,22 @@ impl Text {
 impl Driver {
     /// Learn the drivable named widgets in `tree`, and the gauges `bindings`
     /// name -- and the gauges of `others`, the displays open beside this
-    /// one, so one slider reaches every widget in the rig that reads them.
+    /// one, plus pin mappings, so one slider reaches every widget and output that reads it.
     ///
     /// A name that is no longer in the tree (or no longer drivable) is dropped.
     /// A new name gets a channel at its authored value with the full 0..=1
     /// sweep range. An existing name keeps its slider value unless the person
     /// never moved it off the authored value, in which case it follows the
     /// new authored value.
-    pub fn sync(&mut self, tree: &Tree, bindings: &[Binding], others: &[(&Tree, &[Binding])]) {
-        self.sync_gauges(tree, bindings, others);
-        self.sync_lamps(tree, bindings, others);
+    pub fn sync(
+        &mut self,
+        tree: &Tree,
+        bindings: &[Binding],
+        others: &[(&Tree, &[Binding])],
+        pins: &[&Pins],
+    ) {
+        self.sync_gauges(tree, bindings, others, pins);
+        self.sync_lamps(tree, bindings, others, pins);
         // A bound widget is the gauge's to drive. Offering it by name as well
         // would put two sliders on one reading, and the second would win by
         // accident of ordering.
@@ -262,7 +269,13 @@ impl Driver {
     /// the sweep exists to cover exactly that. The starting value is worked
     /// back from what the file draws, so switching the driver on changes
     /// nothing until a slider moves.
-    fn sync_gauges(&mut self, tree: &Tree, bindings: &[Binding], others: &[(&Tree, &[Binding])]) {
+    fn sync_gauges(
+        &mut self,
+        tree: &Tree,
+        bindings: &[Binding],
+        others: &[(&Tree, &[Binding])],
+        pins: &[&Pins],
+    ) {
         let mut seen: BTreeMap<&'static str, (f32, f32, f32)> = BTreeMap::new();
         let all = core::iter::once((tree, bindings)).chain(others.iter().copied());
         for (tree, bindings) in all {
@@ -282,6 +295,7 @@ impl Driver {
                 e.2 = e.2.max(hi);
             }
         }
+        gpio::gauges(&mut seen, pins);
         self.gauges.retain(|name, _| seen.contains_key(name));
         for (name, (authored, min, max)) in seen {
             match self.gauges.get_mut(name) {
@@ -314,7 +328,13 @@ impl Driver {
     /// A lamp starts at whatever the file draws -- a led authored at full is a
     /// lamp the author wants to see lit -- so switching the driver on changes
     /// nothing until a switch is flicked, the same as every other channel.
-    fn sync_lamps(&mut self, tree: &Tree, bindings: &[Binding], others: &[(&Tree, &[Binding])]) {
+    fn sync_lamps(
+        &mut self,
+        tree: &Tree,
+        bindings: &[Binding],
+        others: &[(&Tree, &[Binding])],
+        pins: &[&Pins],
+    ) {
         let mut seen: BTreeMap<&'static str, bool> = BTreeMap::new();
         let all = core::iter::once((tree, bindings)).chain(others.iter().copied());
         for (tree, bindings) in all {
@@ -329,6 +349,7 @@ impl Driver {
                 *seen.entry(ind.name()).or_insert(lit) |= lit;
             }
         }
+        gpio::lamps(&mut seen, pins);
         self.lamps.retain(|name, _| seen.contains_key(name));
         for (name, lit) in seen {
             self.lamps.entry(name).or_insert(lit);
@@ -340,44 +361,11 @@ impl Driver {
     /// A triangle wave: phase runs 0..2 over `period_s` seconds. A period of
     /// zero or less is treated as 4.0 to avoid division by zero.
     pub fn tick(&mut self, delta_us: u64) {
+        if !self.enabled || delta_us == 0 {
+            return;
+        }
         if self.driving {
-            // A log, if one is loaded: what the car really did beats what a
-            // model says it would have. Written through the same channels the
-            // simulated car uses, so everything downstream -- bindings, units,
-            // the canvas, the bus -- cannot tell which was playing.
-            // The car moves on its own clock and writes through the same
-            // channels a slider does, so everything downstream -- bindings,
-            // units, the canvas -- is unchanged by which one is driving.
-            self.car.advance(delta_us);
-            for (id, _) in copilot::cogware_can::drive::DRIVEN {
-                let Some(spec) = copilot::cogware_can::gauge_by_id(*id) else {
-                    continue;
-                };
-                let Some(ch) = self.gauges.get_mut(spec.name) else {
-                    continue;
-                };
-                let Some(raw) = self.car.reading(*id) else { continue };
-                ch.value = raw as f32 / spec.unit.scale as f32;
-            }
-
-            // Then the log over the top, so a channel somebody measured beats
-            // the same channel worked out from a model. The built-in trace
-            // carries road speed alone and leaves the rest as it found it;
-            // a log off a real car covers as much of the dash as it logged.
-            if self.log.is_some() {
-                self.log_at_s += delta_us as f32 / 1_000_000.0;
-                let now = self.log_at_s;
-                let measured = self.log.as_ref().map(|l| l.at(now)).unwrap_or_default();
-                for (id, raw) in measured {
-                    let Some(spec) = copilot::cogware_can::gauge_by_id(id) else {
-                        continue;
-                    };
-                    let Some(ch) = self.gauges.get_mut(spec.name) else {
-                        continue;
-                    };
-                    ch.value = raw as f32 / spec.unit.scale as f32;
-                }
-            }
+            self.tick_playback(delta_us);
             return;
         }
         if !self.sweep {
@@ -404,16 +392,14 @@ impl Driver {
     #[must_use]
     pub fn readings(&self) -> Vec<(u16, i32)> {
         if self.driving {
-            // Straight off the channels `tick` just wrote, which is the car
-            // with whatever was measured laid over it -- so the bus carries
-            // the same numbers the preview is showing and not the model the
-            // log was meant to correct.
-            return copilot::cogware_can::drive::DRIVEN
-                .iter()
-                .filter_map(|(id, _)| {
-                    let spec = copilot::cogware_can::gauge_by_id(*id)?;
-                    let ch = self.gauges.get(spec.name)?;
-                    Some((*id, (ch.value * spec.unit.scale as f32).round() as i32))
+            // Preserve the preview's subscription scope rather than flooding the
+            // controller with unrelated channels from the complete model.
+            return self
+                .generated_readings()
+                .into_iter()
+                .filter(|(id, _)| {
+                    copilot::cogware_can::gauge_by_id(*id)
+                        .is_some_and(|gauge| self.gauges.contains_key(gauge.name))
                 })
                 .collect();
         }
@@ -671,7 +657,7 @@ mod tests {
     #[test]
     fn a_new_name_starts_at_the_authored_value_with_the_full_range() {
         let mut d = Driver::default();
-        d.sync(&tree(0.4, "88"), &[], &[]);
+        d.sync(&tree(0.4, "88"), &[], &[], &[]);
         let ch = d.channels.get("rpm").expect("the bar");
         assert_eq!((ch.value, ch.min, ch.max, ch.sweep), (0.4, 0.0, 1.0, true));
         assert_eq!(d.labels.get("speed").map(|t| t.text.as_str()), Some("88"));
@@ -680,10 +666,10 @@ mod tests {
     #[test]
     fn a_vanished_name_is_dropped() {
         let mut d = Driver::default();
-        d.sync(&tree(0.4, "88"), &[], &[]);
+        d.sync(&tree(0.4, "88"), &[], &[], &[]);
         let mut t = Tree::new(Rect::new(0, 0, 100, 100));
         t.push(ROOT, node("other", bar(0.1))).expect("a bar");
-        d.sync(&t, &[], &[]);
+        d.sync(&t, &[], &[], &[]);
         assert!(!d.channels.contains_key("rpm"), "{:?}", d.channels);
         assert!(d.labels.is_empty());
         assert!(d.channels.contains_key("other"));
@@ -694,8 +680,8 @@ mod tests {
         // Editing the value in the inspector must show up in the values
         // pane, or the two disagree about what the gauge reads.
         let mut d = Driver::default();
-        d.sync(&tree(0.4, "88"), &[], &[]);
-        d.sync(&tree(0.7, "99"), &[], &[]);
+        d.sync(&tree(0.4, "88"), &[], &[], &[]);
+        d.sync(&tree(0.7, "99"), &[], &[], &[]);
         assert_eq!(d.channels["rpm"].value, 0.7);
         assert_eq!(d.labels["speed"].text, "99");
     }
@@ -703,10 +689,10 @@ mod tests {
     #[test]
     fn a_moved_slider_survives_an_edit_to_the_file() {
         let mut d = Driver::default();
-        d.sync(&tree(0.4, "88"), &[], &[]);
+        d.sync(&tree(0.4, "88"), &[], &[], &[]);
         d.channels.get_mut("rpm").expect("the bar").value = 0.9;
         d.labels.get_mut("speed").expect("the label").text = "123".into();
-        d.sync(&tree(0.7, "99"), &[], &[]);
+        d.sync(&tree(0.7, "99"), &[], &[], &[]);
         assert_eq!(d.channels["rpm"].value, 0.9);
         assert_eq!(d.channels["rpm"].authored(), 0.7);
         assert_eq!(d.labels["speed"].text, "123");
@@ -721,7 +707,7 @@ mod tests {
     fn apply_then_restore_leaves_the_tree_as_it_was() {
         let mut d = Driver::default();
         let mut t = tree(0.4, "88");
-        d.sync(&t, &[], &[]);
+        d.sync(&t, &[], &[], &[]);
         d.enabled = true;
         d.channels.get_mut("rpm").expect("the bar").value = 0.9;
         d.labels.get_mut("speed").expect("the label").text = "123".into();
@@ -832,7 +818,7 @@ mod tests {
         let (mut t, b) = (s.tree, s.bindings);
 
         let mut d = Driver::default();
-        d.sync(&t, &b, &[]);
+        d.sync(&t, &b, &[], &[]);
         let ch = &d.gauges["RPM"];
         assert_eq!(
             (ch.min, ch.max),
@@ -855,7 +841,7 @@ mod tests {
     fn a_bound_widget_is_driven_by_its_gauge_in_the_unit_the_bus_carries() {
         let (mut t, b) = bound();
         let mut d = Driver::default();
-        d.sync(&t, &b, &[]);
+        d.sync(&t, &b, &[], &[]);
         // Bound widgets are the gauge's business, not a name channel's.
         assert!(!d.channels.contains_key("rpm"), "{:?}", d.channels);
         let rpm = &d.gauges["RPM"];
@@ -913,7 +899,7 @@ mod lamp_tests {
         // together, which is not a thing anybody wants to do.
         let s = lamps_scene();
         let mut d = Driver::default();
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         assert_eq!(d.lamps.len(), 2);
         assert!(d.lamps.contains_key("OIL_PRESSURE"));
         assert!(d.lamps.contains_key("LOW_FUEL"));
@@ -932,7 +918,7 @@ mod lamp_tests {
                 "bind":{"indicator":"ABS"}}"#,
         );
         let mut d = Driver::default();
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         assert_eq!(d.lamps.get("ABS"), Some(&true), "the file draws it lit");
     }
 
@@ -940,7 +926,7 @@ mod lamp_tests {
     fn flicking_a_switch_lights_the_widget_it_drives() {
         let mut s = lamps_scene();
         let mut d = Driver::default();
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         d.enabled = true;
         *d.lamps.get_mut("OIL_PRESSURE").expect("a switch") = true;
 
@@ -964,7 +950,7 @@ mod lamp_tests {
         // would leave the widget hidden for good.
         let mut s = lamps_scene();
         let mut d = Driver::default();
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         d.enabled = true;
         *d.lamps.get_mut("LOW_FUEL").expect("a switch") = true;
 
@@ -983,12 +969,12 @@ mod lamp_tests {
     fn a_lamp_that_leaves_the_scene_loses_its_switch() {
         let mut d = Driver::default();
         let s = lamps_scene();
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         assert_eq!(d.lamps.len(), 2);
 
         let fewer =
             scene(r#"{"type":"led","rect":[0,0,10,10],"bind":{"indicator":"OIL_PRESSURE"}}"#);
-        d.sync(&fewer.tree, &fewer.bindings, &[]);
+        d.sync(&fewer.tree, &fewer.bindings, &[], &[]);
         assert_eq!(d.lamps.len(), 1);
         assert!(d.lamps.contains_key("OIL_PRESSURE"));
     }
@@ -998,9 +984,9 @@ mod lamp_tests {
         // Editing the file must not put out a lamp somebody is looking at.
         let mut d = Driver::default();
         let s = lamps_scene();
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         *d.lamps.get_mut("OIL_PRESSURE").unwrap() = true;
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         assert_eq!(d.lamps.get("OIL_PRESSURE"), Some(&true));
     }
 
@@ -1010,7 +996,7 @@ mod lamp_tests {
         // person checking a dark panel is doing.
         let mut d = Driver::default();
         let s = lamps_scene();
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         *d.lamps.get_mut("OIL_PRESSURE").unwrap() = true;
         d.reset();
         assert_eq!(d.lamps.get("OIL_PRESSURE"), Some(&true));
@@ -1020,7 +1006,7 @@ mod lamp_tests {
     fn a_disabled_driver_touches_neither_lamp_nor_widget() {
         let mut s = lamps_scene();
         let mut d = Driver::default();
-        d.sync(&s.tree, &s.bindings, &[]);
+        d.sync(&s.tree, &s.bindings, &[], &[]);
         *d.lamps.get_mut("OIL_PRESSURE").unwrap() = true;
         assert!(d.apply(&mut s.tree, &s.bindings).is_empty());
         let oil = s.tree.find("oil").unwrap();

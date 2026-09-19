@@ -1,601 +1,438 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The window that sends what is open to the car.
-//!
-//! Deliberately small. Choosing a link and a display is the whole of the
-//! decision; everything else is the car's answer, put in front of the person
-//! who asked rather than into a log they will not read.
+//! Upload controls with explicit connection, transfer and cancellation progress.
 
-use super::watch::{self, Reading, Watch};
-use super::{bluetooth::Bluetooth, wifi::Wifi, Error, Push, State, Transport};
+use std::time::{Duration, Instant};
 
-/// Why a shared network may not answer, said where somebody choosing it reads
-/// it rather than in a document nobody opens.
-const LAN_NOTE: &str =
-    "The master joins a network it has been told about. Send it the name and \
-     password over Bluetooth first.";
+use super::cancel::Cancel;
+use super::connection::{Connecting, Connection};
+use super::{Error, Push, State, Transport};
 
-/// How the link to the car stands.
-pub enum LinkState {
-    /// Nothing open.
-    Off,
-    /// A link is open; `heard` is how long ago the car last answered, or
-    /// `None` if it has not answered yet.
-    Open {
-        /// What the link is, as the transport describes itself.
-        what: String,
-        /// Since the last word from the car.
-        heard: Option<std::time::Duration>,
-    },
+pub use super::monitor::{LinkState, Monitor};
+
+pub(super) const WARN: egui::Color32 = egui::Color32::from_rgb(255, 176, 64);
+
+struct Work {
+    link: Box<dyn Transport>,
+    push: Push,
 }
 
-/// Which way the editor is talking to the car.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Link {
-    /// Over the radio, which needs nothing arranged beforehand.
-    #[default]
-    Bluetooth,
-    /// Over the car's own access point, which the laptop must have joined.
-    Wifi,
-    /// Over a network both are already on, for a car wired or joined to one.
-    ///
-    /// The same socket as [`Link::Wifi`]: what differs is whose network it is,
-    /// and that the master has to have been told how to join it.
-    Lan,
-}
-
-/// What the window is doing.
 enum Doing {
-    /// Waiting to be told what to send and where.
     Asking,
-    /// Connecting, or pushing.
-    ///
-    /// Boxed together: a push carries the image, so this variant is a
-    /// kilobyte larger than the others and every `Doing` would otherwise be
-    /// sized for it.
-    Working(Box<(Box<dyn Transport>, Push)>),
-    /// Finished, with something to say.
+    Connecting(Connecting, Box<Push>),
+    Working(Box<Work>),
+    Cancelling(Box<Cancel>),
     Said(Result<String, Error>),
 }
 
-/// The window that watches the car.
-///
-/// Kept apart from the upload window because the two are different jobs: one
-/// is a thing somebody does and finishes, the other is a thing left open
-/// while working. They share the transports and nothing else.
-#[derive(Default)]
-pub struct Monitor {
-    open: bool,
-    link: Link,
-    addr: String,
-    /// When the drive was last sent, so it goes at a sane rate rather than
-    /// once a frame.
-    last_feed: Option<std::time::Instant>,
-    /// The network to hand the master, and what came of sending it.
-    ssid: String,
-    password: String,
-    stored: Option<Result<String, Error>>,
-    /// The link, once opened, and what it has heard.
-    watching: Option<(Box<dyn Transport>, Watch)>,
-    /// Why the last attempt failed, if it did.
-    trouble: Option<Error>,
-    /// Whether to list every gauge or only the ones the car is holding.
-    ///
-    /// Every gauge by default, and that is the useful default: a list that
-    /// only shows what is arriving cannot show what has stopped.
-    all_gauges: bool,
-}
-
-impl Monitor {
-    /// Open or close the window.
-    pub fn toggle(&mut self) {
-        self.open = !self.open;
-        if !self.open {
-            self.watching = None;
-        }
-        if self.addr.is_empty() {
-            self.addr = super::wifi::DEFAULT_ADDR.to_string();
-        }
-    }
-
-    /// Draw it, and keep the reading current.
-    /// How the link to the car stands, for anything that wants to show it.
-    ///
-    /// "Open" is not the same as "answering": a socket stays up and a radio
-    /// stays paired long after the board behind them has stopped talking, so
-    /// what is reported is how long ago the car last said anything.
-    pub fn link_state(&self) -> LinkState {
-        match &self.watching {
-            None => LinkState::Off,
-            Some((link, watch)) => LinkState::Open {
-                what: link.describe(),
-                heard: watch.latest().map(|(_, age)| age),
-            },
-        }
-    }
-
-    /// Send one round of readings down the link this window already has open.
-    ///
-    /// Reuses the watch connection rather than opening a second one: the car
-    /// takes one at a time, and a feed that opened its own would be refused
-    /// by a board that is perfectly well.
-    pub fn feed(&mut self, readings: &[(u16, i32)]) {
-        // Twenty-five a second: about what a car's own bus gives a dash, and
-        // a hundred and eighty bytes a second, which no link here notices.
-        // Ten was tried first and read as laggy -- a needle stepping rather
-        // than moving -- and sixty only fills the channel the reports come
-        // back on. A set that will not fit is dropped rather than queued: the
-        // next one is forty milliseconds away and is newer.
-        const EVERY: std::time::Duration = std::time::Duration::from_millis(40);
-        if self.last_feed.is_some_and(|at| at.elapsed() < EVERY) {
-            return;
-        }
-        let Some((link, _)) = self.watching.as_mut() else {
-            return;
-        };
-        self.last_feed = Some(std::time::Instant::now());
-        if let Err(e) = super::feed_readings(link.as_mut(), readings) {
-            self.trouble = Some(e);
-            self.watching = None;
-        }
-    }
-
-    pub fn show(&mut self, ctx: &egui::Context) {
-        if !self.open {
-            return;
-        }
-        let mut open = self.open;
-        egui::Window::new("The car")
-            .open(&mut open)
-            .resizable(false)
-            .show(ctx, |ui| self.body(ui));
-        if self.open && !open {
-            self.watching = None;
-        }
-        self.open = open;
-        if self.watching.is_some() {
-            // A reading a second is no use if the frame only comes when the
-            // mouse moves.
-            ctx.request_repaint_after(std::time::Duration::from_millis(250));
-        }
-    }
-
-    fn body(&mut self, ui: &mut egui::Ui) {
-        let Some((link, watch)) = self.watching.as_mut() else {
-            self.offer(ui);
-            return;
-        };
-        let described = link.describe();
-        if let Err(e) = watch.step(link.as_mut()) {
-            self.trouble = Some(e);
-            self.watching = None;
-            return;
-        }
-        ui.label(format!("Watching {described}"));
-        ui.separator();
-        match watch.latest() {
-            Some((status, age)) => {
-                egui::Grid::new("car").num_columns(2).show(ui, |ui| {
-                    let mut row = |name: &str, value: String| {
-                        ui.label(name);
-                        ui.label(value);
-                        ui.end_row();
-                    };
-                    row("running for", watch::uptime(status.uptime_ms));
-                    row("bus", format!("{} frames a second", status.can_tx_rate));
-                    row("sent on the bus", status.can_tx.to_string());
-                    row("heard on the bus", status.can_rx.to_string());
-                    row("gauges asked for", status.subscribers.to_string());
-                    row("frames from a host", status.host_frames.to_string());
-                    // Shown always, not only when it climbs: a zero here is
-                    // worth seeing, because it is what says the link is clean.
-                    row("checksums thrown away", status.crc_errors.to_string());
-                });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    lamp(ui, "CAN", status.can_up());
-                    lamp(ui, "panel", status.panel_up());
-                    lamp(ui, "host", status.host_up());
-                    if status.loopback() {
-                        // Worth saying loudly: in loopback the car answers
-                        // itself and nothing reaches a display, which looks
-                        // exactly like everything working.
-                        ui.colored_label(WARN, "loopback -- nothing reaches a display");
-                    }
-                });
-                if watch.silent() {
-                    ui.colored_label(WARN, format!("nothing for {}s", age.as_secs()));
-                }
-                ui.separator();
-                gauges(ui, watch, &mut self.all_gauges);
-                Self::nodes(ui, watch);
-            }
-            None => {
-                ui.spinner();
-                ui.label("waiting for the car to say something");
-            }
-        }
-        ui.separator();
-        if ui.button("Stop watching").clicked() {
-            self.watching = None;
-        }
-    }
-
-/// What each display says about its own drawing.
-///
-/// These numbers used to be painted into a corner of each screen, where
-/// every window of them cost a repaint of their own and the glass showed
-/// workshop diagnostics to the driver. The bus carries them to the master
-/// and the master here, which is where somebody acts on them.
-fn nodes(ui: &mut egui::Ui, watch: &Watch) {
-    let health = watch.health();
-    if health.is_empty() {
-        return;
-    }
-    ui.separator();
-    ui.label("nodes");
-    egui::Grid::new("nodes").num_columns(5).show(ui, |ui| {
-        ui.label("node");
-        ui.label("fps");
-        ui.label("compose");
-        ui.label("pixels");
-        ui.label("rects");
-        ui.end_row();
-        for (node, h, _at) in health {
-            ui.label(format!("0x{node:02X}"));
-            ui.label(h.fps.to_string());
-            ui.label(format!("{} us", h.compose_us));
-            ui.label(h.painted.to_string());
-            ui.label(h.rects.to_string());
-            ui.end_row();
-        }
-    });
-    // A node that has stopped reporting keeps its last line, so the age of
-    // the stalest one is what says whether these are live numbers or a
-    // eulogy.
-    if let Some((_, _, oldest)) = health.iter().min_by_key(|(_, _, at)| *at) {
-        let age = oldest.elapsed();
-        if age > std::time::Duration::from_secs(5) {
-            ui.small(format!("oldest report {} s ago", age.as_secs()));
-        }
-    }
-}
-
-    /// Where the master is told which network to join.
-    ///
-    /// Only over Bluetooth, and only there: these are the credentials for the
-    /// network, so a link that already needs it cannot carry them.
-    fn network_box(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("Tell the master its network", |ui| {
-            if self.link != Link::Bluetooth {
-                ui.small("Choose Bluetooth first: a network cannot carry its own password.");
-                return;
-            }
-            ui.horizontal(|ui| {
-                ui.label("Name");
-                ui.text_edit_singleline(&mut self.ssid);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Password");
-                ui.add(egui::TextEdit::singleline(&mut self.password).password(true));
-            });
-            if ui.button("Send and store").clicked() {
-                self.stored = Some(
-                    Bluetooth::connect()
-                        .and_then(|mut link| {
-                            super::set_network(&mut link, &self.ssid, &self.password)
-                        })
-                        .map(|()| format!("{} stored; restart the master to join it", self.ssid)),
-                );
-            }
-            match &self.stored {
-                Some(Ok(said)) => ui.small(said.as_str()),
-                Some(Err(e)) => ui.colored_label(WARN, e.to_string()),
-                None => ui.small("The master keeps this across a power cycle."),
-            };
-        });
-    }
-
-    fn offer(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Link");
-            ui.selectable_value(&mut self.link, Link::Bluetooth, "Bluetooth");
-            ui.selectable_value(&mut self.link, Link::Wifi, "The car's network");
-            ui.selectable_value(&mut self.link, Link::Lan, "A network you both share");
-        });
-        if self.link != Link::Bluetooth {
-            ui.horizontal(|ui| {
-                ui.label("Address");
-                ui.text_edit_singleline(&mut self.addr);
-            });
-        }
-        if self.link == Link::Lan {
-            ui.small(LAN_NOTE);
-        }
-        self.network_box(ui);
-        if let Some(e) = &self.trouble {
-            ui.colored_label(WARN, e.to_string());
-        }
-        if ui.button("Watch").clicked() {
-            self.trouble = None;
-            let opened: Result<Box<dyn Transport>, Error> = match self.link {
-                Link::Bluetooth => Bluetooth::connect().map(|b| Box::new(b) as Box<dyn Transport>),
-                // One socket for both: the car's own access point and a network
-                // you share differ in whose network it is, not in what this
-                // end does with it.
-                Link::Wifi | Link::Lan => {
-                    Wifi::connect(&self.addr).map(|w| Box::new(w) as Box<dyn Transport>)
-                }
-            };
-            match opened {
-                Ok(link) => self.watching = Some((link, Watch::new())),
-                Err(e) => self.trouble = Some(e),
-            }
-        }
-    }
-}
-
-/// Draw what the car is reading, gauge by gauge.
-///
-/// Every gauge this build knows, in the table's own order, whether the car is
-/// holding a value for it or not. That is the point: a list of only what is
-/// arriving cannot show what has stopped arriving, and a sender that has died
-/// is exactly what somebody opens this to find.
-///
-/// The raw count first, because it is what the car actually has. The value
-/// beside it is the same number divided by the gauge's scale -- useful, but
-/// an interpretation, and a sensor reading nonsense reads as nonsense in the
-/// first column and as something plausible in the second.
-///
-/// A channel nothing is filling is drawn as the sentinel the car actually
-/// sent, `CAFEBABE`, and said in words beside it. Spelled out rather than
-/// blanked, because the number is what somebody sees in a log or a packet
-/// dump and it should mean the same thing everywhere it appears.
-fn gauges(ui: &mut egui::Ui, watch: &Watch, all: &mut bool) {
-    let held = watch.live_gauges();
-    ui.horizontal(|ui| {
-        ui.label(format!("{held} gauges reading"));
-        ui.checkbox(all, "show every gauge");
-    });
-    if !watch.has_readings() {
-        ui.weak("the car has not sent any readings yet");
-        return;
-    }
-    egui::ScrollArea::vertical()
-        .max_height(280.0)
-        .show(ui, |ui| {
-            egui::Grid::new("gauges").num_columns(3).striped(true).show(ui, |ui| {
-                for gauge in cogware_can::ALL_GAUGES {
-                    let reading = watch.reading(gauge.id);
-                    // Only rows with a value, unless asked for the lot.
-                    if !*all && !matches!(reading, Reading::Value(_)) {
-                        continue;
-                    }
-                    ui.label(gauge.name);
-                    match reading {
-                        Reading::Value(raw) => {
-                            ui.monospace(raw.to_string());
-                            let scale = gauge.unit.scale as f32;
-                            let value = raw as f32 / scale;
-                            ui.weak(format!("{value:.2} {}", gauge.unit.symbol));
-                        }
-                        Reading::NoData => {
-                            // The sentinel spelled out, so the number in a
-                            // packet dump and the words on the screen are
-                            // plainly the same thing.
-                            ui.monospace(
-                                egui::RichText::new("CAFEBABE").color(egui::Color32::GRAY),
-                            );
-                            ui.weak("no sensor data");
-                        }
-                    }
-                    ui.end_row();
-                }
-            });
-        });
-}
-
-/// The colour a warning is expected in, matching the displays'.
-const WARN: egui::Color32 = egui::Color32::from_rgb(255, 176, 64);
-
-/// A lamp that is lit or not, with the name beside it either way.
-///
-/// Both states drawn, rather than only the lit one: a row that shows nothing
-/// when a thing is down reads as a row that has not loaded.
-fn lamp(ui: &mut egui::Ui, name: &str, on: bool) {
-    let colour = if on {
-        egui::Color32::from_rgb(63, 185, 80)
-    } else {
-        egui::Color32::from_rgb(110, 118, 129)
-    };
-    ui.colored_label(colour, if on { "●" } else { "○" });
-    ui.label(name);
-}
-
-/// The upload window.
+/// The upload window and any transfer still finishing after it is closed.
 pub struct Uploader {
     open: bool,
-    /// When this window was built, as the origin for the clock a push needs.
-    started: std::time::Instant,
-    link: Link,
-    /// Address of the display to send to, as the rig numbers them.
+    started: Instant,
+    connection: Connection,
     node: u8,
-    /// Which slot of the kind: a scene's mode index, or zero for a rig.
     slot: u8,
-    /// Whether what is open is a rig rather than a scene.
+    destinations: super::destination::Choices,
     rig: bool,
     doing: Doing,
-    /// The address to use when the car's network is chosen.
-    addr: String,
 }
 
 impl Default for Uploader {
     fn default() -> Self {
         Self {
             open: false,
-            started: std::time::Instant::now(),
-            link: Link::Bluetooth,
+            started: Instant::now(),
+            connection: Connection::default(),
             node: 0x02,
             slot: 0,
+            destinations: super::destination::Choices::default(),
             rig: false,
             doing: Doing::Asking,
-            addr: super::wifi::DEFAULT_ADDR.to_string(),
         }
     }
 }
 
 impl Uploader {
-    /// Open the window for whatever is currently being edited.
-    pub fn open(&mut self, rig: bool) {
-        self.open = true;
-        self.rig = rig;
-        self.doing = Doing::Asking;
+    pub(super) fn configure_destination(
+        &mut self,
+        node: Option<u8>,
+        slot: Option<u8>,
+        displays: Vec<(String, u8)>,
+        modes: Vec<String>,
+    ) {
+        if self.busy() {
+            return;
+        }
+        if let Some(node) = node {
+            self.node = node;
+        }
+        self.slot = slot.unwrap_or(0);
+        self.destinations = super::destination::Choices { displays, modes };
     }
 
-    /// Whether the next push goes as a rig rather than a scene.
-    ///
-    /// The caller needs it to hand over the right document: the two are
-    /// different files, and sending one under the other's kind writes it over
-    /// the wrong one on the card.
+    /// Show the upload controls without discarding an active transfer.
+    pub fn open(&mut self, rig: bool) {
+        self.open = true;
+        if !self.busy() {
+            self.rig = rig;
+            self.doing = Doing::Asking;
+        }
+    }
+
+    /// Whether the upload owns, or is looking for, a controller connection.
+    pub fn busy(&self) -> bool {
+        self.connection.busy()
+            || matches!(
+                self.doing,
+                Doing::Connecting(..) | Doing::Working(..) | Doing::Cancelling(..)
+            )
+    }
+
+    /// Describe active upload work for the editor's persistent status bar.
+    pub fn activity(&self) -> Option<String> {
+        match &self.doing {
+            Doing::Connecting(pending, _) => Some(format!("Connecting to {}...", pending.label)),
+            Doing::Working(work) => Some(format!(
+                "Uploading to display 0x{:02X}: {}%",
+                self.node,
+                work.push.percent(),
+            )),
+            Doing::Cancelling(_) => Some("Cancelling upload...".into()),
+            _ if self.connection.busy() => Some("Searching for Bluetooth devices...".into()),
+            _ => None,
+        }
+    }
+
+    /// Whether the document being uploaded is a rig rather than a scene.
     pub fn sending_rig(&self) -> bool {
         self.rig
     }
 
-    /// Draw it, and carry a push along if one is running.
-    ///
-    /// `bytes` is what would be sent, fetched only when somebody asks to
-    /// send: a scene is serialised on demand rather than kept in step with
-    /// the canvas, which would cost a redraw of the document every frame.
-    pub fn show(&mut self, ctx: &egui::Context, bytes: impl FnOnce() -> Option<Vec<u8>>) {
+    fn advance(&mut self) {
+        self.connection.poll();
+        if let Doing::Connecting(pending, _) = &self.doing
+            && let Some(result) = pending.job.poll()
+        {
+            let Doing::Connecting(_, push) = std::mem::replace(&mut self.doing, Doing::Asking)
+            else {
+                unreachable!()
+            };
+            self.doing = match result {
+                Ok(link) => {
+                    self.started = Instant::now();
+                    Doing::Working(Box::new(Work { link, push: *push }))
+                }
+                Err(error) => Doing::Said(Err(error)),
+            };
+        }
+        let finished = match &mut self.doing {
+            Doing::Working(work) => {
+                match work.push.step(
+                    work.link.as_mut(),
+                    self.started.elapsed().as_millis() as u64,
+                ) {
+                    Ok(State::Done) => {
+                        Some(Ok("Upload complete. The display confirmed receipt.".into()))
+                    }
+                    Ok(_) => None,
+                    Err(error) => Some(Err(error)),
+                }
+            }
+            Doing::Cancelling(cancel) => match cancel.step() {
+                Ok(Some(message)) => Some(Ok(message)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            },
+            _ => None,
+        };
+        if let Some(result) = finished {
+            if result.is_err() {
+                self.open = true;
+            }
+            self.doing = Doing::Said(result);
+        }
+    }
+
+    fn cancel(&mut self) {
+        self.connection.cancel();
+        self.doing = match std::mem::replace(&mut self.doing, Doing::Asking) {
+            Doing::Working(work) => Doing::Cancelling(Box::new(Cancel::new(work.link, work.push))),
+            Doing::Connecting(..) => {
+                Doing::Said(Ok("Connection cancelled. Nothing was uploaded.".into()))
+            }
+            other => other,
+        };
+    }
+
+    /// Draw the dialog and advance active work without waiting for radio or network I/O.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        monitor_busy: bool,
+        bytes: impl FnOnce(bool) -> Option<Vec<u8>>,
+    ) {
+        self.advance();
+        if self.busy() {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
         if !self.open {
             return;
         }
         let mut open = self.open;
-        egui::Window::new("Send to the car")
+        egui::Window::new("Upload to display")
             .open(&mut open)
-            .resizable(false)
-            .show(ctx, |ui| self.body(ui, bytes));
-        if self.open && !open {
-            // Closing the window mid-push must tell the car, or it sits
-            // holding the transfer open and refuses every later one until it
-            // times out -- with the bus locked and every screen showing the
-            // update notice the whole time.
-            if let Doing::Working(work) = &mut self.doing {
-                let (link, push) = work.as_mut();
-                let _ = push.cancel(link.as_mut());
-            }
-            self.doing = Doing::Asking;
+            .default_width(520.0)
+            .resizable(true)
+            .vscroll(true)
+            .show(ctx, |ui| self.body(ui, monitor_busy, bytes));
+        if !open {
+            self.cancel();
         }
-        self.open = open;
-        // A push in flight needs the frame to keep coming even when nothing
-        // is being touched, or it advances only when the mouse moves.
-        if matches!(self.doing, Doing::Working(..)) {
-            ctx.request_repaint();
-        }
+        self.open &= open;
     }
 
-    fn body(&mut self, ui: &mut egui::Ui, bytes: impl FnOnce() -> Option<Vec<u8>>) {
-        match &mut self.doing {
-            Doing::Asking => {
-                self.ask(ui, bytes);
+    fn body(
+        &mut self,
+        ui: &mut egui::Ui,
+        monitor_busy: bool,
+        bytes: impl FnOnce(bool) -> Option<Vec<u8>>,
+    ) {
+        match &self.doing {
+            Doing::Asking => self.ask(ui, monitor_busy, bytes),
+            Doing::Connecting(pending, _) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!("Connecting to {}...", pending.label));
+                });
+                ui.small(format!(
+                    "Elapsed: {} s. You can keep editing.",
+                    pending.started.elapsed().as_secs()
+                ));
+                if ui.button("Cancel connection").clicked() {
+                    self.cancel();
+                }
             }
             Doing::Working(work) => {
-                let (link, push) = work.as_mut();
-                let described = link.describe();
-                // The editor's own clock. A push is paced by the car, and
-                // the retry of its opening frame by wall time, so a redraw
-                // rate must not be what decides either.
-                let now_ms = self.started.elapsed().as_millis() as u64;
-                let step = push.step(link.as_mut(), now_ms);
-                let percent = push.percent();
-                ui.label(format!("Sending over {described}"));
-                ui.add(egui::ProgressBar::new(f32::from(percent) / 100.0).show_percentage());
-                // What the bus has confirmed, not what the editor has
-                // written: the two differ by most of a transfer.
-                ui.small("the bar follows what the car has passed to the display");
-                match step {
-                    Ok(State::Done) => {
-                        self.doing = Doing::Said(Ok("The display took it.".into()));
-                    }
-                    Ok(_) => {}
-                    Err(e) => self.doing = Doing::Said(Err(e)),
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(format!(
+                        "Uploading to display 0x{:02X} via {}",
+                        self.node,
+                        work.link.describe()
+                    ));
+                });
+                ui.add(
+                    egui::ProgressBar::new(f32::from(work.push.percent()) / 100.0)
+                        .show_percentage(),
+                );
+                ui.small("Progress shows the data confirmed by the display, not just sent by this computer.");
+                ui.small(format!("Elapsed: {} s", self.started.elapsed().as_secs()));
+                if ui.button("Cancel upload").clicked() {
+                    self.cancel();
                 }
             }
-            Doing::Said(what) => {
-                match what {
-                    Ok(good) => {
-                        ui.label(good.clone());
+            Doing::Cancelling(_) => {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Cancelling upload...");
+                });
+                ui.small("Waiting for the controller to release the transfer.");
+            }
+            Doing::Said(result) => {
+                let retry = result.is_err();
+                match result {
+                    Ok(message) => {
+                        ui.label(message);
                     }
-                    Err(e) => {
-                        ui.colored_label(egui::Color32::from_rgb(255, 176, 64), e.to_string());
+                    Err(error) => {
+                        ui.colored_label(WARN, format!("Upload could not finish: {error}"));
+                        ui.small("Check the selected device, display address and connection, then try again.");
                     }
                 }
-                if ui.button("Again").clicked() {
-                    self.doing = Doing::Asking;
-                }
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(if retry { "Try again" } else { "New upload" })
+                        .clicked()
+                    {
+                        self.doing = Doing::Asking;
+                    }
+                    if ui.button("Close").clicked() {
+                        self.open = false;
+                    }
+                });
             }
         }
     }
 
-    fn ask(&mut self, ui: &mut egui::Ui, bytes: impl FnOnce() -> Option<Vec<u8>>) {
-        ui.horizontal(|ui| {
-            ui.label("Link");
-            ui.selectable_value(&mut self.link, Link::Bluetooth, "Bluetooth");
-            ui.selectable_value(&mut self.link, Link::Wifi, "The car's network");
-            ui.selectable_value(&mut self.link, Link::Lan, "A network you both share");
-        });
-        if self.link != Link::Bluetooth {
-            ui.horizontal(|ui| {
-                ui.label("Address");
-                ui.text_edit_singleline(&mut self.addr);
-            });
-            if self.link == Link::Lan {
-                ui.small(LAN_NOTE);
-            } else {
-                ui.small("Join the car's access point first; it is not on your own network.");
-            }
+    fn ask(
+        &mut self,
+        ui: &mut egui::Ui,
+        monitor_busy: bool,
+        bytes: impl FnOnce(bool) -> Option<Vec<u8>>,
+    ) {
+        ui.heading(if self.rig {
+            "Upload rig definition"
         } else {
-            ui.small("The car has to be advertising. It is, unless a display has turned it off.");
-        }
-        ui.separator();
-        ui.horizontal(|ui| {
-            ui.label("Display");
-            ui.add(egui::DragValue::new(&mut self.node).range(1..=0x0F).hexadecimal(2, false, true));
+            "Upload current scene"
         });
-        if !self.rig {
-            ui.horizontal(|ui| {
-                ui.label("Mode");
-                ui.add(egui::DragValue::new(&mut self.slot).range(0..=7));
-            });
-            ui.small("The mode's place in the rig, which is the slot the scene lands in.");
+        if monitor_busy {
+            ui.colored_label(WARN, "Disconnect in Connections before uploading. The controller accepts one connection at a time.");
         }
-        ui.separator();
-        if ui.button("Send").clicked() {
-            let Some(image) = bytes() else {
-                self.doing = Doing::Said(Err(Error::Link("there is nothing open to send".into())));
-                return;
-            };
-            let opened: Result<Box<dyn Transport>, Error> = match self.link {
-                Link::Bluetooth => Bluetooth::connect().map(|b| Box::new(b) as Box<dyn Transport>),
-                // One socket for both: the car's own access point and a network
-                // you share differ in whose network it is, not in what this
-                // end does with it.
-                Link::Wifi | Link::Lan => {
-                    Wifi::connect(&self.addr).map(|w| Box::new(w) as Box<dyn Transport>)
-                }
-            };
-            match opened {
-                Ok(link) => {
-                    let kind = if self.rig {
-                        cogware_can::xfer::kind::RIG
-                    } else {
-                        cogware_can::xfer::kind::SCENE
-                    };
-                    let slot = if self.rig { 0 } else { self.slot };
-                    let push = Push::new(self.node, kind, slot, image);
-                    self.doing = Doing::Working(Box::new((link, push)));
-                }
-                Err(e) => self.doing = Doing::Said(Err(e)),
+        ui.add_enabled_ui(!monitor_busy, |ui| {
+            self.connection.show(ui);
+            ui.separator();
+            if !self.destinations.displays.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label("Upload");
+                    ui.selectable_value(&mut self.rig, false, "Current scene");
+                    ui.selectable_value(&mut self.rig, true, "Rig definition");
+                });
             }
-        }
+            super::destination::show(ui, &mut self.node, &mut self.slot, self.rig, &self.destinations);
+            ui.separator();
+            if ui.add_enabled(self.connection.ready() && super::destination::valid(self.node, self.slot, self.rig), egui::Button::new(
+                if self.rig { "Upload rig" } else { "Upload scene" }
+            )).clicked() {
+                let Some(image) = bytes(self.rig) else {
+                    self.doing = Doing::Said(Err(Error::Link(
+                        "The document is empty or has errors. Fix the errors shown in the editor before uploading.".into(),
+                    )));
+                    return;
+                };
+                let kind = if self.rig { cogware_can::xfer::kind::RIG } else { cogware_can::xfer::kind::SCENE };
+                let push = Push::new(self.node, kind, if self.rig { 0 } else { self.slot }, image);
+                match self.connection.connect() {
+                    Ok(pending) => self.doing = Doing::Connecting(pending, Box::new(push)),
+                    Err(error) => self.doing = Doing::Said(Err(error)),
+                }
+            }
+        });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::tests_support::Fake;
+    use super::*;
+
+    #[test]
+    fn uploading_and_cancelling_have_distinct_global_progress_labels() {
+        let mut uploader = working();
+        assert_eq!(
+            uploader.activity().as_deref(),
+            Some("Uploading to display 0x02: 0%")
+        );
+        uploader.cancel();
+        assert_eq!(uploader.activity().as_deref(), Some("Cancelling upload..."));
+    }
+
+    #[test]
+    fn a_failure_after_closing_an_upload_is_still_shown() {
+        struct Failed;
+        impl Transport for Failed {
+            fn send(&mut self, _: &[u8]) -> Result<bool, Error> {
+                Ok(true)
+            }
+            fn poll(&mut self, _: &mut Vec<u8>) -> Result<(), Error> {
+                Err(Error::Link("Controller disconnected".into()))
+            }
+            fn describe(&self) -> String {
+                "test controller".into()
+            }
+        }
+        let mut uploader = working();
+        if let Doing::Working(work) = &mut uploader.doing {
+            work.link = Box::new(Failed);
+        }
+        uploader.cancel();
+        uploader.open = false;
+        uploader.advance();
+        assert!(uploader.open);
+        assert!(matches!(uploader.doing, Doing::Said(Err(_))));
+    }
+
+    fn working() -> Uploader {
+        Uploader {
+            doing: Doing::Working(Box::new(Work {
+                link: Box::new(Fake::default()),
+                push: Push::new(2, 1, 0, vec![1; 10]),
+            })),
+            ..Uploader::default()
+        }
+    }
+
+    #[test]
+    fn reopening_a_running_upload_does_not_replace_it_or_its_document_kind() {
+        let mut uploader = working();
+        uploader.open(true);
+        assert!(uploader.open);
+        assert!(!uploader.sending_rig());
+        assert!(matches!(uploader.doing, Doing::Working(_)));
+    }
+
+    #[test]
+    fn closing_a_transfer_keeps_its_connection_until_cancellation_finishes() {
+        let mut uploader = working();
+        uploader.cancel();
+        assert!(uploader.busy());
+        assert!(matches!(uploader.doing, Doing::Cancelling(_)));
+    }
+
+    #[test]
+    fn the_completion_close_button_really_hides_the_window() {
+        fn frame(
+            uploader: &mut Uploader,
+            ctx: &egui::Context,
+            events: Vec<egui::Event>,
+        ) -> egui::FullOutput {
+            ctx.run(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 700.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| uploader.show(ctx, false, |_| None),
+            )
+        }
+        let ctx = egui::Context::default();
+        let mut uploader = Uploader {
+            open: true,
+            doing: Doing::Said(Ok("Upload complete.".into())),
+            ..Uploader::default()
+        };
+        let _ = frame(&mut uploader, &ctx, vec![]);
+        let output = frame(&mut uploader, &ctx, vec![]);
+        let pos = output
+            .shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.job.text == "Close" => {
+                    Some(text.pos + text.galley.size() * 0.5)
+                }
+                _ => None,
+            })
+            .expect("Close button");
+        for pressed in [true, false] {
+            let _ = frame(
+                &mut uploader,
+                &ctx,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(!uploader.open);
+    }
+}
+
+#[cfg(test)]
+#[path = "ui_tests.rs"]
+mod destination_tests;

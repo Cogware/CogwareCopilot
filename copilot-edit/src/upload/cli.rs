@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use super::watch::{self, Reading, Watch};
-use super::{bluetooth::Bluetooth, wifi::Wifi, Push, State, Transport};
+use super::{Push, State, Transport, bluetooth::Bluetooth, wifi::Wifi};
 
 /// Open whichever link the command line names.
 fn open(args: &[String]) -> Result<Box<dyn Transport>, String> {
@@ -30,6 +30,53 @@ fn open(args: &[String]) -> Result<Box<dyn Transport>, String> {
         }
         other => Err(format!("--link does not know {other}")),
     }
+}
+
+/// Read a log and say what it holds, without going near the car.
+///
+/// What a log is worth is which of its columns this build can place, and
+/// that is worth knowing before driving a dash with it rather than after
+/// wondering why three needles never moved.
+///
+/// ```text
+/// copilot-edit --check-log FILE
+/// ```
+pub fn check_log(args: &[String]) -> Result<(), String> {
+    let path = args
+        .iter()
+        .position(|a| a == "--check-log")
+        .and_then(|i| args.get(i + 1))
+        .ok_or("--check-log wants a file")?;
+    let log = crate::datalog::Log::read(std::path::Path::new(path))?;
+    println!(
+        "{}: {} rows over {:.1}s",
+        log.name,
+        log.rows(),
+        log.seconds()
+    );
+    println!("  measured: {}", log.filled.join(", "));
+    if !log.skipped.is_empty() {
+        println!("  no gauge for: {}", log.skipped.join(", "));
+    }
+    // A sample from three points, so somebody can see the numbers are the
+    // right order of magnitude rather than trusting that they parsed.
+    for at in [0.0, log.seconds() / 2.0, log.seconds() - 0.01] {
+        let shown: Vec<String> = log
+            .at(at)
+            .into_iter()
+            .filter_map(|(id, raw)| {
+                let g = cogware_can::gauge_by_id(id)?;
+                Some(format!(
+                    "{}={:.1}{}",
+                    g.name,
+                    raw as f32 / g.unit.scale as f32,
+                    g.unit.symbol
+                ))
+            })
+            .collect();
+        println!("  {at:>7.1}s  {}", shown.join("  "));
+    }
+    Ok(())
 }
 
 /// Print what the car says about itself until interrupted.
@@ -53,7 +100,11 @@ pub fn watch(args: &[String]) -> Result<(), String> {
     // opened to drive it would be refused by a board that is perfectly well.
     let driving = args.iter().any(|a| a == "--drive");
     // A log the car recorded, played instead of the modelled one.
-    let log = match args.iter().position(|a| a == "--log").and_then(|i| args.get(i + 1)) {
+    let log = match args
+        .iter()
+        .position(|a| a == "--log")
+        .and_then(|i| args.get(i + 1))
+    {
         Some(path) => {
             let log = crate::datalog::Log::read(std::path::Path::new(path))?;
             println!(
@@ -76,7 +127,7 @@ pub fn watch(args: &[String]) -> Result<(), String> {
     // scale. Every gauge the table knows, run end to end together.
     let sweeping = args.iter().any(|a| a == "--sweep");
     let mut swept_s = 0.0f32;
-    let mut car = cogware_can::drive::Car::new();
+    let mut driver = crate::drive::Driver::playback(log);
     let mut link = open(args)?;
     println!("watching {}", link.describe());
 
@@ -131,9 +182,7 @@ pub fn watch(args: &[String]) -> Result<(), String> {
                                     gauge.unit.symbol
                                 ),
                             ),
-                            Reading::NoData => {
-                                ("  CAFEBABE".into(), "no sensor data".into())
-                            }
+                            Reading::NoData => ("  CAFEBABE".into(), "no sensor data".into()),
                         };
                         println!("    {:<22} {raw}  {note}", gauge.name);
                     }
@@ -165,25 +214,20 @@ pub fn watch(args: &[String]) -> Result<(), String> {
                     })
                     .collect()
             } else {
-                // The model first, then whatever was measured over the top of
-                // it: a channel somebody logged beats the same channel worked
-                // out from a model, and the model still fills the ones no log
-                // carries.
-                car.advance(step_us);
-                swept_s += step_us as f32 / 1_000_000.0;
-                let mut out: Vec<(u16, i32)> = cogware_can::drive::DRIVEN
-                    .iter()
-                    .filter_map(|(id, _)| car.reading(*id).map(|v| (*id, v)))
-                    .collect();
-                if let Some(log) = &log {
-                    for (id, raw) in log.at(swept_s) {
-                        match out.iter_mut().find(|(i, _)| *i == id) {
-                            Some(slot) => slot.1 = raw,
-                            None => out.push((id, raw)),
-                        }
-                    }
-                }
-                out
+                driver.tick(step_us);
+                swept_s = driver.log_at_s;
+                // Keep the CLI's existing bus footprint: its dashboard channels
+                // and any explicitly recorded extras, now supplied by the same model.
+                driver
+                    .generated_readings()
+                    .into_iter()
+                    .filter(|(id, _)| {
+                        cogware_can::drive::DRIVEN
+                            .iter()
+                            .any(|(driven, _)| driven == id)
+                            || driver.source_label(*id) == "Recorded"
+                    })
+                    .collect()
             };
             super::feed_readings(link.as_mut(), &readings).map_err(|e| e.to_string())?;
             // Once a second, what is actually going down the link -- so a
@@ -193,7 +237,7 @@ pub fn watch(args: &[String]) -> Result<(), String> {
             if sent % 25 == 0 {
                 if sweeping {
                     println!("    sweeping: {} channels", readings.len());
-                } else if let Some(l) = &log {
+                } else if let Some(l) = &driver.log {
                     println!(
                         "    {}: {:.0}s in, measured {}",
                         l.name,
@@ -201,10 +245,7 @@ pub fn watch(args: &[String]) -> Result<(), String> {
                         l.filled.join(", ")
                     );
                 } else {
-                    println!(
-                        "    sending: kmh={:.1} rpm={:.0} gear={} tps={:.0}",
-                        car.kmh, car.rpm, car.gear, car.throttle
-                    );
+                    println!("    sending {} simulated engine channels", readings.len());
                 }
             }
         }
@@ -246,7 +287,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
 
     let image = std::fs::read(Path::new(file)).map_err(|e| format!("{file}: {e}"))?;
-    println!("{file}: {} bytes -> node {node:#04x} kind {kind} slot {slot}", image.len());
+    println!(
+        "{file}: {} bytes -> node {node:#04x} kind {kind} slot {slot}",
+        image.len()
+    );
 
     let mut link: Box<dyn Transport> = match after("--link").unwrap_or("bluetooth") {
         "bluetooth" | "ble" => {

@@ -15,7 +15,9 @@
 use std::time::{Duration, Instant};
 
 use cogware_can::bus::Health;
-use cogware_can::wire::{self, Readings, Sample, Status, KIND_HEALTH, KIND_PING, KIND_READINGS, KIND_STATUS};
+use cogware_can::wire::{
+    self, KIND_HEALTH, KIND_PING, KIND_READINGS, KIND_STATUS, Readings, Sample, Status,
+};
 
 use super::{Error, Transport};
 
@@ -151,7 +153,10 @@ impl Watch {
     pub fn live_gauges(&self) -> usize {
         // Counted the same way `raw` answers, so the number at the top of the
         // panel and the rows under it can never disagree.
-        self.gauges.iter().filter(|s| s.raw != cogware_can::NO_DATA).count()
+        self.gauges
+            .iter()
+            .filter(|s| s.raw != cogware_can::NO_DATA)
+            .count()
     }
 
     /// True once the car has sent a set of readings, however empty.
@@ -197,9 +202,10 @@ impl Watch {
                 KIND_READINGS => self.part(len),
                 KIND_HEALTH => {
                     let payload = &self.decoder.payload()[..len];
-                    if let (Some(&node), Some(health)) =
-                        (payload.first(), Health::decode(payload.get(1..).unwrap_or(&[])))
-                    {
+                    if let (Some(&node), Some(health)) = (
+                        payload.first(),
+                        Health::decode(payload.get(1..).unwrap_or(&[])),
+                    ) {
                         match self.health.iter_mut().find(|(n, _, _)| *n == node) {
                             Some(slot) => *slot = (node, health, Instant::now()),
                             None => self.health.push((node, health, Instant::now())),
@@ -287,7 +293,6 @@ mod tests {
         assert!(watch.latest().is_none());
     }
 
-
     /// One part of a set, framed as the car sends it.
     fn part_of(link: &mut Fake, header: Readings, want: &[Sample]) {
         let mut payload = vec![header.encode()];
@@ -301,7 +306,13 @@ mod tests {
 
     /// A whole set of readings in one part, framed as the car sends it.
     fn set_of(link: &mut Fake, want: &[Sample]) {
-        let mut payload = vec![Readings { part: 0, last: true }.encode()];
+        let mut payload = vec![
+            Readings {
+                part: 0,
+                last: true,
+            }
+            .encode(),
+        ];
         for s in want {
             payload.extend_from_slice(&s.encode());
         }
@@ -314,16 +325,29 @@ mod tests {
     fn readings_arrive_as_raw_counts_against_their_gauges() {
         let mut watch = Watch::new();
         let mut link = Fake::with_room(4096);
-        set_of(&mut link, &[
-            Sample { id: 0x024, raw: 1013 },
-            Sample { id: 0x025, raw: -400 },
-        ]);
+        set_of(
+            &mut link,
+            &[
+                Sample {
+                    id: 0x024,
+                    raw: 1013,
+                },
+                Sample {
+                    id: 0x025,
+                    raw: -400,
+                },
+            ],
+        );
         watch.step(&mut link).expect("a step");
         assert_eq!(watch.reading(0x024), Reading::Value(1013));
         // Negative survives: a gauge below its zero is a real reading, and
         // the sign is the difference between cold and broken.
         assert_eq!(watch.reading(0x025), Reading::Value(-400));
-        assert_eq!(watch.reading(0x030), Reading::NoData, "a gauge not sent reads as no data");
+        assert_eq!(
+            watch.reading(0x030),
+            Reading::NoData,
+            "a gauge not sent reads as no data"
+        );
     }
 
     #[test]
@@ -333,10 +357,19 @@ mod tests {
         // reader that showed the raw number would print -889275714.
         let mut watch = Watch::new();
         let mut link = Fake::with_room(4096);
-        set_of(&mut link, &[
-            Sample { id: 0x024, raw: 1013 },
-            Sample { id: 0x026, raw: cogware_can::NO_DATA },
-        ]);
+        set_of(
+            &mut link,
+            &[
+                Sample {
+                    id: 0x024,
+                    raw: 1013,
+                },
+                Sample {
+                    id: 0x026,
+                    raw: cogware_can::NO_DATA,
+                },
+            ],
+        );
         watch.step(&mut link).expect("a step");
         assert_eq!(watch.reading(0x024), Reading::Value(1013));
         assert_eq!(watch.reading(0x026), Reading::NoData);
@@ -344,8 +377,16 @@ mod tests {
         // The three answers stay apart, because they send somebody to look
         // at three different things.
         assert_eq!(watch.reading(0x024), Reading::Value(1013));
-        assert_eq!(watch.reading(0x026), Reading::NoData, "the sentinel, sent outright");
-        assert_eq!(watch.reading(0x030), Reading::NoData, "never mentioned, same answer");
+        assert_eq!(
+            watch.reading(0x026),
+            Reading::NoData,
+            "the sentinel, sent outright"
+        );
+        assert_eq!(
+            watch.reading(0x030),
+            Reading::NoData,
+            "never mentioned, same answer"
+        );
     }
 
     #[test]
@@ -355,14 +396,24 @@ mod tests {
         let mut watch = Watch::new();
         let mut link = Fake::with_room(4096);
 
-        set_of(&mut link, &[Sample { id: 0x024, raw: 1013 }]);
+        set_of(
+            &mut link,
+            &[Sample {
+                id: 0x024,
+                raw: 1013,
+            }],
+        );
         watch.step(&mut link).expect("a step");
         assert_eq!(watch.reading(0x024), Reading::Value(1013));
 
         // The next set does not mention it.
         set_of(&mut link, &[Sample { id: 0x025, raw: 7 }]);
         watch.step(&mut link).expect("a step");
-        assert_eq!(watch.reading(0x024), Reading::NoData, "a dead sender kept its last value");
+        assert_eq!(
+            watch.reading(0x024),
+            Reading::NoData,
+            "a dead sender kept its last value"
+        );
         assert_eq!(watch.reading(0x025), Reading::Value(7));
     }
 
@@ -376,7 +427,10 @@ mod tests {
         set_of(&mut link, &[]);
         assert!(!watch.has_readings());
         watch.step(&mut link).expect("a step");
-        assert!(watch.has_readings(), "an empty set still says the car answered");
+        assert!(
+            watch.has_readings(),
+            "an empty set still says the car answered"
+        );
         assert_eq!(watch.live_gauges(), 0);
     }
 
@@ -387,11 +441,34 @@ mod tests {
         let mut watch = Watch::new();
         let mut link = Fake::with_room(4096);
 
-        part_of(&mut link, Readings { part: 0, last: false }, &[Sample { id: 0x024, raw: 1013 }]);
+        part_of(
+            &mut link,
+            Readings {
+                part: 0,
+                last: false,
+            },
+            &[Sample {
+                id: 0x024,
+                raw: 1013,
+            }],
+        );
         watch.step(&mut link).expect("a step");
-        assert!(!watch.has_readings(), "a set that is still arriving is not a set");
+        assert!(
+            !watch.has_readings(),
+            "a set that is still arriving is not a set"
+        );
 
-        part_of(&mut link, Readings { part: 1, last: true }, &[Sample { id: 0x025, raw: -400 }]);
+        part_of(
+            &mut link,
+            Readings {
+                part: 1,
+                last: true,
+            },
+            &[Sample {
+                id: 0x025,
+                raw: -400,
+            }],
+        );
         watch.step(&mut link).expect("a step");
         assert_eq!(watch.reading(0x024), Reading::Value(1013));
         assert_eq!(watch.reading(0x025), Reading::Value(-400));
@@ -410,12 +487,34 @@ mod tests {
         // Now a set whose middle part never came. The previous whole set
         // stands: one second of stale readings is a smaller lie than a screen
         // of gauges missing because a frame was.
-        part_of(&mut link, Readings { part: 0, last: false }, &[Sample { id: 0x024, raw: 1 }]);
+        part_of(
+            &mut link,
+            Readings {
+                part: 0,
+                last: false,
+            },
+            &[Sample { id: 0x024, raw: 1 }],
+        );
         watch.step(&mut link).expect("a step");
-        part_of(&mut link, Readings { part: 2, last: true }, &[Sample { id: 0x025, raw: 2 }]);
+        part_of(
+            &mut link,
+            Readings {
+                part: 2,
+                last: true,
+            },
+            &[Sample { id: 0x025, raw: 2 }],
+        );
         watch.step(&mut link).expect("a step");
-        assert_eq!(watch.reading(0x030), Reading::Value(77), "the last whole set stands");
-        assert_eq!(watch.reading(0x024), Reading::NoData, "no half set was shown");
+        assert_eq!(
+            watch.reading(0x030),
+            Reading::Value(77),
+            "the last whole set stands"
+        );
+        assert_eq!(
+            watch.reading(0x024),
+            Reading::NoData,
+            "no half set was shown"
+        );
     }
 
     #[test]
@@ -457,7 +556,10 @@ mod tests {
         // One is a link that never worked; the other is a car that stopped.
         let watch = Watch::new();
         assert!(watch.latest().is_none());
-        assert!(!watch.silent(), "a car never heard from is not a silent one");
+        assert!(
+            !watch.silent(),
+            "a car never heard from is not a silent one"
+        );
     }
 
     #[test]

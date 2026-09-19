@@ -163,7 +163,8 @@ impl App {
         };
         let mut open = true;
         let mut go = false;
-        let mut cancel = false;
+        let mut cancel =
+            ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         egui::Window::new("New scene")
             .collapsible(false)
             .resizable(false)
@@ -175,49 +176,49 @@ impl App {
                     .num_columns(2)
                     .spacing([8.0, 6.0])
                     .show(ui, |ui| {
-                        ui.label("background");
+                        ui.label("Background colour");
                         ui.color_edit_button_srgb(&mut spec.background);
                         ui.end_row();
-                        ui.label("antialias");
+                        ui.label("Smooth edges");
                         ui.checkbox(&mut spec.antialias, "").on_hover_text(
                             "Blend the edges of needles, rings, curves, bars and cells",
                         );
                         ui.end_row();
-                        ui.label("contents");
-                        ui.checkbox(&mut spec.sample, "a label and a bar to start from")
+                        ui.label("Starter widgets");
+                        ui.checkbox(&mut spec.sample, "Include a text label and a progress bar")
                             .on_hover_text("Otherwise the root panel is empty; use Add to fill it");
                         ui.end_row();
-                        ui.label("node");
+                        ui.label("Display address");
                         node_field(ui, &mut spec.node).on_hover_text(
                             "CAN address of the display this scene is for. 0x00 is \
                              the gateway; leave it at none for a scene with no bus.",
                         );
                         ui.end_row();
-                        ui.label("shape");
+                        ui.label("Display shape");
                         egui::ComboBox::from_id_salt("new-shape")
-                            .selected_text(if spec.round { "round" } else { "rect" })
+                            .selected_text(if spec.round { "Round" } else { "Rectangular" })
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut spec.round, false, "rect");
-                                ui.selectable_value(&mut spec.round, true, "round")
+                                ui.selectable_value(&mut spec.round, false, "Rectangular");
+                                ui.selectable_value(&mut spec.round, true, "Round")
                                     .on_hover_text("A panel whose corners sit behind a bezel");
                             });
                         ui.end_row();
                     });
-                if self.dirty {
+                if self.unsaved() > 0 {
                     ui.separator();
                     ui.colored_label(
                         egui::Color32::YELLOW,
-                        "The current scene has unsaved changes, which a new scene discards.",
+                        "You will be asked to save existing changes before the new scene is created.",
                     );
                 }
                 ui.separator();
                 ui.horizontal(|ui| {
-                    go = ui.button("Create").clicked();
-                    cancel = ui.button("Cancel").clicked();
+                    go = ui.button("Create scene").clicked();
+                    cancel |= ui.button("Cancel").clicked();
                 });
             });
         if go {
-            self.start(&spec);
+            self.request_document(crate::document::Action::New(spec.clone()));
         }
         self.new_doc = if go || cancel || !open {
             None
@@ -231,7 +232,9 @@ impl App {
         if let Some((mut w, mut h)) = self.resize_to {
             let mut open = true;
             let mut go = false;
-            egui::Window::new("Scene resolution")
+            let mut cancel =
+                ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
+            egui::Window::new("Resize scene")
                 .collapsible(false)
                 .resizable(false)
                 .open(&mut open)
@@ -239,16 +242,23 @@ impl App {
                     size_fields(ui, &mut w, &mut h);
                     ui.label(
                         egui::RichText::new(
-                            "Every rect, thickness and text magnification is scaled to \
-                             match. Comments and key order are left alone.",
+                            "Scale widget positions, sizes, line thicknesses and text to the new \
+                             resolution. Comments are preserved. Ctrl+Z restores the previous size.",
                         )
                         .small()
                         .weak(),
                     );
                     ui.separator();
-                    go = ui.button("Rescale").clicked();
+                    ui.horizontal(|ui| {
+                        go = ui.add_enabled((w, h) != self.preview.scene_size(), egui::Button::new("Resize scene")).clicked();
+                        cancel |= ui.button("Cancel").clicked();
+                    });
                 });
-            self.resize_to = if go || !open { None } else { Some((w, h)) };
+            self.resize_to = if go || cancel || !open {
+                None
+            } else {
+                Some((w, h))
+            };
             if go {
                 self.apply_rescale(w, h);
             }
@@ -258,13 +268,13 @@ impl App {
 
 /// A width, a height, and the presets that fill them in.
 fn size_fields(ui: &mut egui::Ui, w: &mut u32, h: &mut u32) {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label("Width");
-        ui.add(egui::DragValue::new(w).range(1..=16384));
+        ui.add(egui::DragValue::new(w).range(1..=16384).suffix(" px"));
         ui.label("Height");
-        ui.add(egui::DragValue::new(h).range(1..=16384));
+        ui.add(egui::DragValue::new(h).range(1..=16384).suffix(" px"));
     });
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for (label, preset) in PRESETS {
             if ui.button(*label).clicked() {
                 (*w, *h) = *preset;

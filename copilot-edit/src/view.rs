@@ -124,7 +124,6 @@ impl Camera {
         *self = Camera::default();
     }
 
-    /// Show the scene at one screen point per scene pixel, centred.
     /// Frame `rect` -- one widget's box in scene pixels -- rather than the
     /// whole scene.
     ///
@@ -144,6 +143,7 @@ impl Camera {
         self.pan = (-(cx - sw / 2.0) * scale, -(cy - sh / 2.0) * scale);
     }
 
+    /// Show the scene at one screen point per scene pixel, centred.
     pub fn actual_size(&mut self) {
         self.zoom = Some(1.0);
         self.pan = (0.0, 0.0);

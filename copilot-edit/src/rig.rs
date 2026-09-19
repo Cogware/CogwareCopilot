@@ -184,8 +184,7 @@ impl App {
         // slot parked. Everything about the previous document goes: a rig is
         // a different thing to be looking at.
         let first = std::mem::replace(&mut session.docs[0], Doc::parked());
-        self.rig = None;
-        self.drop_selection();
+        self.close_rig();
         self.take_doc(first);
         let n = session.rig.displays.len();
         let mode = session.mode_name().to_string();
@@ -290,11 +289,19 @@ impl App {
 
     /// Save every display that has changes, the one being edited included.
     pub(crate) fn save_all(&mut self) {
-        self.save();
+        let active_dirty = self.dirty;
+        if self.dirty || self.rig.is_none() {
+            self.save();
+        }
+        let mut problems = if self.dirty {
+            vec![self.status.clone()]
+        } else {
+            Vec::new()
+        };
+        let mut written = usize::from(active_dirty && !self.dirty);
         let Some(session) = self.rig.as_mut() else {
             return;
         };
-        let mut written = 0;
         for doc in &mut session.docs {
             let (Some(p), true) = (&doc.path, doc.dirty) else {
                 continue;
@@ -302,7 +309,7 @@ impl App {
             // The same refusal as Save: a file that will not load is not one
             // to write over the copy that did.
             if doc.preview.error.is_some() {
-                self.status = format!("not saved: {} does not build", p.display());
+                problems.push(format!("{} has scene errors", p.display()));
                 continue;
             }
             match std::fs::write(p, &doc.text) {
@@ -310,12 +317,19 @@ impl App {
                     doc.dirty = false;
                     written += 1;
                 }
-                Err(e) => self.status = format!("cannot write {}: {e}", p.display()),
+                Err(e) => problems.push(format!("{}: {e}", p.display())),
             }
         }
-        if written > 0 {
-            self.status = format!("saved {} display(s)", written + 1);
-        }
+        self.status = if !problems.is_empty() {
+            format!(
+                "Saved {written} scene(s), but some changes remain unsaved: {}",
+                problems.join("; ")
+            )
+        } else if written > 0 {
+            format!("Saved all {written} changed scene(s).")
+        } else {
+            "All scenes are already saved.".into()
+        };
     }
 
     /// Forget the rig, keeping the document being edited as a plain scene.
@@ -324,6 +338,12 @@ impl App {
     /// whose active slot no longer holds one of its scenes is not a rig.
     pub(crate) fn close_rig(&mut self) {
         self.rig = None;
+        self.modes = None;
+        self.pins_dialog = None;
+        self.switching = None;
+        self.curve = None;
+        self.document_epoch = self.document_epoch.wrapping_add(1);
+        self.drop_selection();
     }
 
     /// Whether display `i` is being edited, or `None` without a rig.

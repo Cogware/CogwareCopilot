@@ -126,9 +126,10 @@ impl Log {
     /// Read a log from a file.
     pub fn read(path: &Path) -> Result<Log, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let name = path
-            .file_name()
-            .map_or_else(|| path.display().to_string(), |n| n.to_string_lossy().into());
+        let name = path.file_name().map_or_else(
+            || path.display().to_string(),
+            |n| n.to_string_lossy().into(),
+        );
         Log::parse(&name, &text)
     }
 
@@ -194,7 +195,8 @@ impl Log {
         }
 
         let mut times_s = Vec::new();
-        let mut cols: BTreeMap<usize, Vec<i32>> = wanted.iter().map(|(c, _, _)| (*c, Vec::new())).collect();
+        let mut cols: BTreeMap<usize, Vec<i32>> =
+            wanted.iter().map(|(c, _, _)| (*c, Vec::new())).collect();
         for (n, line) in lines.iter().enumerate().skip(first_row) {
             let f = split(line);
             // A short or non-numeric line is the end of the data as often as
@@ -203,7 +205,10 @@ impl Log {
             if f.len() < header.len() || !f.iter().take(2).any(|s| is_number(s)) {
                 continue;
             }
-            let t = match time_col.and_then(|c| f.get(c)).and_then(|s| s.parse::<f32>().ok()) {
+            let t = match time_col
+                .and_then(|c| f.get(c))
+                .and_then(|s| s.parse::<f32>().ok())
+            {
                 Some(t) => t,
                 // No clock in the file, so the rows are the clock. Ten a
                 // second is what a stock logger writes and is close enough
@@ -236,17 +241,24 @@ impl Log {
 
         let channels = wanted
             .iter()
-            .filter_map(|(col, id, _)| {
-                cols.remove(col).map(|raw| Channel { id: *id, raw })
-            })
+            .filter_map(|(col, id, _)| cols.remove(col).map(|raw| Channel { id: *id, raw }))
             .collect();
-        Ok(Log { name: name.to_string(), times_s, channels, filled, skipped })
+        Ok(Log {
+            name: name.to_string(),
+            times_s,
+            channels,
+            filled,
+            skipped,
+        })
     }
 }
 
 /// One channel's worth of already-scaled samples.
 fn alloc_channel(id: u16, raw: &[u16]) -> Vec<Channel> {
-    vec![Channel { id, raw: raw.iter().map(|v| i32::from(*v)).collect() }]
+    vec![Channel {
+        id,
+        raw: raw.iter().map(|v| i32::from(*v)).collect(),
+    }]
 }
 
 /// Whether a field parses as a number.
@@ -281,8 +293,8 @@ fn gauge_for(head: &str) -> Option<&'static cogware_can::GaugeData> {
         "afrtarget" | "targetafr" | "lambdatarget" | "targetlambda" => "AFR_TARGET",
         "clt" | "ect" | "coolant" | "coolanttemp" | "watertemp" | "engtemp" => "CLNT",
         "iat" | "mat" | "intake" | "intaketemp" | "airtemp" | "chargetemp" => "IAT",
-        "batt" | "battery" | "batteryvoltage" | "vbat" | "voltage" => "BAT_VOL",
-        "vss" | "speed" | "vehiclespeed" | "roadspeed" | "kph" | "mph" => "VSS",
+        "batt" | "battv" | "battery" | "batteryvoltage" | "vbat" | "voltage" => "BAT_VOL",
+        "vss" | "speed" | "vehiclespeed" | "roadspeed" | "kph" | "kmh" | "mph" => "VSS",
         "gear" | "currentgear" => "GEAR",
         "oilpressure" | "oilpres" | "oilp" => "OIL_PRES",
         "oiltemp" | "oiltemperature" => "OIL_TEMP",
@@ -290,7 +302,10 @@ fn gauge_for(head: &str) -> Option<&'static cogware_can::GaugeData> {
         "boost" | "boosttarget" | "targetboost" => "BOOST_TARGET",
         _ => return None,
     };
-    cogware_can::ALL_GAUGES.iter().find(|g| g.name == name).copied()
+    cogware_can::ALL_GAUGES
+        .iter()
+        .find(|g| g.name == name)
+        .copied()
 }
 
 #[cfg(test)]
@@ -362,11 +377,23 @@ s\trpm\t%\tC\tAFR\t-\n\
         let log = Log::us06();
         assert!(log.is_built_in());
         assert_eq!(log.rows(), cogware_can::trace::SPEED_DKMH.len());
-        assert_eq!(log.filled, vec!["VSS"], "the schedule is a speed and nothing else");
+        assert_eq!(
+            log.filled,
+            vec!["VSS"],
+            "the schedule is a speed and nothing else"
+        );
         assert!(log.skipped.is_empty());
 
-        let vss = cogware_can::ALL_GAUGES.iter().find(|g| g.name == "VSS").unwrap();
-        let at = |t: f32| log.at(t).into_iter().find(|(id, _)| *id == vss.id).map(|(_, r)| r);
+        let vss = cogware_can::ALL_GAUGES
+            .iter()
+            .find(|g| g.name == "VSS")
+            .unwrap();
+        let at = |t: f32| {
+            log.at(t)
+                .into_iter()
+                .find(|(id, _)| *id == vss.id)
+                .map(|(_, r)| r)
+        };
         // Straight through, in the tenths of a km/h both ends count in.
         for second in [0usize, 10, 60, 200] {
             assert_eq!(

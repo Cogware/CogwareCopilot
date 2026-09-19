@@ -24,12 +24,18 @@
 //! fails the same way.
 
 use cogware_can::wire::{
-    self, Report, Target, KIND_XFER_ABORT, KIND_XFER_BEGIN, KIND_XFER_DATA, KIND_XFER_REPORT,
-    MAX_PAYLOAD, PHASE_DONE,
+    self, KIND_XFER_ABORT, KIND_XFER_BEGIN, KIND_XFER_DATA, KIND_XFER_REPORT, MAX_PAYLOAD,
+    PHASE_DONE, Report, Target,
 };
 
 pub mod bluetooth;
+mod cancel;
 pub mod cli;
+mod connection;
+mod destination;
+mod diagnostics;
+pub(crate) mod job;
+mod monitor;
 pub mod ui;
 pub mod watch;
 pub mod wifi;
@@ -90,6 +96,14 @@ pub enum Error {
     Refused(u8),
     /// The server stopped saying anything.
     Silent,
+}
+
+/// Lets `Job` report a thread that died without naming a link error at the
+/// call site, and lets any job whose failures are plain sentences use it.
+impl From<String> for Error {
+    fn from(why: String) -> Self {
+        Error::Link(why)
+    }
 }
 
 impl std::fmt::Display for Error {
@@ -413,15 +427,13 @@ impl Push {
         Ok(())
     }
 
-    /// Tell the car to forget it.
-    ///
-    /// Worth sending even when the editor is giving up for its own reasons: a
-    /// server left mid-push refuses every later one until it times out.
-    pub fn cancel(&mut self, link: &mut dyn Transport) -> Result<(), Error> {
+    /// Ask the controller to cancel, returning whether the transport accepted the frame.
+    /// A full transport must be retried rather than reported as cancelled.
+    pub fn cancel(&mut self, link: &mut dyn Transport) -> Result<bool, Error> {
         let mut frame = [0u8; wire::MAX_FRAME];
         let n = wire::encode(KIND_XFER_ABORT, &[], &mut frame)
             .ok_or_else(|| Error::Link("the cancel frame would not encode".into()))?;
-        link.send(&frame[..n]).map(|_| ())
+        link.send(&frame[..n])
     }
 }
 
@@ -440,11 +452,17 @@ pub(crate) mod tests_support {
 
     impl Fake {
         pub fn with_room(free: u32) -> Self {
-            Self { free, ..Self::default() }
+            Self {
+                free,
+                ..Self::default()
+            }
         }
         /// How many opening frames it has been sent.
         pub fn opens(&self) -> usize {
-            self.sent.iter().filter(|f| f.get(2) == Some(&KIND_XFER_BEGIN)).count()
+            self.sent
+                .iter()
+                .filter(|f| f.get(2) == Some(&KIND_XFER_BEGIN))
+                .count()
         }
 
         /// How many data frames carried image starting at `offset`.
@@ -453,8 +471,7 @@ pub(crate) mod tests_support {
                 .iter()
                 .filter(|f| {
                     f.get(2) == Some(&KIND_XFER_DATA)
-                        && f.get(5..9)
-                            .is_some_and(|b| b == offset.to_le_bytes())
+                        && f.get(5..9).is_some_and(|b| b == offset.to_le_bytes())
                 })
                 .count()
         }
@@ -493,10 +510,7 @@ mod tests {
     use super::*;
 
     fn kinds(link: &Fake) -> Vec<u8> {
-        link.sent
-            .iter()
-            .filter_map(|f| f.get(2).copied())
-            .collect()
+        link.sent.iter().filter_map(|f| f.get(2).copied()).collect()
     }
 
     #[test]
@@ -513,9 +527,13 @@ mod tests {
         let mut push = Push::new(2, 2, 0, vec![7; 100]);
         let mut link = Fake::with_room(4096);
         for i in 0..3 {
-            push.step(&mut link, i * OPEN_EVERY_MS).expect("a step must work");
+            push.step(&mut link, i * OPEN_EVERY_MS)
+                .expect("a step must work");
         }
-        let opens = kinds(&link).iter().filter(|k| **k == KIND_XFER_BEGIN).count();
+        let opens = kinds(&link)
+            .iter()
+            .filter(|k| **k == KIND_XFER_BEGIN)
+            .count();
         assert_eq!(opens, 3, "a silent car must be asked again");
     }
 
@@ -550,7 +568,10 @@ mod tests {
         push.step(&mut link, 0).expect("a step");
         link.report(1, 0, (CHUNK * 8) as u32, 0);
         push.step(&mut link, 1).expect("a step");
-        let data = kinds(&link).iter().filter(|k| **k == KIND_XFER_DATA).count();
+        let data = kinds(&link)
+            .iter()
+            .filter(|k| **k == KIND_XFER_DATA)
+            .count();
         assert_eq!(data, 1, "only one frame fits the room claimed");
     }
 
@@ -562,7 +583,10 @@ mod tests {
         push.step(&mut link, 0).expect("a step");
         link.report(1, 0, (CHUNK * 8) as u32, 0);
         push.step(&mut link, 1).expect("a step");
-        let data = kinds(&link).iter().filter(|k| **k == KIND_XFER_DATA).count();
+        let data = kinds(&link)
+            .iter()
+            .filter(|k| **k == KIND_XFER_DATA)
+            .count();
         assert_eq!(data, 4);
     }
 
@@ -599,8 +623,13 @@ mod tests {
         // wrong end of the car.
         use cogware_can::xfer::Status;
         let from_the_node = [
-            Status::Ready, Status::Ok, Status::Missing, Status::Done,
-            Status::CrcFail, Status::Refused, Status::Aborted,
+            Status::Ready,
+            Status::Ok,
+            Status::Missing,
+            Status::Done,
+            Status::CrcFail,
+            Status::Refused,
+            Status::Aborted,
         ];
         for status in from_the_node {
             let code = status as u8;
@@ -727,7 +756,8 @@ mod pacing {
         let mut push = Push::new(2, 1, 0, vec![7; 100]);
         let mut full = Full;
         for ms in 0..OPEN_EVERY_MS * u64::from(OPENS) + 2 {
-            push.step(&mut full, ms).expect("a busy link is not a failure");
+            push.step(&mut full, ms)
+                .expect("a busy link is not a failure");
         }
     }
 
@@ -740,7 +770,11 @@ mod pacing {
         for ms in 0..OPEN_EVERY_MS {
             push.step(&mut link, ms).expect("a step must work");
         }
-        assert_eq!(link.opens(), 1, "the car was asked again before it could reply");
+        assert_eq!(
+            link.opens(),
+            1,
+            "the car was asked again before it could reply"
+        );
     }
 
     #[test]
@@ -769,33 +803,13 @@ pub const KIND_GAUGE: u8 = 0x01;
 /// Bytes one reading takes: a two-byte id then a four-byte value.
 const GAUGE_ENTRY: usize = 6;
 
-/// Send one car's worth of readings to the master.
-///
-/// The master writes them into its gauge table and broadcasts them like any
-/// other source, so every display on the bus shows the drive -- which is the
-/// point: a layout is read on the glass it will live on, not only in the
-/// editor's preview.
-pub fn feed_gauges(
-    link: &mut dyn Transport,
-    car: &cogware_can::drive::Car,
-) -> Result<(), Error> {
-    let readings: Vec<(u16, i32)> = cogware_can::drive::DRIVEN
-        .iter()
-        .filter_map(|(id, _)| car.reading(*id).map(|v| (*id, v)))
-        .collect();
-    feed_readings(link, &readings)
-}
-
 /// Send a set of readings to the master, whatever produced them.
 ///
 /// The car is one source and the sweep is another, and a log played back is a
 /// third. None of that is this function's business: what reaches the bus is a
 /// gauge id and a number, and the point of sending any of them is the same --
 /// the layout is read on the glass it will live on rather than in a preview.
-pub fn feed_readings(
-    link: &mut dyn Transport,
-    readings: &[(u16, i32)],
-) -> Result<(), Error> {
+pub fn feed_readings(link: &mut dyn Transport, readings: &[(u16, i32)]) -> Result<(), Error> {
     let mut payload = Vec::with_capacity(readings.len() * GAUGE_ENTRY);
     for (id, value) in readings {
         payload.extend_from_slice(&id.to_le_bytes());
@@ -834,7 +848,9 @@ pub fn set_network(link: &mut dyn Transport, ssid: &str, password: &str) -> Resu
         return Err(Error::Link(format!("a name is 1 to {SSID_MAX} bytes")));
     }
     if password.len() > PASS_MAX {
-        return Err(Error::Link(format!("a passphrase is at most {PASS_MAX} bytes")));
+        return Err(Error::Link(format!(
+            "a passphrase is at most {PASS_MAX} bytes"
+        )));
     }
     // The zero separates the two, so neither may contain one.
     if ssid.contains('\0') || password.contains('\0') {
@@ -849,7 +865,11 @@ pub fn set_network(link: &mut dyn Transport, ssid: &str, password: &str) -> Resu
     let mut frame = [0u8; wire::MAX_FRAME];
     let n = wire::encode(KIND_NETWORK, &payload, &mut frame)
         .ok_or_else(|| Error::Link("the network frame would not encode".into()))?;
-    link.send(&frame[..n])?;
+    if !link.send(&frame[..n])? {
+        return Err(Error::Link(
+            "The connection is busy. Wi-Fi settings were not sent; please try again.".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -857,6 +877,30 @@ pub fn set_network(link: &mut dyn Transport, ssid: &str, password: &str) -> Resu
 mod network_tests {
     use super::tests_support::Fake;
     use super::*;
+
+    #[test]
+    fn busy_connections_do_not_claim_settings_or_cancellation_were_sent() {
+        struct Busy;
+        impl Transport for Busy {
+            fn send(&mut self, _: &[u8]) -> Result<bool, Error> {
+                Ok(false)
+            }
+            fn poll(&mut self, _: &mut Vec<u8>) -> Result<(), Error> {
+                Ok(())
+            }
+            fn describe(&self) -> String {
+                "busy connection".into()
+            }
+        }
+        let mut link = Busy;
+        assert!(set_network(&mut link, "test network", "").is_err());
+        let mut push = Push::new(2, 1, 0, vec![]);
+        assert!(
+            !push
+                .cancel(&mut link)
+                .expect("back-pressure, not a link failure")
+        );
+    }
 
     /// The payload of the one frame that went out.
     fn payload_of(link: &Fake) -> Vec<u8> {
@@ -879,7 +923,8 @@ mod network_tests {
         // The server says it already holds more than this push has sent.
         push.staged = 60_000;
         push.free = 4096;
-        push.feed(&mut link).expect("carries on rather than panicking");
+        push.feed(&mut link)
+            .expect("carries on rather than panicking");
     }
 
     #[test]
@@ -888,20 +933,35 @@ mod network_tests {
         // payload that is not a whole number of those. A mismatch here would
         // not error anywhere -- the gauges would simply never move.
         let mut link = Fake::default();
-        let mut car = cogware_can::drive::Car::new();
-        car.advance(3_000_000);
-        feed_gauges(&mut link, &car).expect("sends");
+        let mut driver = crate::drive::Driver::playback(None);
+        driver.tick(3_000_000);
+        let readings = driver.generated_readings();
+        assert_eq!(readings.len(), cogware_can::ALL_GAUGES.len() - 3);
+        assert!(readings.len() * GAUGE_ENTRY <= wire::MAX_PAYLOAD);
+        feed_readings(&mut link, &readings).expect("the complete catalogue fits one frame");
+        assert_eq!(link.sent.len(), 1);
 
         let frame = link.sent.first().expect("one frame");
         assert_eq!(frame[2], KIND_GAUGE);
         let len = u16::from_le_bytes([frame[3], frame[4]]) as usize;
         assert_eq!(len % GAUGE_ENTRY, 0, "a whole number of readings");
+        assert_eq!(len, readings.len() * GAUGE_ENTRY);
+        for ((id, raw), entry) in readings
+            .iter()
+            .zip(frame[5..5 + len].chunks_exact(GAUGE_ENTRY))
+        {
+            assert_eq!(*id, u16::from_le_bytes([entry[0], entry[1]]));
+            assert_eq!(
+                *raw,
+                i32::from_le_bytes([entry[2], entry[3], entry[4], entry[5]])
+            );
+        }
 
         let payload = &frame[5..5 + len];
         let rpm = cogware_can::RPM.id;
-        let found = payload.chunks_exact(GAUGE_ENTRY).find(|e| {
-            u16::from_le_bytes([e[0], e[1]]) == rpm
-        });
+        let found = payload
+            .chunks_exact(GAUGE_ENTRY)
+            .find(|e| u16::from_le_bytes([e[0], e[1]]) == rpm);
         let entry = found.expect("the drive carries rpm");
         let value = i32::from_le_bytes([entry[2], entry[3], entry[4], entry[5]]);
         assert!((0..=8000).contains(&value), "rpm reads {value}");

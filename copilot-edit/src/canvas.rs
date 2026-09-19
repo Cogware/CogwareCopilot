@@ -8,11 +8,16 @@
 //! panel where a click means something about the scene rather than about the
 //! editor.
 
+mod chrome;
+mod paint;
+#[cfg(test)]
+mod tests;
+
 use crate::drive::Driver;
 use crate::handle::{Handle, hit_handle, resize};
 use crate::menu;
 use crate::snap::{Guides, snap_delta, snap_to_grid};
-use crate::{App, SNAP_PX, rect_text, select};
+use crate::{App, SNAP_PX, rect_text};
 
 /// The outline around the widget under the pointer, and the rubber band.
 const HOVER: egui::Color32 = egui::Color32::from_rgba_premultiplied(80, 200, 255, 200);
@@ -31,6 +36,14 @@ impl App {
         let mut cmd = None;
         let mut switch = None;
         egui::CentralPanel::default().show(ctx, |ui| {
+            let blocked = self.document_blocked();
+            if blocked {
+                ui.disable();
+            }
+            if self.curve.is_none() {
+                self.canvas_header(ui);
+            }
+            let editable = !blocked && self.preview.error.is_none() && self.preview.tree.is_some();
             // The view is settled before the frame is drawn: the handles are
             // sized in scene pixels but aimed at in screen points, so the
             // scale has to be known before anything is rasterised.
@@ -43,9 +56,11 @@ impl App {
             // the row is the scene and the shift is nothing.
             let row = crate::layout::row(&self.display_sizes());
             let extent = row.size;
-            let view_all = self.camera.view(extent, avail_min, avail_size);
             let at = self.active_display().unwrap_or(0);
-            let view = view_all.shifted(row.offsets.get(at).copied().unwrap_or((0, 0)));
+            let offset = row.offsets.get(at).copied().unwrap_or((0, 0));
+            self.frame_curve(extent, offset, avail_size);
+            let view_all = self.camera.view(extent, avail_min, avail_size);
+            let view = view_all.shifted(offset);
 
             // The letterbox around the image. Registered before the image so
             // the image wins where they overlap. A click on the bare panel
@@ -66,10 +81,12 @@ impl App {
                 Some(t) => self.driver.apply(t, &self.preview.bindings),
                 None => Vec::new(),
             };
-            if let Some((w, h, rgba)) =
-                self.preview
-                    .frame(now_us, delta_us, self.selected, view.grab())
-            {
+            if let Some((w, h, rgba)) = self.preview.frame(
+                now_us,
+                delta_us,
+                self.selected.filter(|_| editable),
+                view.grab(),
+            ) {
                 // Shown smaller than life, the frame is shrunk here with
                 // every pixel counted, and the GPU smooths the fraction
                 // left. Shown at life size or larger it goes up as it is,
@@ -101,6 +118,8 @@ impl App {
             // swap replaces the tree everything below is about to read.
             switch = self.draw_others(ui, ctx, &view_all, &row, now_us, delta_us);
             let Some(texture) = self.texture.as_ref().map(|t| t.id()) else {
+                self.canvas_navigation(ui, area, extent, view_all.scale);
+                self.canvas_empty(ui, area);
                 return;
             };
 
@@ -130,47 +149,52 @@ impl App {
                 self.curve_overlay(ui, &view);
                 return;
             }
+            let panning = self.canvas_navigation(ui, area, extent, view_all.scale);
+            if !editable {
+                self.hover = None;
+                // An invalid source may still be in a text-edit gesture;
+                // only an interrupted canvas drag belongs to this panel.
+                if self.drag.take().is_some() {
+                    self.gesture = None;
+                }
+                self.marquee = None;
+                self.group.clear();
+                self.guides = Guides::default();
+                return;
+            }
             let to_scene = |p: egui::Pos2| view.to_scene((p.x, p.y));
             // Shift or Ctrl adds to the selection rather than replacing it;
             // both, because each is what some other editor taught someone.
             let shift = ctx.input(|i| i.modifiers.shift || i.modifiers.command);
 
-            // The wheel zooms about the pointer, and the middle button drags.
-            // Both are what every other canvas does, which is the only reason
-            // worth having for a gesture nobody is told about.
-            if resp.hovered()
-                && let Some(pos) = ctx.pointer_latest_pos()
-            {
-                let wheel = ctx.input(|i| i.smooth_scroll_delta.y);
-                if wheel.abs() > 0.01 {
-                    // Exponential, so a notch is the same proportional step
-                    // whether the scene pixel is tiny or enormous.
-                    let factor = (wheel * 0.004).exp();
-                    self.camera
-                        .zoom_at((pos.x, pos.y), factor, extent, avail_min, avail_size);
-                }
-            }
-            if resp.dragged_by(egui::PointerButton::Middle) {
-                let d = resp.drag_delta();
-                self.camera.pan_by((d.x, d.y), view.scale);
-            }
-
             // What is under the pointer, for the outline and the cursor. Only
             // while nothing is being dragged: mid-drag the outline would
             // flicker between the widget being moved and whatever it passes
             // over.
-            if resp.hovered()
+            if (resp.hovered() || backdrop.hovered())
+                && !panning
                 && self.drag.is_none()
                 && self.marquee.is_none()
                 && let Some(pos) = ctx.pointer_latest_pos()
             {
                 let p = to_scene(pos);
                 self.hover = self.pick(p);
+                if let Some(id) = self.hover {
+                    resp.clone().on_hover_text(self.describe(id));
+                }
                 // A resize cursor over a handle says what a press will do
                 // before it is made.
-                if let Some(h) = self.handle_at(p, view.grab()) {
+                if let Some(h) = self
+                    .handle_at(p, view.grab())
+                    .or_else(|| self.hover.map(|_| Handle::Body))
+                {
                     ctx.set_cursor_icon(cursor_for(h));
+                } else {
+                    ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
                 }
+            }
+            if backdrop.hovered() {
+                self.hover = None;
             }
 
             // A press begins a drag. The handles are tested where the button
@@ -203,6 +227,17 @@ impl App {
                 self.guides = Guides::default();
                 // The next edit is a new undo step.
                 self.gesture = None;
+            }
+            if !panning {
+                if let Some((_, _, handle)) = self.drag {
+                    ctx.set_cursor_icon(if handle == Handle::Body {
+                        egui::CursorIcon::Grabbing
+                    } else {
+                        cursor_for(handle)
+                    });
+                } else if self.marquee.is_some() {
+                    ctx.set_cursor_icon(egui::CursorIcon::Crosshair);
+                }
             }
 
             self.draw_grid(ui, placed, &view, scene);
@@ -242,6 +277,9 @@ impl App {
         }
         if let Some(i) = switch {
             self.activate(i);
+            if self.preview.error.is_some() {
+                self.pane = crate::Pane::Source;
+            }
         }
     }
 
@@ -346,130 +384,6 @@ impl App {
             0 => None,
             1 => self.selected.map(|id| self.describe(id)),
             n => Some(format!("{n} selected")),
-        }
-    }
-
-    /// The grid, drawn only while it is switched on and only where the lines
-    /// are far enough apart to read. A grid rendered at two points a line is
-    /// a grey wash over the scene, which hides the thing it is meant to help
-    /// place.
-    fn draw_grid(
-        &self,
-        ui: &egui::Ui,
-        placed: egui::Rect,
-        view: &crate::view::View,
-        scene: (u32, u32),
-    ) {
-        if self.grid <= 1 {
-            return;
-        }
-        let spacing = self.grid as f32 * view.scale;
-        if spacing < 6.0 {
-            return;
-        }
-        let paint = ui.painter_at(placed);
-        let faint = egui::Stroke::new(
-            1.0_f32,
-            egui::Color32::from_rgba_unmultiplied(255, 255, 255, 18),
-        );
-        let mut gx = 0;
-        while gx <= scene.0 as i32 {
-            let (x, _) = view.to_screen(copilot::Point { x: gx, y: 0 });
-            paint.line_segment(
-                [egui::pos2(x, placed.min.y), egui::pos2(x, placed.max.y)],
-                faint,
-            );
-            gx += self.grid;
-        }
-        let mut gy = 0;
-        while gy <= scene.1 as i32 {
-            let (_, y) = view.to_screen(copilot::Point { x: 0, y: gy });
-            paint.line_segment(
-                [egui::pos2(placed.min.x, y), egui::pos2(placed.max.x, y)],
-                faint,
-            );
-            gy += self.grid;
-        }
-    }
-
-    /// The hover outline, the selection outlines, the rubber band and the
-    /// snap guides.
-    ///
-    /// Drawn as an egui overlay rather than into the scene: they are facts
-    /// about the edit in progress, not about the picture, and a scene saved
-    /// mid-drag must not contain them. The selection is outlined here as
-    /// well as in the frame because the frame's one-pixel line is drawn in
-    /// scene pixels, and at any scale below 1:1 most of it is thrown away.
-    fn draw_overlays(&self, ui: &egui::Ui, placed: egui::Rect, view: &crate::view::View) {
-        let Some(tree) = self.preview.tree.as_ref() else {
-            return;
-        };
-        let paint = ui.painter_at(placed);
-        let screen = |r: copilot::Rect| {
-            let (x0, y0) = view.to_screen(copilot::Point {
-                x: r.left(),
-                y: r.top(),
-            });
-            let (x1, y1) = view.to_screen(copilot::Point {
-                x: r.right(),
-                y: r.bottom(),
-            });
-            egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1))
-        };
-        let outline = |id: NodeId, color: egui::Color32, width: f32| {
-            if let Some(abs) = tree.absolute_rect(id) {
-                paint.rect_stroke(screen(abs), 0.0, egui::Stroke::new(width, color));
-            }
-        };
-        for id in &self.extra {
-            outline(*id, SELECT, 1.0);
-        }
-        if let Some(id) = self.selected {
-            outline(id, SELECT, 1.5);
-        }
-        if let Some(id) = self.hover
-            && !self.is_selected(id)
-        {
-            outline(id, HOVER, 1.0);
-        }
-        if let Some((a, b)) = self.marquee {
-            // What the band has reached so far is outlined as it grows, so
-            // the hand knows what letting go will select before it does.
-            for id in select::enclosed(tree, select::span(a, b)) {
-                outline(id, HOVER, 1.0);
-            }
-            let band = screen(select::span(a, b));
-            paint.rect_filled(band, 0.0, HOVER.gamma_multiply(0.15));
-            paint.rect_stroke(band, 0.0, egui::Stroke::new(1.0_f32, HOVER));
-        }
-
-        // Absolute coordinates, since the snap worked in the parent's space.
-        if (self.guides.x.is_some() || self.guides.y.is_some())
-            && let Some(id) = self.selected
-            && let Some(node) = tree.get(id)
-            && let Some(origin) = node.parent.and_then(|p| tree.absolute_rect(p))
-        {
-            let stroke = egui::Stroke::new(1.0_f32, SELECT);
-            if let Some(gx) = self.guides.x {
-                let (x, _) = view.to_screen(copilot::Point {
-                    x: origin.left().saturating_add(gx),
-                    y: 0,
-                });
-                paint.line_segment(
-                    [egui::pos2(x, placed.min.y), egui::pos2(x, placed.max.y)],
-                    stroke,
-                );
-            }
-            if let Some(gy) = self.guides.y {
-                let (_, y) = view.to_screen(copilot::Point {
-                    x: 0,
-                    y: origin.top().saturating_add(gy),
-                });
-                paint.line_segment(
-                    [egui::pos2(placed.min.x, y), egui::pos2(placed.max.x, y)],
-                    stroke,
-                );
-            }
         }
     }
 }

@@ -14,6 +14,7 @@
 //!     { "pin": 3, "indicator": "HIGH_BEAM", "active": "low", "pull": "up" },
 //!     { "pin": 5, "action": "menu", "menu": "display", "button": "centre" },
 //!     { "pin": 6, "dir": "out", "indicator": "SHIFT_LIGHT" },
+//!     { "pin": 7, "dir": "out", "gauge": "RPM", "above": 5000 },
 //!   ],
 //!   "scenes": { /* ... */ } }
 //! ```
@@ -59,10 +60,10 @@
 //!         }
 //!         // A hard button, which does exactly what a widget's touch does.
 //!         Some(What::Press(action)) => { scene.run(ROOT, action); }
-//!         None => {}
+//!         Some(What::Threshold(_)) | None => {}
 //!     }
 //! }
-//! port.write(display.pins.outputs());   // whatever the lamps now say
+//! port.write(display.pins.outputs());   // logical lamp and threshold commands
 //! ```
 
 use alloc::string::{String, ToString};
@@ -73,6 +74,12 @@ use cogware_can::indicators::Indicator;
 use crate::scene::Value;
 use crate::scene::bind::indicator_by_name;
 use crate::scene::touch::{self, Action};
+
+mod threshold;
+pub use threshold::{Comparison, Threshold};
+
+#[cfg(test)]
+mod threshold_tests;
 
 /// The most pins a display can have, fixed by the word [`Pins::feed`] takes.
 ///
@@ -205,7 +212,7 @@ impl Pull {
 }
 
 /// What a pin is for.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum What {
     /// A tell-tale. On an input, asserting the pin is a lamp the master should
     /// be told about; on an output, the display drives the pin from whatever
@@ -216,10 +223,12 @@ pub enum What {
     /// Inputs only: an action is something that happens, and there is nothing
     /// for an output pin to read from it.
     Press(Action),
+    /// An output commanded by a numeric gauge in its canonical unit.
+    Threshold(Threshold),
 }
 
 /// One pin, and what it is wired to.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Pin {
     /// Which pin, 1..=[`Pins::count`].
     pub pin: u8,
@@ -251,7 +260,7 @@ impl Pin {
     pub const fn indicator(&self) -> Option<Indicator> {
         match self.what {
             What::Lamp(i) => Some(i),
-            What::Press(_) => None,
+            What::Press(_) | What::Threshold(_) => None,
         }
     }
 
@@ -260,7 +269,7 @@ impl Pin {
     pub const fn action(&self) -> Option<&Action> {
         match &self.what {
             What::Press(a) => Some(a),
-            What::Lamp(_) => None,
+            What::Lamp(_) | What::Threshold(_) => None,
         }
     }
 
@@ -315,7 +324,7 @@ impl Changed {
 pub const SWEEP_STEP_US: u64 = 120_000;
 
 /// A display's pins: how many there are, and what each is wired to.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pins {
     count: u8,
     pins: Vec<Pin>,
@@ -489,6 +498,8 @@ impl Pins {
     /// bulb stays dark however the scene is drawn. The banks are ordinary
     /// gauge rows, so this is the same list a scene's bindings produce and
     /// belongs beside them in whatever the node subscribes with.
+    /// Threshold sources are included once each even when no scene binds them.
+    /// This list is allocated at subscription setup, not during frame evaluation.
     ///
     /// Inputs are not here. A pin reporting a stalk does not read the banks;
     /// its lamp comes back because the master broadcasts it, and whether this
@@ -499,14 +510,24 @@ impl Pins {
             .pins
             .iter()
             .any(|p| p.dir == Dir::Out && matches!(p.what, What::Lamp(_)));
-        if drives_a_lamp {
+        let mut wanted = if drives_a_lamp {
             alloc::vec![
                 cogware_can::INDICATORS1.id as u8,
                 cogware_can::INDICATORS2.id as u8,
             ]
         } else {
             Vec::new()
+        };
+        for p in &self.pins {
+            if p.dir == Dir::Out
+                && let What::Threshold(threshold) = &p.what
+                && let Ok(id) = u8::try_from(threshold.gauge.id)
+                && !wanted.contains(&id)
+            {
+                wanted.push(id);
+            }
         }
+        wanted
     }
 
     /// What the output pins should be driven to, as a word shaped like the one
@@ -515,10 +536,11 @@ impl Pins {
     /// Read from the gauge table, so an output follows whatever the master is
     /// broadcasting -- including a bulb check, which lights a real bulb on a
     /// relay exactly as it lights a drawn one. A pin whose bank the bus has
-    /// never written reads as off.
+    /// never written reads as off; a threshold with no finite reading is also
+    /// off and otherwise compares in the gauge's canonical unit.
     ///
-    /// `active` is not applied: an output's polarity belongs to the board,
-    /// which is where a driver transistor that inverts lives.
+    /// These are logical commands: `active` is not applied and polarity belongs
+    /// to the board, which is where a driver transistor that inverts lives.
     #[must_use]
     pub fn outputs(&self) -> u32 {
         let mut out = 0;
@@ -526,9 +548,15 @@ impl Pins {
             if p.dir != Dir::Out {
                 continue;
             }
-            if let What::Lamp(ind) = p.what
-                && cogware_can::indicators::get(ind)
-            {
+            let on = match &p.what {
+                What::Lamp(ind) => cogware_can::indicators::get(*ind),
+                What::Threshold(threshold) => threshold
+                    .gauge
+                    .as_f32()
+                    .is_some_and(|reading| threshold.matches(reading)),
+                What::Press(_) => false,
+            };
+            if on {
                 out |= p.mask();
             }
         }
@@ -605,15 +633,27 @@ pub enum PinError {
     BadPin(i64),
     /// Two entries claimed one pin.
     Duplicate(u8),
-    /// `dir`, `active` or `pull` named something that is not one.
+    /// A pin field had an invalid name, type or non-finite numeric value.
     BadField {
         /// The field that was unusable.
         field: &'static str,
     },
-    /// A pin named neither an `indicator` nor an `action`, or named both.
+    /// A pin did not name exactly one of `indicator`, `action` and `gauge`.
     NotWired(u8),
     /// `indicator` named a tell-tale the bus spec does not have.
     UnknownIndicator(String),
+    /// `gauge` named a reading the bus spec does not have.
+    UnknownGauge(String),
+    /// An indicator bank was used as a numeric reading.
+    NotNumericGauge(String),
+    /// A gauge's CAN ID does not fit the subscription protocol.
+    BadGaugeId(u16),
+    /// A comparison was supplied without a `gauge`.
+    MissingGauge(u8),
+    /// A gauge did not have exactly one comparison field.
+    BadComparison(u8),
+    /// An input named a gauge, which can only command an output.
+    InputGauge(u8),
     /// An `action` could not be read; the scene builder says why.
     BadAction(crate::scene::BuildError),
     /// An output named an `action`, which has nothing for a pin to read.
@@ -733,24 +773,29 @@ fn pin(val: &Value, count: u8) -> Result<Pin, PinError> {
     };
     let label = word("label")?.map(ToString::to_string);
 
-    let what = match (word("indicator")?, val.get("action")) {
-        // Naming both is a file contradicting itself about what the wire does.
-        (Some(_), Some(_)) | (None, None) => return Err(PinError::NotWired(pin)),
-        (Some(name), None) => What::Lamp(
-            indicator_by_name(name).ok_or_else(|| PinError::UnknownIndicator(name.to_string()))?,
-        ),
-        (None, Some(_)) => {
-            if dir == Dir::Out {
-                return Err(PinError::OutputAction(pin));
+    let what = if let Some(threshold) = threshold::parse(val, pin, dir)? {
+        What::Threshold(threshold)
+    } else {
+        match (word("indicator")?, val.get("action")) {
+            // Naming both is a file contradicting itself about what the wire does.
+            (Some(_), Some(_)) | (None, None) => return Err(PinError::NotWired(pin)),
+            (Some(name), None) => What::Lamp(
+                indicator_by_name(name)
+                    .ok_or_else(|| PinError::UnknownIndicator(name.to_string()))?,
+            ),
+            (None, Some(_)) => {
+                if dir == Dir::Out {
+                    return Err(PinError::OutputAction(pin));
+                }
+                let action = touch::action(val).map_err(PinError::BadAction)?;
+                // A widget's `page` action may leave the pager out and mean the
+                // nearest one enclosing it. A pin is not in the tree at all, so
+                // there is nothing to look up from and the rig has to say.
+                if matches!(&action, Action::Page { pager: None, .. }) {
+                    return Err(PinError::NoPager(pin));
+                }
+                What::Press(action)
             }
-            let action = touch::action(val).map_err(PinError::BadAction)?;
-            // A widget's `page` action may leave the pager out and mean the
-            // nearest one enclosing it. A pin is not in the tree at all, so
-            // there is nothing to look up from and the rig has to say.
-            if matches!(&action, Action::Page { pager: None, .. }) {
-                return Err(PinError::NoPager(pin));
-            }
-            What::Press(action)
         }
     };
 

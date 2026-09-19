@@ -415,28 +415,50 @@ impl App {
             self.save_as();
             return;
         };
+        self.write_scene(&p);
+    }
+
+    /// Only change the document's destination after the write succeeds.
+    pub(crate) fn write_scene(&mut self, p: &std::path::Path) -> bool {
         // Refuse to write a file that will not load. An editor that saves
         // broken text has destroyed the only good copy.
         if self.preview.error.is_some() {
-            self.status = "not saved: the scene does not parse".into();
-            return;
+            self.status = "Not saved: fix the errors in Scene source first.".into();
+            return false;
         }
-        match std::fs::write(&p, &self.text) {
+        match std::fs::write(p, &self.text) {
             Ok(()) => {
+                self.path = Some(p.to_path_buf());
                 self.dirty = false;
-                self.status = format!("saved {}", p.display());
+                self.status = format!("Saved {}", p.display());
+                true
             }
-            Err(e) => self.status = format!("cannot write: {e}"),
+            Err(e) => {
+                self.status = format!("Could not save {}: {e}", p.display());
+                false
+            }
         }
     }
 
     pub(crate) fn save_as(&mut self) {
         if let Some(p) = rfd::FileDialog::new()
-            .add_filter("scene", &["scene", "json"])
+            .set_file_name(
+                self.path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| "Untitled.scene".into()),
+            )
+            .add_filter("Scene", &["scene", "json"])
             .save_file()
         {
-            self.path = Some(p);
-            self.save();
+            if self.rig.is_some() {
+                self.export_scene_copy(&p);
+            } else {
+                self.write_scene(&p);
+            }
+        } else {
+            self.status = "Save cancelled. Your changes are still open.".into();
         }
     }
 
@@ -447,6 +469,7 @@ impl App {
     pub(crate) fn tidy(&mut self) {
         match copilot::scene::parse(&self.text) {
             Ok(v) => {
+                self.checkpoint();
                 self.text = copilot::scene::to_string(&v);
                 self.dirty = true;
                 self.reload();

@@ -1,60 +1,116 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The Pins dialog: how many pins a display has, and what each is wired to.
-//!
-//! Apart from [`crate::pins`], which holds the operations, for the reason
-//! [`crate::modes_ui`] is apart from [`crate::modes`]: what a pin edit *is*
-//! can be tested without a window, and is, while this half is the buttons that
-//! ask for one.
-//!
-//! A list on the left and one pin's details on the right, rather than a row of
-//! seven columns per pin. A pin wired to a hard button has a whole action
-//! behind it -- the same one a widget's `touch` has -- and there is no honest
-//! way to fit that in a cell.
+//! GPIO mapping drafts, explicit file saves and protection when changing selection.
 
-use copilot::cogware_can::indicators::ALL_INDICATORS;
-use copilot::gpio::{Dir, Level, MAX_PINS, Pull, What};
+use copilot::gpio::{MAX_PINS, Pins};
 
 use crate::App;
 use crate::pins::Draft;
 
-/// The Pins dialog while it is open.
+mod controls;
+#[cfg(test)]
+mod tests;
+mod threshold;
+
+/// GPIO configuration for one display, held locally until explicitly saved.
 pub(crate) struct PinsDialog {
-    /// Which display's pins, by its index in the rig.
+    rig_path: Option<std::path::PathBuf>,
     display: usize,
-    /// The pin being edited, and the draft so far.
-    ///
-    /// Held rather than read back each frame because a half-typed label is
-    /// not yet anything the rig would accept, and re-reading would throw a
-    /// keystroke away every time the parse failed.
     editing: Option<Draft>,
-    /// The count being typed, before it is applied.
+    baseline: Option<Draft>,
     count: u8,
-    /// What went wrong with the last thing tried.
+    pending: Option<Pending>,
+    filter: String,
+    gauge_filter: String,
     error: String,
+    success: String,
 }
 
 impl PinsDialog {
-    /// A fresh dialog on the display being edited.
+    /// Start on the active display with its persisted logical pin count.
     pub(crate) fn new(display: usize, count: u8) -> Self {
         Self {
+            rig_path: None,
             display,
             editing: None,
+            baseline: None,
             count,
+            pending: None,
+            filter: String::new(),
+            gauge_filter: String::new(),
             error: String::new(),
+            success: String::new(),
+        }
+    }
+
+    fn pin_dirty(&self) -> bool {
+        match (&self.editing, &self.baseline) {
+            (Some(draft), Some(baseline)) => !draft.same_mapping(baseline),
+            (None, None) => false,
+            _ => true,
+        }
+    }
+
+    fn needs_discard(&self, nav: Nav, pins: &Pins) -> bool {
+        self.pin_dirty() || (!matches!(nav, Nav::Pin(_)) && self.count != pins.count())
+    }
+
+    /// Choose a pin when opening from its preview badge.
+    pub(crate) fn open_pin(&mut self, pin: u8, pins: &Pins) {
+        self.select_pin(pin, pins);
+    }
+
+    fn select_pin(&mut self, pin: u8, pins: &Pins) {
+        self.editing = Some(pins.get(pin).map_or_else(|| Draft::fresh(pin), Draft::of));
+        self.baseline = self.editing.clone();
+        self.filter.clear();
+        self.gauge_filter.clear();
+        self.error.clear();
+        self.success.clear();
+    }
+
+    fn select_display(&mut self, display: usize, pins: &Pins) {
+        self.display = display;
+        self.count = pins.count();
+        self.editing = None;
+        self.baseline = None;
+        self.filter.clear();
+        self.gauge_filter.clear();
+        self.error.clear();
+        self.success.clear();
+    }
+
+    fn request(&mut self, nav: Nav, pins: &Pins) -> Option<Nav> {
+        if self.needs_discard(nav, pins) {
+            self.pending = Some(Pending::Leave(nav));
+            None
+        } else {
+            Some(nav)
         }
     }
 }
 
-/// One thing the dialog asked for. One per frame: each rewrites the rig and
-/// re-reads it, and the second would be working from a list the first changed.
+#[derive(Clone)]
 enum Act {
     Count(u8),
-    Write(Draft),
+    Write(Box<Draft>),
     Clear(u8),
 }
 
+#[derive(Clone, Copy)]
+enum Nav {
+    Display(usize),
+    Pin(u8),
+    Close,
+}
+
+#[derive(Clone)]
+enum Pending {
+    Save(Act),
+    Leave(Nav),
+}
+
 impl App {
-    /// The Pins dialog: a display's whole loom.
+    /// Edit mappings without saving from text entry, focus loss or panel changes.
     pub(crate) fn pins_window(&mut self, ctx: &egui::Context) {
         let Some(mut d) = self.pins_dialog.take() else {
             return;
@@ -62,338 +118,217 @@ impl App {
         let Some(session) = self.rig.as_ref() else {
             return;
         };
-        let names: Vec<String> = session
+        // Counts and drafts belong to a particular rig, not just a display index.
+        if d.rig_path
+            .as_ref()
+            .is_some_and(|path| *path != session.path)
+        {
+            d = PinsDialog::new(session.active, session.display().pins.count());
+        }
+        d.rig_path = Some(session.path.clone());
+        let names: Vec<_> = session
             .rig
             .displays
             .iter()
             .map(|x| x.name.clone())
             .collect();
-        d.display = d.display.min(names.len().saturating_sub(1));
-        let pins = session.rig.displays[d.display].pins.clone();
+        let Some(display) = session.rig.displays.get(d.display) else {
+            return;
+        };
+        let pins = display.pins.clone();
+        let path = session.path.display().to_string();
         let mut open = true;
-        let mut act: Option<Act> = None;
-
-        egui::Window::new("Pins")
+        let mut wanted = None;
+        let mut nav = None;
+        let mut act = None;
+        let before = d.editing.clone();
+        let old_count = d.count;
+        egui::Window::new("GPIO — logical pin mapping")
+            .id(egui::Id::new("pins"))
             .collapsible(false)
             .resizable(true)
-            .default_width(620.0)
+            .default_width(700.0)
+            .default_height((ctx.screen_rect().height() - 100.0).clamp(300.0, 760.0))
+            .min_width(280.0)
+            .max_width((ctx.screen_rect().width() - 24.0).max(280.0))
+            .max_height((ctx.screen_rect().height() - 48.0).max(180.0))
+            .vscroll(true)
             .open(&mut open)
             .show(ctx, |ui| {
-                ui.label(
-                    egui::RichText::new(
-                        "The spare pins on this display, numbered 1 upwards. Which \
-                         physical pin each lands on is the board's business, in the \
-                         board's own code, where the schematic is.",
-                    )
-                    .small()
-                    .weak(),
-                );
+                if ui.button("Close GPIO").clicked() { wanted = Some(Nav::Close); }
+                if !d.error.is_empty() { ui.colored_label(ui.visuals().error_fg_color, &d.error); }
+                if !d.success.is_empty() { ui.label(&d.success); }
                 ui.separator();
-
-                ui.horizontal(|ui| {
-                    if names.len() > 1 {
-                        ui.label("display");
+                ui.label("Map logical pins 1–32 to indicators, numeric value thresholds or button actions. These are not physical connector or processor GPIO numbers.");
+                ui.weak("The board firmware and schematic define the physical mapping. Saving changes the rig file, not connected hardware. Ctrl+Z does not undo it.");
+                ui.separator();
+                if d.pending.is_none() {
+                ui.scope(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Display");
                         egui::ComboBox::from_id_salt("pins-display")
                             .selected_text(&names[d.display])
                             .show_ui(ui, |ui| {
-                                for (i, n) in names.iter().enumerate() {
-                                    if ui.selectable_label(i == d.display, n).clicked()
-                                        && i != d.display
-                                    {
-                                        d.display = i;
-                                        d.editing = None;
+                                for (i, name) in names.iter().enumerate() {
+                                    if ui.selectable_label(i == d.display, name).clicked() && i != d.display {
+                                        wanted = Some(Nav::Display(i));
                                     }
                                 }
                             });
-                        ui.separator();
-                    }
-                    ui.label("how many");
-                    ui.add(egui::DragValue::new(&mut d.count).range(0..=MAX_PINS));
-                    let lost = self.pins_lost_by(d.display, d.count);
-                    let can = d.count != pins.count();
-                    if ui
-                        .add_enabled(can, egui::Button::new("Apply"))
-                        .on_hover_text(if lost > 0 {
-                            format!("{lost} wired pin(s) would come off the rig")
-                        } else {
-                            "Set how many pins this display has".into()
-                        })
-                        .clicked()
-                    {
-                        act = Some(Act::Count(d.count));
-                    }
-                    if lost > 0 && can {
-                        ui.colored_label(egui::Color32::YELLOW, format!("unwires {lost}"));
-                    }
-                });
-
-                if pins.is_empty() {
-                    ui.add_space(8.0);
-                    ui.weak("This display has no pins. Say how many above.");
-                    return;
-                }
-
-                ui.separator();
-                ui.columns(2, |col| {
-                    // --- the loom ---
-                    col[0].label(egui::RichText::new("Pin").strong());
-                    egui::ScrollArea::vertical()
-                        .id_salt("pin-list")
-                        .max_height(320.0)
-                        .show(&mut col[0], |ui| {
-                            for n in 1..=pins.count() {
-                                let wired = pins.get(n);
-                                let picked = d.editing.as_ref().is_some_and(|e| e.pin == n);
-                                let text = match wired {
-                                    Some(p) => {
-                                        let what = match &p.what {
-                                            What::Lamp(i) => i.name().to_string(),
-                                            What::Press(_) => "button".into(),
-                                        };
-                                        let arrow = if p.dir == Dir::Out { "out" } else { "in" };
-                                        match p.label.as_deref() {
-                                            Some(l) => format!("{n}  {l} — {what} ({arrow})"),
-                                            None => format!("{n}  {what} ({arrow})"),
-                                        }
-                                    }
-                                    None => format!("{n}  —"),
-                                };
-                                let mut row = ui.selectable_label(picked, text);
-                                if wired.is_none() {
-                                    row = row.on_hover_text("Wired to nothing yet");
-                                }
-                                if row.clicked() {
-                                    d.editing = Some(match wired {
-                                        Some(p) => Draft::of(p),
-                                        None => Draft::fresh(n),
-                                    });
-                                }
-                            }
-                        });
-
-                    // --- the pin in hand ---
-                    let ui = &mut col[1];
-                    let Some(draft) = d.editing.as_mut() else {
-                        ui.label(egui::RichText::new("Wiring").strong());
-                        ui.add_space(4.0);
-                        ui.weak("Pick a pin on the left.");
-                        return;
-                    };
-                    ui.label(egui::RichText::new(format!("Pin {}", draft.pin)).strong());
-                    egui::Grid::new("pin-detail")
-                        .num_columns(2)
-                        .spacing([8.0, 4.0])
-                        .show(ui, |ui| {
-                            ui.label("label");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut draft.label)
-                                    .hint_text("left stalk")
-                                    .desired_width(160.0),
-                            )
-                            .on_hover_text(
-                                "What the wire is called. Nothing reads it; it is \
-                                 for whoever opens the loom in three years.",
-                            );
-                            ui.end_row();
-
-                            ui.label("direction");
-                            ui.horizontal(|ui| {
-                                for dir in [Dir::In, Dir::Out] {
-                                    if ui
-                                        .selectable_label(draft.dir == dir, dir.name())
-                                        .on_hover_text(match dir {
-                                            Dir::In => "The car drives it, the display reads it",
-                                            Dir::Out => "The display drives it: a bulb, a relay",
-                                        })
-                                        .clicked()
-                                    {
-                                        draft.dir = dir;
-                                        // An output has nothing to read from
-                                        // an action, so it can only be a lamp.
-                                        if dir == Dir::Out {
-                                            draft.is_lamp = true;
-                                        }
-                                    }
-                                }
-                            });
-                            ui.end_row();
-
-                            // Both belong to the board on an output, where a
-                            // driver transistor inverts if the hardware needs it.
-                            if draft.dir == Dir::In {
-                                ui.label("asserted");
-                                ui.horizontal(|ui| {
-                                    for level in [Level::High, Level::Low] {
-                                        if ui
-                                            .selectable_label(draft.active == level, level.name())
-                                            .clicked()
-                                        {
-                                            draft.active = level;
-                                        }
-                                    }
-                                })
-                                .response
-                                .on_hover_text(
-                                    "Which level means yes. A feed off a switch is \
-                                     high; anything switched to chassis ground, \
-                                     which is most of a car, is low.",
-                                );
-                                ui.end_row();
-
-                                ui.label("pull");
-                                ui.horizontal(|ui| {
-                                    for pull in [Pull::None, Pull::Up, Pull::Down] {
-                                        if ui
-                                            .selectable_label(draft.pull == pull, pull.name())
-                                            .clicked()
-                                        {
-                                            draft.pull = pull;
-                                        }
-                                    }
-                                })
-                                .response
-                                .on_hover_text(
-                                    "What the board ties it to when nothing drives \
-                                     it. The board applies this; nothing here does.",
-                                );
-                                ui.end_row();
-                            }
-
-                            ui.label("wired to");
-                            ui.horizontal(|ui| {
-                                if ui.selectable_label(draft.is_lamp, "tell-tale").clicked() {
-                                    draft.is_lamp = true;
-                                }
-                                let can_press = draft.dir == Dir::In;
-                                if ui
-                                    .add_enabled(
-                                        can_press,
-                                        egui::SelectableLabel::new(!draft.is_lamp, "button"),
-                                    )
-                                    .on_hover_text(if can_press {
-                                        "A hard button, firing what a widget's touch fires"
-                                    } else {
-                                        "An output has nothing to read from an action"
-                                    })
-                                    .clicked()
-                                {
-                                    draft.is_lamp = false;
-                                }
-                            });
-                            ui.end_row();
-
-                            if draft.is_lamp {
-                                ui.label("lamp");
-                                let shown = if draft.indicator.is_empty() {
-                                    "pick one"
-                                } else {
-                                    draft.indicator.as_str()
-                                };
-                                egui::ComboBox::from_id_salt("pin-lamp")
-                                    .selected_text(shown)
-                                    .height(320.0)
-                                    .show_ui(ui, |ui| {
-                                        // In the spec's own table order, which
-                                        // groups the road-car lamps first and
-                                        // the motorsport ones after.
-                                        for ind in ALL_INDICATORS {
-                                            let name = ind.name();
-                                            if ui
-                                                .selectable_label(draft.indicator == name, name)
-                                                .clicked()
-                                            {
-                                                draft.indicator = name.into();
-                                            }
-                                        }
-                                    });
-                                ui.end_row();
-                            } else {
-                                ui.label("action");
-                                egui::ComboBox::from_id_salt("pin-action")
-                                    .selected_text(draft.action.action())
-                                    .show_ui(ui, |ui| {
-                                        for a in crate::touch_ui::ACTIONS {
-                                            if ui
-                                                .selectable_label(draft.action.action() == *a, *a)
-                                                .clicked()
-                                            {
-                                                draft.action.set_action(a);
-                                            }
-                                        }
-                                    });
-                                ui.end_row();
-                                crate::touch_ui::action_rows(ui, &mut draft.action);
-                            }
-                        });
-
-                    ui.add_space(6.0);
-                    ui.horizontal(|ui| {
-                        let ready = draft.complete();
-                        if ui
-                            .add_enabled(ready, egui::Button::new("Wire it"))
-                            .on_hover_text(if ready {
-                                "Write this pin onto the rig"
-                            } else {
-                                "Pick what it is wired to first"
-                            })
-                            .clicked()
-                        {
-                            act = Some(Act::Write(draft.clone()));
-                        }
-                        if pins.get(draft.pin).is_some()
-                            && ui
-                                .button("Unwire")
-                                .on_hover_text("Leave the pin, take the wiring off")
-                                .clicked()
-                        {
-                            act = Some(Act::Clear(draft.pin));
-                        }
                     });
-                });
-
-                if !d.error.is_empty() {
-                    ui.separator();
-                    ui.colored_label(egui::Color32::RED, &d.error);
-                }
-                ui.add_space(4.0);
-                ui.label(
-                    egui::RichText::new(
-                        "Written to the rig at once, like a mode: Ctrl+Z undoes \
-                         the scene, not the loom.",
-                    )
-                    .small()
-                    .weak(),
-                );
-            });
-
-        let display = d.display;
-        match act {
-            Some(Act::Count(n)) => match self.set_pin_count(display, n) {
-                Ok(()) => {
-                    d.error.clear();
-                    // A pin that has just been unwired is not a pin to be
-                    // left sitting in the detail panel.
-                    if d.editing.as_ref().is_some_and(|e| e.pin > n) {
-                        d.editing = None;
+                    ui.push_id(("pin-count", d.display), |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label("Logical pin count");
+                            ui.add(egui::DragValue::new(&mut d.count).range(0..=MAX_PINS))
+                                .on_hover_text("0 disables GPIO mapping. The maximum is 32 logical pins per display.");
+                            let changed = d.count != pins.count();
+                            if ui.add_enabled(changed, egui::Button::new("Review pin count…"))
+                                .on_disabled_hover_text("The count already matches the saved rig.")
+                                .clicked() {
+                                d.pending = Some(Pending::Save(Act::Count(d.count)));
+                            }
+                            if changed && ui.button("Reset count").clicked() { d.count = pins.count(); }
+                        });
+                    });
+                    let lost = self.pins_lost_by(d.display, d.count);
+                    if lost > 0 {
+                        ui.colored_label(ui.visuals().warn_fg_color, format!("Reducing the count removes {lost} saved mapping(s). Review before saving."));
                     }
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .id_salt(("pin-editor", d.display))
+                        .max_height((ui.available_height() - 60.0).max(120.0))
+                        .show(ui, |ui| {
+                            if pins.is_empty() {
+                                ui.label("No logical pins are enabled. Set a count above and save it to begin mapping.");
+                            } else if ui.available_width() >= 620.0 {
+                                ui.columns(2, |cols| {
+                                    controls::pin_list(&mut cols[0], &d, &pins, &mut wanted);
+                                    controls::pin_detail(&mut cols[1], &mut d, &pins);
+                                });
+                            } else {
+                                controls::pin_list(ui, &d, &pins, &mut wanted);
+                                ui.separator();
+                                controls::pin_detail(ui, &mut d, &pins);
+                            }
+                        });
+                });
                 }
-                Err(e) => d.error = e,
-            },
-            Some(Act::Write(draft)) => match self.set_pin(display, &draft) {
-                Ok(()) => d.error.clear(),
-                Err(e) => d.error = e,
-            },
-            Some(Act::Clear(n)) => match self.clear_pin(display, n) {
+                if before != d.editing || old_count != d.count { d.success.clear(); }
+                if let Some(pending) = d.pending.clone() {
+                    ui.separator();
+                    ui.group(|ui| {
+                        let label = match &pending {
+                            Pending::Save(Act::Count(n)) => {
+                                ui.strong("Save logical pin count?");
+                                let lost = self.pins_lost_by(d.display, *n);
+                                ui.label(format!("Set “{}” to {n} logical pins. {lost} saved mapping(s) will be removed.", names[d.display]));
+                                if d.editing.as_ref().is_some_and(|e| e.pin > *n) && d.pin_dirty() {
+                                    ui.label("The selected pin's unsaved draft will also be discarded.");
+                                }
+                                "Save pin count"
+                            }
+                            Pending::Save(Act::Write(draft)) => {
+                                ui.strong("Save GPIO mapping?");
+                                ui.label(format!("Write logical pin {} on “{}” to the rig file.", draft.pin, names[d.display]));
+                                if !draft.label.trim().is_empty() {
+                                    ui.label(format!("Wire label: {}", draft.label.trim()));
+                                }
+                                let dir = if draft.dir == copilot::gpio::Dir::In { "Input" } else { "Output" };
+                                ui.label(format!("{dir} · {}", draft.summary()));
+                                if draft.kind == crate::pins::Kind::Threshold {
+                                    ui.weak("Requires threshold-capable firmware on the controller/display. HIGH and LOW are logical commands, not measured voltages.");
+                                }
+                                if draft.dir == copilot::gpio::Dir::In {
+                                    ui.label(format!("Active {} · {} pull", draft.active.name(), draft.pull.name()));
+                                }
+                                ui.collapsing("Mapping written to the rig", |ui| {
+                                    if let Ok(body) = draft.to_rig() { ui.monospace(body); }
+                                });
+                                ui.weak("Saving changes this rig file only; it does not drive hardware. Check the board wiring before deploying.");
+                                "Save pin mapping"
+                            }
+                            Pending::Save(Act::Clear(pin)) => {
+                                ui.strong("Remove saved mapping?");
+                                ui.label(format!("Unmap logical pin {pin} on “{}”. The pin count stays unchanged; Ctrl+Z cannot restore the mapping.", names[d.display]));
+                                "Remove pin mapping"
+                            }
+                            Pending::Leave(_) => {
+                                ui.strong("Discard unsaved GPIO draft?");
+                                ui.label("These edits have not been written. Keep editing to save them, or discard them to continue.");
+                                "Discard draft and continue"
+                            }
+                        };
+                        if matches!(pending, Pending::Save(_)) {
+                            ui.weak(format!("Writes immediately: {path}"));
+                        }
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button(label).clicked() {
+                                match pending.clone() {
+                                    Pending::Save(action) => act = Some(action),
+                                    Pending::Leave(next) => nav = Some(next),
+                                }
+                                d.pending = None;
+                            }
+                            if ui.button("Keep editing").clicked() { d.pending = None; }
+                        });
+                    });
+                }
+                if d.pin_dirty() || d.count != pins.count() {
+                    ui.weak("Unsaved GPIO draft — use the review and save buttons to write it.");
+                }
+            });
+        if !open {
+            wanted = Some(Nav::Close);
+        }
+        if let Some(next) = wanted {
+            nav = d.request(next, &pins);
+        }
+        if let Some(action) = act {
+            let result = match &action {
+                Act::Count(n) => self.set_pin_count(d.display, *n),
+                Act::Write(draft) => self.set_pin(d.display, draft),
+                Act::Clear(pin) => self.clear_pin(d.display, *pin),
+            };
+            match result {
                 Ok(()) => {
+                    let pins =
+                        &self.rig.as_ref().expect("a saved rig").rig.displays[d.display].pins;
+                    match action {
+                        Act::Write(draft) => d.select_pin(draft.pin, pins),
+                        Act::Clear(pin) => d.select_pin(pin, pins),
+                        Act::Count(n) => {
+                            d.count = n;
+                            if d.editing.as_ref().is_some_and(|e| e.pin > n) {
+                                d.editing = None;
+                                d.baseline = None;
+                            }
+                        }
+                    }
                     d.error.clear();
-                    d.editing = Some(Draft::fresh(n));
+                    d.success = format!("Saved to disk: {}", self.status);
                 }
-                Err(e) => d.error = e,
-            },
+                Err(error) => {
+                    d.error = error;
+                    d.success.clear();
+                }
+            }
+        }
+        match nav {
+            Some(Nav::Close) => return,
+            Some(Nav::Pin(pin)) => d.select_pin(pin, &pins),
+            Some(Nav::Display(display)) => {
+                if let Some(pins) = self
+                    .rig
+                    .as_ref()
+                    .and_then(|r| r.rig.displays.get(display))
+                    .map(|d| &d.pins)
+                {
+                    d.select_display(display, pins);
+                }
+            }
             None => {}
         }
-        // Kept only while there is still a rig to edit: closing one with the
-        // dialog open must not leave it floating over a bare scene.
-        self.pins_dialog = (open && self.rig.is_some()).then_some(d);
+        self.pins_dialog = self.rig.is_some().then_some(d);
     }
 }

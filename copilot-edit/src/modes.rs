@@ -29,6 +29,8 @@ use copilot::scene::Step;
 use crate::App;
 use crate::newdoc::NewDoc;
 
+mod files;
+
 /// Why a mode name cannot be used.
 ///
 /// A mode name is two things at once: a key in the rig file and a piece of
@@ -40,7 +42,7 @@ pub(crate) fn check_name(name: &str, existing: &[String]) -> Result<(), String> 
         return Err("a mode needs a name".into());
     }
     if name.len() > 32 {
-        return Err("that name is too long to sit on a tab".into());
+        return Err("use at most 32 UTF-8 bytes for a mode name".into());
     }
     if existing.iter().any(|m| m == name) {
         return Err(format!("there is already a mode called {name}"));
@@ -69,19 +71,26 @@ pub(crate) fn check_name(name: &str, existing: &[String]) -> Result<(), String> 
 /// a name that says what it is.
 pub(crate) fn scene_name_for(existing: &str, from: &str, to: &str) -> String {
     let to = to.trim().replace(' ', "-");
-    let (stem, ext) = match existing.rsplit_once('.') {
-        Some((s, e)) => (s, e),
-        None => (existing, "scene"),
-    };
-    match stem.rfind(from) {
-        Some(at) if !from.is_empty() => {
-            let mut out = String::with_capacity(stem.len() + to.len());
-            out.push_str(&stem[..at]);
-            out.push_str(&to);
-            out.push_str(&stem[at + from.len()..]);
-            format!("{out}.{ext}")
+    let from = from.trim().replace(' ', "-");
+    // A mode name in a directory or inside a display name is not a suffix.
+    let (directory, file) = existing
+        .rsplit_once('/')
+        .map_or(("", existing), |(d, f)| (d, f));
+    let (stem, ext) = file.rsplit_once('.').unwrap_or((file, "scene"));
+    let renamed = if !from.is_empty() && stem == from {
+        to
+    } else if !from.is_empty() {
+        match stem.strip_suffix(&format!("-{from}")) {
+            Some(prefix) => format!("{prefix}-{to}"),
+            None => format!("{stem}-{to}"),
         }
-        _ => format!("{stem}-{to}.{ext}"),
+    } else {
+        format!("{stem}-{to}")
+    };
+    if directory.is_empty() {
+        format!("{renamed}.{ext}")
+    } else {
+        format!("{directory}/{renamed}.{ext}")
     }
 }
 
@@ -97,6 +106,9 @@ impl App {
             return Err("no rig is open".into());
         };
         check_name(&name, &session.rig.modes)?;
+        if copy_from.is_some_and(|m| m >= session.rig.modes.len()) {
+            return Err("the source mode no longer exists; choose another starting layout".into());
+        }
         if self.dirty || session.docs.iter().any(|d| d.dirty) {
             return Err("save or discard the unsaved changes first".into());
         }
@@ -115,6 +127,11 @@ impl App {
             );
             if dir.join(&file).exists() {
                 return Err(format!("{file} is already there; pick another name"));
+            }
+            if writes.iter().any(|(path, _)| *path == dir.join(&file)) {
+                return Err(format!(
+                    "several displays would create {file}; give their source scenes distinct filenames first"
+                ));
             }
             let text = match copy_from {
                 // The text as it is in the editor, which is what the person
@@ -136,18 +153,15 @@ impl App {
                 &text,
                 &[Step::Key("displays"), Step::Index(i), Step::Key("scenes")],
                 &name,
-                &format!("\"{file}\""),
+                &crate::pins::quoted(file),
             )
             .ok_or_else(|| format!("could not write {}'s scene into the rig", i + 1))?;
         }
         text = copilot::scene::append(&text, &[Step::Key("modes")], &format!("\"{name}\""))
             .ok_or("could not add the mode to the rig")?;
 
-        for (path, body) in writes {
-            std::fs::write(&path, body)
-                .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
-        }
-        self.commit_rig(text)?;
+        copilot::rig::parse(&text).map_err(|e| format!("that would break the rig: {e:?}"))?;
+        files::with_new_scenes(&writes, || self.commit_rig(text))?;
         let to = self.rig.as_ref().and_then(|r| r.rig.mode_named(&name));
         if let Some(m) = to {
             self.show_mode(m);
@@ -201,7 +215,7 @@ impl App {
         for (d, file) in files.iter().enumerate() {
             let at = [Step::Key("displays"), Step::Index(d), Step::Key("scenes")];
             text = copilot::scene::unset(&text, &at, &old)
-                .and_then(|t| copilot::scene::set(&t, &at, &name, &format!("\"{file}\"")))
+                .and_then(|t| copilot::scene::set(&t, &at, &name, &crate::pins::quoted(file)))
                 .ok_or("could not rename the mode on every display")?;
         }
         text = copilot::scene::replace(
@@ -345,206 +359,4 @@ impl App {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// A rig of two displays in one mode, in a directory of its own, with a
-    /// comment in it so the splicing can be shown not to eat it.
-    fn rig_on_disk(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("copilot-modes-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        for (node, size, name) in [(1u8, 200u32, "cluster"), (2, 100, "gauge")] {
-            std::fs::write(
-                dir.join(format!("{name}-normal.scene")),
-                format!(
-                    r#"{{"width":{size},"height":{size},"node":{node},
-                        "root":{{"type":"panel","rect":[0,0,{size},{size}],"name":"{name}"}}}}"#
-                ),
-            )
-            .expect("scene");
-        }
-        std::fs::write(
-            dir.join("test.rig"),
-            r#"{
-                // The cluster is the big one.
-                "modes": ["normal"],
-                "displays": [
-                    {"name":"cluster","node":1,"scenes":{"normal":"cluster-normal.scene"}},
-                    {"name":"gauge","node":2,"scenes":{"normal":"gauge-normal.scene"}},
-                ],
-            }"#,
-        )
-        .expect("rig");
-        dir
-    }
-
-    fn open(dir: &std::path::Path) -> App {
-        let mut a = App::new(None, &[]);
-        a.open_rig(dir.join("test.rig"));
-        assert!(a.rig.is_some(), "{}", a.status);
-        a
-    }
-
-    #[test]
-    fn a_mode_can_be_added_with_any_name_the_person_likes() {
-        let dir = rig_on_disk("add");
-        let mut a = open(&dir);
-        a.add_mode("rockcrawl", Some(0))
-            .unwrap_or_else(|e| panic!("{e}"));
-
-        let r = a.rig.as_ref().expect("a rig");
-        assert_eq!(r.rig.modes, ["normal", "rockcrawl"]);
-        assert_eq!(r.mode, 1, "the new mode is the one being shown");
-        // One scene file per display, copied from normal.
-        for f in ["cluster-rockcrawl.scene", "gauge-rockcrawl.scene"] {
-            assert!(dir.join(f).exists(), "{f} was not written");
-        }
-        assert_eq!(r.rig.scene_path(1, 1), Some("cluster-rockcrawl.scene"));
-        assert_eq!(r.rig.scene_path(2, 1), Some("gauge-rockcrawl.scene"));
-        // The copy is the layout it came from, and still builds.
-        assert!(a.preview.error.is_none(), "{:?}", a.preview.error);
-        assert_eq!(a.preview.scene_size(), (200, 200));
-        assert_eq!(a.preview.node, Some(1));
-        // And the comment in the rig survived being spliced.
-        assert!(r.text.contains("The cluster is the big one"), "{}", r.text);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn an_empty_mode_is_a_bare_panel_of_each_displays_size() {
-        let dir = rig_on_disk("empty");
-        let mut a = open(&dir);
-        a.add_mode("valet", None).unwrap_or_else(|e| panic!("{e}"));
-
-        assert!(a.preview.error.is_none(), "{:?}", a.preview.error);
-        assert_eq!(a.preview.scene_size(), (200, 200), "the cluster's size");
-        assert_eq!(a.preview.node, Some(1), "and its node");
-        let r = a.rig.as_ref().expect("a rig");
-        let gauge = &r.docs[1];
-        assert!(gauge.preview.error.is_none(), "{:?}", gauge.preview.error);
-        assert_eq!(gauge.preview.scene_size(), (100, 100));
-        // Empty means empty: the panel has nothing in it to lay out yet.
-        let t = a.preview.tree.as_ref().expect("a tree");
-        let doc_root = t.get(copilot::widget::ROOT).unwrap().children[0];
-        assert!(t.get(doc_root).unwrap().children.is_empty());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_bad_or_repeated_name_is_refused_before_anything_is_written() {
-        let dir = rig_on_disk("bad");
-        let mut a = open(&dir);
-        for bad in ["", "  ", "normal", "a/b", "a.b"] {
-            let before = std::fs::read_to_string(dir.join("test.rig")).unwrap();
-            assert!(a.add_mode(bad, Some(0)).is_err(), "{bad} was accepted");
-            assert_eq!(
-                std::fs::read_to_string(dir.join("test.rig")).unwrap(),
-                before,
-                "{bad} changed the rig on its way to being refused"
-            );
-        }
-        assert_eq!(a.rig.as_ref().unwrap().rig.modes, ["normal"]);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_mode_can_be_renamed_and_the_files_keep_their_names() {
-        let dir = rig_on_disk("rename");
-        let mut a = open(&dir);
-        a.add_mode("sport", Some(0))
-            .unwrap_or_else(|e| panic!("{e}"));
-        a.rename_mode(1, "track").unwrap_or_else(|e| panic!("{e}"));
-
-        let r = a.rig.as_ref().expect("a rig");
-        assert_eq!(r.rig.modes, ["normal", "track"]);
-        // The file is still the one that was written; renaming a mode is not
-        // a reason to break a card that points at it.
-        assert_eq!(r.rig.scene_path(1, 1), Some("cluster-sport.scene"));
-        assert!(dir.join("cluster-sport.scene").exists());
-        assert!(a.preview.error.is_none(), "{:?}", a.preview.error);
-        // Renaming to something already taken is refused.
-        assert!(a.rename_mode(1, "normal").is_err());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn removing_a_mode_unlists_it_and_leaves_its_scenes_alone() {
-        let dir = rig_on_disk("remove");
-        let mut a = open(&dir);
-        a.add_mode("tow", Some(0)).unwrap_or_else(|e| panic!("{e}"));
-        assert_eq!(a.rig.as_ref().unwrap().mode, 1);
-
-        a.remove_mode(1).unwrap_or_else(|e| panic!("{e}"));
-        let r = a.rig.as_ref().expect("a rig");
-        assert_eq!(r.rig.modes, ["normal"]);
-        assert_eq!(r.mode, 0, "back to a mode that still exists");
-        assert!(
-            dir.join("cluster-tow.scene").exists(),
-            "a panel somebody drew must not vanish with the list entry"
-        );
-        assert!(a.preview.error.is_none(), "{:?}", a.preview.error);
-        // The last mode cannot go.
-        assert!(a.remove_mode(0).is_err());
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_mode_edit_waits_for_unsaved_work() {
-        let dir = rig_on_disk("dirty");
-        let mut a = open(&dir);
-        a.dirty = true;
-        assert!(a.add_mode("tow", Some(0)).is_err());
-        assert!(a.remove_mode(0).is_err());
-        assert_eq!(a.rig.as_ref().unwrap().rig.modes, ["normal"]);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn a_mode_name_has_to_work_as_a_key_and_as_a_file_name() {
-        let have = ["normal".to_string(), "sport".to_string()];
-        assert!(check_name("rockcrawl", &have).is_ok());
-        assert!(check_name("rock crawl", &have).is_ok());
-        assert!(check_name("wet-weather", &have).is_ok());
-        assert!(check_name("Tow_2", &have).is_ok());
-
-        assert!(check_name("", &have).is_err());
-        assert!(check_name("   ", &have).is_err());
-        assert!(check_name("sport", &have).is_err(), "already there");
-        for bad in ["a/b", "a.b", "a\"b", "a\\b", "a:b"] {
-            assert!(check_name(bad, &have).is_err(), "{bad} should be refused");
-        }
-    }
-
-    #[test]
-    fn a_new_scene_is_named_after_the_one_it_came_from() {
-        assert_eq!(
-            scene_name_for("z31-normal.scene", "normal", "rockcrawl"),
-            "z31-rockcrawl.scene"
-        );
-        assert_eq!(
-            scene_name_for("gauge-left-normal.scene", "normal", "tow"),
-            "gauge-left-tow.scene"
-        );
-        // A space is a hyphen in a file name, whatever the tab says.
-        assert_eq!(
-            scene_name_for("z31-normal.scene", "normal", "rock crawl"),
-            "z31-rock-crawl.scene"
-        );
-        // Not following the convention: the mode goes on the end instead.
-        assert_eq!(
-            scene_name_for("cluster.scene", "normal", "tow"),
-            "cluster-tow.scene"
-        );
-        // Copying from nothing, so there is no name to swap out.
-        assert_eq!(
-            scene_name_for("z31-normal.scene", "", "tow"),
-            "z31-normal-tow.scene"
-        );
-        // An extension that is not .scene is kept.
-        assert_eq!(
-            scene_name_for("panel-normal.json", "normal", "tow"),
-            "panel-tow.json"
-        );
-    }
-}
+mod tests;

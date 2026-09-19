@@ -45,6 +45,12 @@ impl App {
     /// same frame the close was requested, or the window is already gone.
     pub(crate) fn close_guard(&mut self, ctx: &egui::Context) {
         if ctx.input(|i| i.viewport().close_requested()) {
+            if self.uploader.busy() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+                self.uploader.open(self.uploader.sending_rig());
+                self.status = "An upload is in progress. Finish or cancel it in Upload details before closing the editor.".into();
+                return;
+            }
             if self.closing || self.unsaved() == 0 {
                 // Either already answered, or nothing to lose.
                 return;
@@ -53,6 +59,10 @@ impl App {
             self.asking_close = true;
         }
         if !self.asking_close {
+            return;
+        }
+        if ctx.input_mut(|input| input.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.asking_close = false;
             return;
         }
 
@@ -70,6 +80,7 @@ impl App {
         let mut answer = Answer::Stay;
         let mut open = true;
         egui::Window::new("Unsaved changes")
+            .id(egui::Id::new("exit_unsaved_changes"))
             .collapsible(false)
             .resizable(false)
             .open(&mut open)
@@ -77,7 +88,7 @@ impl App {
             .show(ctx, |ui| {
                 ui.label(&what);
                 ui.add_space(6.0);
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     if ui.button("Save and close").clicked() {
                         answer = Answer::Save;
                     }

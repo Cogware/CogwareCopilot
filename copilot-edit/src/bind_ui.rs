@@ -9,13 +9,16 @@
 //! line, and splicing a key inside it would need the editor to know where
 //! inside the widget's text it sits.
 
-use copilot::cogware_can::indicators::{ALL_INDICATORS, Indicator};
-use copilot::cogware_can::{ALL_GAUGES, GaugeData, Quantity, Unit};
+use copilot::cogware_can::indicators::Indicator;
+use copilot::cogware_can::{GaugeData, Quantity, Unit};
 use copilot::scene::bind::indicator_bank;
 use copilot::scene::{Binding, units_for};
 use copilot::widget::BindTarget;
 
 use crate::canvas::{Gesture, committed, gesture};
+use crate::inspect::controls;
+
+mod picker;
 
 /// What the rows asked for.
 #[derive(Clone, PartialEq, Debug)]
@@ -198,14 +201,9 @@ impl Draft {
     }
 }
 
-/// A number the way a person would write it in a scene file: whole when it
-/// is whole, two places otherwise.
+/// The shortest round-trippable form, so a small divisor never rounds to zero.
 fn num(v: f32) -> String {
-    if v.fract() == 0.0 && v.abs() < 1e9 {
-        format!("{v:.0}")
-    } else {
-        format!("{v:.2}")
-    }
+    v.to_string()
 }
 
 /// A range worth starting from for a gauge of this dimension, in the
@@ -246,15 +244,6 @@ fn default_span(q: Quantity) -> (f32, f32) {
     }
 }
 
-/// What the picker shows for a choice.
-fn pick_name(p: Pick) -> &'static str {
-    match p {
-        Pick::None => "none",
-        Pick::Gauge(g) => g.name,
-        Pick::Lamp(i) => i.name(),
-    }
-}
-
 /// The symbol a unit is shown by. The raw unit's is empty, which on a button
 /// reads as broken rather than as raw.
 fn symbol(u: Unit) -> &'static str {
@@ -286,10 +275,10 @@ fn axes(kind: &copilot::widget::Kind, current: &[&Binding]) -> Vec<BindTarget> {
 /// What an axis is called in the pane when a widget has more than one.
 fn axis_name(t: BindTarget) -> &'static str {
     match t {
-        BindTarget::Reading => "along",
-        BindTarget::Height => "up",
-        BindTarget::Text => "text",
-        BindTarget::Visible => "shown",
+        BindTarget::Reading => "Scale reading",
+        BindTarget::Height => "Cell height",
+        BindTarget::Text => "Displayed number",
+        BindTarget::Visible => "Visibility",
     }
 }
 
@@ -306,7 +295,8 @@ pub(crate) fn bind_rows(
     current: &[&Binding],
 ) -> Option<(BindEdit, Option<Gesture>)> {
     let targets = axes(kind, current);
-    let natural = kind.bind_target()?;
+    // Non-reading widgets must keep an explicit visibility property.
+    let natural = kind.bind_target().unwrap_or(BindTarget::Reading);
     let mut drafts: Vec<Option<Draft>> = targets
         .iter()
         .map(|t| {
@@ -332,7 +322,10 @@ pub(crate) fn bind_rows(
             ui.label("");
             ui.end_row();
         }
-        if let Some((d, g)) = axis_rows(ui, *t, drafts[i].as_ref()) {
+        if let Some((d, g)) = ui
+            .push_id(t.name(), |ui| axis_rows(ui, *t, drafts[i].as_ref()))
+            .inner
+        {
             drafts[i] = d;
             edited = Some(g);
         }
@@ -361,32 +354,9 @@ fn axis_rows(
     current: Option<&Draft>,
 ) -> Option<(Option<Draft>, Option<Gesture>)> {
     let salt = target.name();
-    ui.label("reads");
+    ui.label("Data source");
     let now = current.map_or(Pick::None, Draft::pick);
-    let mut picked = now;
-    egui::ComboBox::from_id_salt(("bind-gauge", salt))
-        .selected_text(pick_name(now))
-        .width(180.0)
-        .height(360.0)
-        .show_ui(ui, |ui| {
-            ui.selectable_value(&mut picked, Pick::None, "none");
-            ui.separator();
-            for g in ALL_GAUGES {
-                ui.selectable_value(&mut picked, Pick::Gauge(g), g.name)
-                    .on_hover_text(format!("{} · {:?}", symbol(g.unit), g.source));
-            }
-            // The tell-tales below the gauges, in the spec's own table order.
-            // They are bits rather than readings, so they are picked by name
-            // and never by the bank they happen to sit in -- which is why
-            // INDICATORS1 and INDICATORS2 are in the list above as well and
-            // mean something quite different.
-            ui.separator();
-            ui.label(egui::RichText::new("tell-tales").small().weak());
-            for ind in ALL_INDICATORS {
-                ui.selectable_value(&mut picked, Pick::Lamp(*ind), ind.name())
-                    .on_hover_text("One bit. Lit is 1, out is 0.");
-            }
-        });
+    let picked = picker::show(ui, now);
     ui.end_row();
     if picked != now {
         let d = match picked {
@@ -402,6 +372,9 @@ fn axis_rows(
     // applying to a 0 or a 1, so the rows below are not drawn for one. The
     // picker above is the whole of editing a tell-tale.
     if b.indicator.is_some() {
+        ui.label("");
+        ui.weak("One indicator: 0 = off, 1 = on. No unit conversion is needed.");
+        ui.end_row();
         return None;
     }
 
@@ -413,7 +386,7 @@ fn axis_rows(
         }
     };
 
-    ui.label("unit");
+    ui.label("Display unit");
     let mut unit = d.unit;
     let mut unit_changed = false;
     egui::ComboBox::from_id_salt(("bind-unit", salt))
@@ -428,34 +401,46 @@ fn axis_rows(
     }
     ui.end_row();
 
-    ui.label("divide")
+    ui.label("Divide reading by")
         .on_hover_text("The reading is divided by this before it is shown");
     let was = d.divide;
-    note(
-        ui.add(
-            egui::DragValue::new(&mut d.divide)
-                .speed(1.0)
-                .range(-1e9..=1e9),
-        )
-        .on_hover_text(
-            "100 for a tachometer whose face reads x100 r/min. Zero is not a \
+    let divide_response = controls::number(ui, &mut d.divide, 0.1, "", None).on_hover_text(
+        "100 for a tachometer whose face reads x100 r/min. Zero is not a \
              thing to divide by, so it is refused.",
-        ),
     );
+    let divide_changed = committed(&divide_response);
+    if d.divide != 0.0 {
+        note(divide_response);
+    }
     // Refused rather than corrected: a zero here is a slip mid-drag, and
     // snapping it to one would fight the hand that is still moving.
+    let error_id = ui.id().with("zero-divisor");
     if d.divide == 0.0 {
+        ui.data_mut(|data| data.insert_temp(error_id, true));
         d.divide = was;
+    } else if divide_changed {
+        ui.data_mut(|data| data.remove::<bool>(error_id));
     }
     ui.end_row();
+    if ui
+        .data(|data| data.get_temp::<bool>(error_id))
+        .unwrap_or(false)
+    {
+        ui.label("");
+        ui.colored_label(
+            ui.visuals().error_fg_color,
+            "Cannot divide by zero. Previous divisor kept.",
+        );
+        ui.end_row();
+    }
 
-    ui.label("offset").on_hover_text("Added after the division");
+    ui.label("Then add offset")
+        .on_hover_text("Added after the division");
     note(
-        ui.add(egui::DragValue::new(&mut d.offset).speed(0.1))
-            .on_hover_text(
-                "-14.7 on a MAP gauge in psi reads zero at atmospheric, which \
+        controls::number(ui, &mut d.offset, 0.1, symbol(d.unit), None).on_hover_text(
+            "-14.7 on a MAP gauge in psi reads zero at atmospheric, which \
                  is what a boost gauge shows.",
-            ),
+        ),
     );
     ui.end_row();
 
@@ -463,26 +448,52 @@ fn axis_rows(
     // text, where the reading is shown whole and the ends only say how far
     // the dummy values travel.
     ui.label(match target {
-        BindTarget::Reading | BindTarget::Height | BindTarget::Visible => "range",
-        BindTarget::Text => "sweep",
+        BindTarget::Reading | BindTarget::Height | BindTarget::Visible => "Scale range",
+        BindTarget::Text => "Test sweep range",
     });
-    ui.horizontal(|ui| {
+    ui.vertical(|ui| {
         let step = ((d.max - d.min).abs() / 200.0).max(0.01);
-        note(ui.add(egui::DragValue::new(&mut d.min).speed(step).prefix("min ")));
-        note(ui.add(egui::DragValue::new(&mut d.max).speed(step).prefix("max ")));
+        ui.horizontal(|ui| {
+            ui.label("Start");
+            note(controls::number(
+                ui,
+                &mut d.min,
+                f64::from(step),
+                symbol(d.unit),
+                None,
+            ));
+        });
+        ui.horizontal(|ui| {
+            ui.label("End");
+            note(controls::number(
+                ui,
+                &mut d.max,
+                f64::from(step),
+                symbol(d.unit),
+                None,
+            ));
+        });
+    });
+    ui.end_row();
+    ui.label("");
+    ui.weak(if d.min == d.max {
+        "Equal ends make a fixed scale. Choose different ends for a changing reading."
+    } else if d.max < d.min {
+        "Reversed range: the reading runs from the higher value to the lower."
+    } else {
+        "Range uses the converted reading after division and offset."
     });
     ui.end_row();
 
     if target == BindTarget::Text {
-        ui.label("decimals");
-        note(ui.add(egui::DragValue::new(&mut d.decimals).range(0..=6)));
+        ui.label("Decimal places");
+        note(controls::number(ui, &mut d.decimals, 1.0, "", None));
         ui.end_row();
-        ui.label("pad");
+        ui.label("Minimum text width");
         note(
-            ui.add(egui::DragValue::new(&mut d.pad).range(0..=16))
-                .on_hover_text(
-                    "Least width, space-padded on the left, so digits stay in their cells",
-                ),
+            controls::number(ui, &mut d.pad, 1.0, " characters", None).on_hover_text(
+                "Least width, space-padded on the left, so digits stay in their cells",
+            ),
         );
         ui.end_row();
     }
@@ -765,6 +776,17 @@ mod tests {
     fn a_number_is_written_the_short_way() {
         assert_eq!(num(8000.0), "8000");
         assert_eq!(num(-15.0), "-15");
-        assert_eq!(num(14.7), "14.70");
+        assert_eq!(num(14.7), "14.7");
+    }
+
+    #[test]
+    fn small_nonzero_divisors_and_offsets_survive_serialisation() {
+        let mut draft = Draft::fresh(&RPM, BindTarget::Reading);
+        draft.divide = 0.001;
+        draft.offset = 0.0001;
+        draft.min = 0.0002;
+        draft.max = 0.003;
+        let back = Draft::of(&bound("bar", &draft.json(BindTarget::Reading)));
+        assert_eq!(back, draft);
     }
 }

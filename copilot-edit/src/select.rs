@@ -8,6 +8,9 @@
 //! command wants exactly one widget, and a list that is usually one long
 //! would make every one of them ask which.
 
+#[cfg(test)]
+mod tests;
+
 use copilot::widget::{NodeId, ROOT, Tree};
 use copilot::{Point, Rect};
 
@@ -42,7 +45,15 @@ impl App {
 
     /// Select all of `ids`, the first as the primary.
     pub(crate) fn select_many(&mut self, mut ids: Vec<NodeId>) {
-        ids.dedup();
+        let mut seen = Vec::with_capacity(ids.len());
+        ids.retain(|id| {
+            if seen.contains(id) {
+                false
+            } else {
+                seen.push(*id);
+                true
+            }
+        });
         self.selected = ids.first().copied();
         self.extra = ids.get(1..).map(<[NodeId]>::to_vec).unwrap_or_default();
         self.reveal = self.selected.is_some();
@@ -59,7 +70,10 @@ impl App {
         self.reveal = true;
         self.status = match self.members().len() {
             0 => "nothing selected".into(),
-            1 => format!("selected {}", self.describe(id)),
+            1 => format!(
+                "selected {}",
+                self.describe(self.selected.expect("a single selection has a primary"))
+            ),
             n => format!("{n} selected"),
         };
     }
